@@ -162,16 +162,15 @@ class KaipaiCloudTab(QWidget):
         self.file_input.setMinimumHeight(28)
         file_layout.addWidget(self.file_input, 1)
 
-        file_btn = QPushButton("选择文件")
-        file_btn.setFixedWidth(90)
-        file_btn.clicked.connect(self.browse_file)
-        file_layout.addWidget(file_btn)
-
-        folder_btn = QPushButton("选择文件夹")
-        folder_btn.setFixedWidth(90)
-        folder_btn.clicked.connect(self.browse_folder)
-        file_layout.addWidget(folder_btn)
+        browse_btn = QPushButton("浏览")
+        browse_btn.setFixedWidth(80)
+        browse_btn.clicked.connect(self.browse)
+        file_layout.addWidget(browse_btn)
         input_layout.addLayout(file_layout)
+
+        self.file_count_label = QLabel("")
+        self.file_count_label.setStyleSheet("color: gray;")
+        input_layout.addWidget(self.file_count_label)
 
         input_group.setLayout(input_layout)
 
@@ -248,18 +247,32 @@ class KaipaiCloudTab(QWidget):
         self.ir_mode_combo.setVisible(task_name == "图片画质修复")
         self.slice_way_combo.setVisible(task_name == "视频智能全消")
 
-    def browse_file(self):
-        file, _ = QFileDialog.getOpenFileName(
+    def browse(self):
+        path, _ = QFileDialog.getOpenFileName(
             self, "选择文件", "",
             "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp);;视频文件 (*.mp4 *.avi *.mov *.mkv *.flv);;所有文件 (*)"
         )
-        if file:
-            self.file_input.setText(file)
+        if not path:
+            path = QFileDialog.getExistingDirectory(self, "选择文件夹")
+        if path:
+            self.file_input.setText(path)
+            self.update_file_count()
 
-    def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
-        if folder:
-            self.file_input.setText(folder)
+    def update_file_count(self):
+        input_path = self.file_input.text()
+        task_name = self.task_combo.currentText()
+        if not input_path:
+            self.file_count_label.setText("")
+            return
+
+        files = self._collect_files(input_path, task_name)
+        count = len(files)
+        if os.path.isfile(input_path):
+            self.file_count_label.setText(f"已选择文件: {os.path.basename(input_path)}")
+        elif count > 0:
+            self.file_count_label.setText(f"找到 {count} 个可处理的文件")
+        else:
+            self.file_count_label.setText("未找到可处理的文件")
 
     def log_message(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -287,6 +300,23 @@ class KaipaiCloudTab(QWidget):
             return
 
         params = self._build_params(task_name)
+
+        file_type = "文件" if os.path.isfile(input_path) else "文件夹"
+        confirm_msg = f"即将处理 {len(files)} 个文件\n\n"
+        confirm_msg += f"输入类型: {file_type}\n"
+        confirm_msg += f"处理功能: {task_name}\n"
+        if params:
+            confirm_msg += f"自定义参数: {params}\n"
+        confirm_msg += "\n确认开始处理？"
+
+        reply = QMessageBox.question(
+            self, "确认处理", confirm_msg,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
         self.log_message(f"开始处理 {len(files)} 个文件，任务: {task_name}")
         if params:
             self.log_message(f"自定义参数: {params}")
@@ -327,9 +357,10 @@ class KaipaiCloudTab(QWidget):
                 exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
             files = []
-            for f in os.listdir(input_path):
-                if f.lower().endswith(exts):
-                    files.append(os.path.join(input_path, f))
+            for root, dirs, file_list in os.walk(input_path):
+                for f in file_list:
+                    if f.lower().endswith(exts):
+                        files.append(os.path.join(root, f))
             return files
 
         return []
