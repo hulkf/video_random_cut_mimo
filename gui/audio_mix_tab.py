@@ -17,6 +17,22 @@ class AudioMixWorker(QThread):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self._paused = False
+        self._stop = False
+
+    def pause(self):
+        self._paused = True
+
+    def resume(self):
+        self._paused = False
+
+    def stop(self):
+        self._stop = True
+        self._paused = False
+
+    def _wait_if_paused(self):
+        while self._paused and not self._stop:
+            self.msleep(100)
 
     def run(self):
         try:
@@ -30,11 +46,19 @@ class AudioMixWorker(QThread):
                 self.config["clips_dir"],
                 self.config["media_dir"],
                 self.config["output_dir"],
-                lambda count, total: self.progress.emit(count, total)
+                lambda count, total: self._on_progress(count, total)
             )
-            self.finished.emit(results)
+            if not self._stop:
+                self.finished.emit(results)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self._stop:
+                self.error.emit(str(e))
+
+    def _on_progress(self, count, total):
+        self._wait_if_paused()
+        if self._stop:
+            raise InterruptedError("用户停止")
+        self.progress.emit(count, total)
 
 
 class AudioMixTab(QWidget):
@@ -139,9 +163,24 @@ class AudioMixTab(QWidget):
         output_layout.addWidget(output_btn)
         output_group.setLayout(output_layout)
 
+        btn_row = QHBoxLayout()
         self.start_btn = QPushButton("开始混剪")
         self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self.start_mixing)
+
+        self.pause_btn = QPushButton("暂停")
+        self.pause_btn.setMinimumHeight(36)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self.toggle_pause)
+
+        self.stop_btn = QPushButton("停止")
+        self.stop_btn.setMinimumHeight(36)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_mixing)
+
+        btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.pause_btn)
+        btn_row.addWidget(self.stop_btn)
 
         self.progress_bar = QProgressBar()
         self.status_label = QLabel("就绪")
@@ -150,7 +189,7 @@ class AudioMixTab(QWidget):
         layout.addWidget(clips_group)
         layout.addWidget(cover_group)
         layout.addWidget(output_group)
-        layout.addWidget(self.start_btn)
+        layout.addLayout(btn_row)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
 
@@ -234,6 +273,9 @@ class AudioMixTab(QWidget):
 
         self.save_config()
         self.start_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.stop_btn.setEnabled(True)
+        self.pause_btn.setText("暂停")
 
         config = {
             "media_dir": media_folder,
@@ -251,6 +293,25 @@ class AudioMixTab(QWidget):
         self.worker.error.connect(self.on_error)
         self.worker.start()
 
+    def toggle_pause(self):
+        if not self.worker:
+            return
+        if self.worker._paused:
+            self.worker.resume()
+            self.pause_btn.setText("暂停")
+            self.status_label.setText("继续处理中...")
+        else:
+            self.worker.pause()
+            self.pause_btn.setText("继续")
+            self.status_label.setText("已暂停")
+
+    def stop_mixing(self):
+        if self.worker:
+            self.worker.stop()
+            self.status_label.setText("正在停止...")
+            self.stop_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+
     def on_progress(self, current, total):
         progress = int((current / total) * 100) if total > 0 else 0
         self.progress_bar.setValue(progress)
@@ -258,10 +319,14 @@ class AudioMixTab(QWidget):
 
     def on_finished(self, results):
         self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
         self.status_label.setText("混剪完成")
         QMessageBox.information(self, "完成", f"已完成 {len(results)} 个混剪视频")
 
     def on_error(self, msg):
         self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
         self.status_label.setText("混剪失败")
         QMessageBox.critical(self, "错误", msg)

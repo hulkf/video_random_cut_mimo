@@ -92,7 +92,11 @@ class VideoMixer:
 
             idx = random.choice(available)
             clip = clip_files[idx]
-            clip_duration = self.get_duration(clip)
+            try:
+                clip_duration = self.get_duration(clip)
+            except Exception:
+                used_indices.add(idx)
+                continue
 
             if current_duration + clip_duration <= media_duration * 1.1:
                 selected_clips.append(clip)
@@ -118,8 +122,11 @@ class VideoMixer:
                         self.cover_duration_min, self.cover_duration_max
                     )
                     cover_path = os.path.join(tmp_dir, "cover.mp4")
-                    image_to_video(cover_img, cover_duration, cover_path)
-                    all_parts.append(cover_path)
+                    try:
+                        image_to_video(cover_img, cover_duration, cover_path)
+                        all_parts.append(cover_path)
+                    except Exception:
+                        cover_duration = 0
 
             video_only_dir = os.path.join(tmp_dir, "clips_no_audio")
             os.makedirs(video_only_dir, exist_ok=True)
@@ -129,9 +136,15 @@ class VideoMixer:
                     "ffmpeg", "-i", clip, "-an",
                     "-c", "copy", "-y", no_audio_path
                 ]
-                subprocess.run(cmd, capture_output=True,
-                               encoding="utf-8", errors="ignore", timeout=60)
-                all_parts.append(no_audio_path)
+                try:
+                    subprocess.run(cmd, capture_output=True,
+                                   encoding="utf-8", errors="ignore", timeout=30)
+                    all_parts.append(no_audio_path)
+                except subprocess.TimeoutExpired:
+                    continue
+
+            if not all_parts:
+                raise ValueError("No valid video parts to concatenate")
 
             tmp_video = os.path.join(tmp_dir, "concat.mp4")
             concat_videos(all_parts, tmp_video)
@@ -159,8 +172,12 @@ class VideoMixer:
             media_name = os.path.splitext(os.path.basename(media_path))[0]
             output_path = os.path.join(output_dir, f"{media_name}.mp4")
 
-            self.mix_videos(clips_dir, media_path, output_path)
-            results.append(output_path)
+            try:
+                self.mix_videos(clips_dir, media_path, output_path)
+                results.append(output_path)
+            except Exception as e:
+                print(f"[mixer] 跳过 {media_name}: {e}")
+                continue
 
             if callback:
                 callback(idx + 1, len(media_files))
