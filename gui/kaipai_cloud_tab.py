@@ -224,7 +224,6 @@ class KaipaiCloudTab(QWidget):
 
         result_group.setLayout(result_layout)
 
-        layout.addWidget(api_group)
         layout.addWidget(task_group)
         layout.addWidget(input_group)
         layout.addLayout(btn_layout)
