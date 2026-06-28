@@ -7,6 +7,7 @@ from gui.face_detection_tab import FaceDetectionTab
 from gui.screenshot_tab import ScreenshotTab
 from gui.subtitle_tab import SubtitleTab
 from gui.settings_tab import SettingsTab
+from gui.kaipai_cloud_tab import KaipaiCloudTab
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +26,7 @@ class MainWindow(QMainWindow):
         self.audio_mix_tab = AudioMixTab()
         self.video_mix_tab = VideoMixTab()
         self.subtitle_tab = SubtitleTab()
+        self.kaipai_cloud_tab = KaipaiCloudTab()
         self.settings_tab = SettingsTab(app)
         
         self.tabs.addTab(self.slice_tab, "视频切片")
@@ -34,4 +36,5 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.audio_mix_tab, "音频混剪")
         self.tabs.addTab(self.video_mix_tab, "视频混剪")
         self.tabs.addTab(self.subtitle_tab, "视频字幕")
+        self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
         self.tabs.addTab(self.settings_tab, "设置")
