@@ -1,0 +1,82 @@
+{
+  "slice": {
+    "folder": "D:/千川素材/1301/1301 增强 02",
+    "output": "D:/千川素材/1301/素材切片",
+    "min_duration": "3",
+    "max_duration": "5",
+    "separate_folders": "false"
+  },
+  "video_mix": {
+    "video_folder": "D:/千川素材/1301/1301 增强 02 无字幕",
+    "clips_folder": "D:/千川素材/1301/素材切片-无字幕",
+    "output_folder": "D:/千川素材/1301/1301 混剪结果",
+    "head_tail": "1",
+    "head_min": "3",
+    "head_max": "5",
+    "tail_min": "3",
+    "tail_max": "5",
+    "slice_count_min": "3",
+    "slice_count_max": "5",
+    "slice_duration_min": "3",
+    "slice_duration_max": "5",
+    "mode": "0",
+    "mix_count": "3",
+    "cover_enabled": "true",
+    "cover_folder": "D:/千川素材/1301/素材截图",
+    "cover_duration_min": "0.2",
+    "cover_duration_max": "0.5"
+  },
+  "test": {
+    "key": "value"
+  },
+  "audio_mix": {
+    "audio_folder": "",
+    "clips_folder": "D:/千川素材/1301/素材切片-无字幕",
+    "output_folder": "D:/千川素材/1301/1301 音频混剪结果",
+    "media_folder": "D:/千川素材/1301/音频素材",
+    "cover_enabled": "true",
+    "cover_folder": "D:/千川素材/1301/素材截图",
+    "cover_duration_min": "0.5",
+    "cover_duration_max": "1.0"
+  },
+  "text_recognition": {
+    "folder": "D:/千川素材/1301/素材切片-无字幕",
+    "keep_frames": false
+  },
+  "face_detection": {
+    "folder": "D:\\千川素材\\306 市场素材\\平铺素材切片",
+    "delete_face": "false",
+    "min_face_ratio": "2",
+    "sample_count": "8"
+  },
+  "screenshot": {
+    "folder": "D:/千川素材/1301/素材切片",
+    "output": "D:/千川素材/1301/素材截图",
+    "frame_count": "5",
+    "separate_folders": "false",
+    "delete_faces": "false",
+    "delete_face_videos": "false"
+  },
+  "subtitle": {
+    "folder": "D:/千川素材/306 市场素材/测试字母",
+    "output": "D:/千川素材/306 市场素材/测试字母",
+    "font": "SimHei",
+    "font_size": "10",
+    "color": "#FFFFFF",
+    "outline_color": "#000000",
+    "outline_width": "1",
+    "position": "下",
+    "model": "large-v3",
+    "model_path": "D:/Models/FireRed/fireredasr2-aed-large-zh-en-int8-onnx-selfcrosskv-offline-20260212",
+    "model_type": "FireRedASR",
+    "enable_correction": "false"
+  },
+  "settings": {
+    "theme": "dark_blue.xml",
+    "font_size": "10",
+    "whisper_model_dir": "D:/Models/whisper-models",
+    "fireredasr_model_path": "D:/Models/FireRed/fireredasr2-aed-large-zh-en-int8-onnx-selfcrosskv-offline-20260212",
+    "funasr_model_path": "D:/Models/FunASR/paraformer-large-zh-en-timestamp-onnx-offline",
+    "sensevoice_model_path": "D:/Models/SenseVoiceSmall"
+  }
+}

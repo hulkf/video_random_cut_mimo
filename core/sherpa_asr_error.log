@@ -1,0 +1,10 @@
+video: D:/千川素材/306 市场素材/测试字母\去水印-自动去文字-【20260614】-20260118向日暖棉内衣服饰甄选7596586727209209130老婆.mp4
+model: SenseVoice
+Traceback (most recent call last):
+  File "D:\JR_project\video_random_cut_mimo\core\sherpa_asr.py", line 488, in transcribe
+    sub_segments = self._split_subtitle(text, start_sec, end_sec, timestamps)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\JR_project\video_random_cut_mimo\core\sherpa_asr.py", line 366, in _split_subtitle
+    parts = re.split(r'([。！？!?；;，,、\n])', text)
+            ^^
+NameError: name 're' is not defined. Did you forget to import 're'
