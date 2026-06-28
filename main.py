@@ -6,6 +6,11 @@ import os
 logging.getLogger("qt_material").setLevel(logging.ERROR)
 logging.getLogger("root").setLevel(logging.ERROR)
 
+# Windows 任务栏图标修复
+if sys.platform == 'win32':
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('video_random_cut_mimo')
+
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QIcon
 from gui.main_window import MainWindow
@@ -25,6 +30,7 @@ def main():
     font_size = int(get_config("settings", "font_size", "10"))
     apply_theme_and_font(app, theme, font_size)
     window = MainWindow(app)
+    window.setWindowIcon(QIcon(icon_path))
     window.show()
     sys.exit(app.exec_())
 
