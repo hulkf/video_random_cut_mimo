@@ -71,13 +71,17 @@ def _probe_video_profile(path):
         "-show_entries", "stream=codec_name,width,height,pix_fmt,r_frame_rate",
         "-of", "json", path
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-    data = json.loads(result.stdout)
-    stream = data["streams"][0]
-    fps_str = stream.get("r_frame_rate", "30/1")
-    num, den = fps_str.split("/")
-    stream["r_frame_rate"] = float(num) / float(den)
-    return stream
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                errors="ignore", timeout=10)
+        data = json.loads(result.stdout)
+        stream = data["streams"][0]
+        fps_str = stream.get("r_frame_rate", "30/1")
+        num, den = fps_str.split("/")
+        stream["r_frame_rate"] = float(num) / float(den)
+        return stream
+    except (subprocess.TimeoutExpired, Exception):
+        return {"codec_name": "h264", "width": 1080, "height": 1920, "pix_fmt": "yuv420p", "r_frame_rate": 30.0}
 
 
 def _blur_pad_video(input_path, output_path, target_w, target_h):
@@ -96,7 +100,7 @@ def _blur_pad_video(input_path, output_path, target_w, target_h):
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-an", "-y", output_path
         ]
-        subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
+        subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=120)
         return output_path
 
     if src_ratio > target_ratio:
@@ -119,7 +123,7 @@ def _blur_pad_video(input_path, output_path, target_w, target_h):
         "-an", "-y", output_path
     ]
     result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                            errors="ignore", timeout=3600)
+                            errors="ignore", timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"blur pad failed: {result.stderr}")
     return output_path
@@ -138,7 +142,7 @@ def image_to_video(image_path, duration, output_path, target_w=1080, target_h=19
         "-of", "json", image_path
     ]
     result = subprocess.run(probe_cmd, capture_output=True, text=True,
-                            encoding="utf-8", errors="ignore")
+                            encoding="utf-8", errors="ignore", timeout=10)
     if result.returncode != 0 or not result.stdout:
         raise RuntimeError(f"Failed to probe image: {image_path}")
     
@@ -188,7 +192,7 @@ def image_to_video(image_path, duration, output_path, target_w=1080, target_h=19
         ]
     
     result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                            errors="ignore", timeout=3600)
+                            errors="ignore", timeout=60)
     if result.returncode != 0:
         raise RuntimeError(f"image_to_video failed: {result.stderr}")
     return output_path
@@ -203,28 +207,40 @@ def concat_videos(input_paths, output_path):
     if not input_paths:
         raise RuntimeError("No input paths")
 
-    ref = _probe_video_profile(input_paths[0])
+    try:
+        ref = _probe_video_profile(input_paths[0])
+    except Exception:
+        ref = {"width": 1080, "height": 1920, "r_frame_rate": 30.0}
     ref_w, ref_h = ref["width"], ref["height"]
     ref_fps = ref["r_frame_rate"]
 
     processed_paths = []
     tmp_dir = None
     for p in input_paths:
-        profile = _probe_video_profile(p)
-        src_w, src_h = profile["width"], profile["height"]
-        src_ratio = src_w / src_h
-        ref_ratio = ref_w / ref_h
+        try:
+            profile = _probe_video_profile(p)
+            src_w, src_h = profile["width"], profile["height"]
+            src_ratio = src_w / src_h
+            ref_ratio = ref_w / ref_h
 
-        if src_w == ref_w and src_h == ref_h:
-            processed_paths.append(p)
-        elif abs(src_ratio - ref_ratio) < 0.01:
-            processed_paths.append(p)
-        else:
-            if tmp_dir is None:
-                tmp_dir = tempfile.mkdtemp()
-            pad_path = os.path.join(tmp_dir, f"padded_{len(processed_paths)}.mp4")
-            _blur_pad_video(p, pad_path, ref_w, ref_h)
-            processed_paths.append(pad_path)
+            if src_w == ref_w and src_h == ref_h:
+                processed_paths.append(p)
+            elif abs(src_ratio - ref_ratio) < 0.01:
+                processed_paths.append(p)
+            else:
+                if tmp_dir is None:
+                    tmp_dir = tempfile.mkdtemp()
+                pad_path = os.path.join(tmp_dir, f"padded_{len(processed_paths)}.mp4")
+                try:
+                    _blur_pad_video(p, pad_path, ref_w, ref_h)
+                    processed_paths.append(pad_path)
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    if not processed_paths:
+        raise RuntimeError("No valid video paths to concatenate")
 
     try:
         cmd = ["ffmpeg"]
@@ -249,7 +265,7 @@ def concat_videos(input_paths, output_path):
         ])
 
         result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                                errors="ignore", timeout=3600)
+                                errors="ignore", timeout=300)
         if result.returncode != 0:
             raise RuntimeError(f"concat failed: {result.stderr}")
         return output_path
