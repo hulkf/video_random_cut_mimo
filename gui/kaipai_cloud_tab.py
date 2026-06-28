@@ -106,24 +106,9 @@ class KaipaiCloudTab(QWidget):
         layout.setSpacing(10)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        api_group = QGroupBox("API 配置")
-        api_layout = QHBoxLayout()
-        api_layout.setSpacing(8)
-
-        api_layout.addWidget(QLabel("API KEY:"))
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setPlaceholderText("输入 API KEY...")
-        self.api_key_input.setMinimumHeight(28)
-        api_layout.addWidget(self.api_key_input, 1)
-
-        api_layout.addWidget(QLabel("Secret Key:"))
-        self.secret_key_input = QLineEdit()
-        self.secret_key_input.setPlaceholderText("输入 Secret Key...")
-        self.secret_key_input.setEchoMode(QLineEdit.Password)
-        self.secret_key_input.setMinimumHeight(28)
-        api_layout.addWidget(self.secret_key_input, 1)
-
-        api_group.setLayout(api_layout)
+        api_hint = QLabel("API 配置请在「设置」Tab 中填写")
+        api_hint.setStyleSheet("color: gray; padding: 5px;")
+        layout.addWidget(api_hint)
 
         task_group = QGroupBox("任务设置")
         task_layout = QHBoxLayout()
@@ -221,16 +206,12 @@ class KaipaiCloudTab(QWidget):
         self.setLayout(layout)
 
     def load_config(self):
-        self.api_key_input.setText(get_config("kaipai", "api_key", ""))
-        self.secret_key_input.setText(get_config("kaipai", "secret_key", ""))
         task = get_config("kaipai", "last_task", "图片去水印")
         idx = self.task_combo.findText(task)
         if idx >= 0:
             self.task_combo.setCurrentIndex(idx)
 
     def save_config(self):
-        set_config("kaipai", "api_key", self.api_key_input.text())
-        set_config("kaipai", "secret_key", self.secret_key_input.text())
         set_config("kaipai", "last_task", self.task_combo.currentText())
 
     def browse_file(self):
@@ -251,13 +232,13 @@ class KaipaiCloudTab(QWidget):
         self.log_text.append(f"[{timestamp}] {msg}")
 
     def start_processing(self):
-        api_key = self.api_key_input.text()
-        secret_key = self.secret_key_input.text()
+        api_key = get_config("kaipai", "api_key", "")
+        secret_key = get_config("kaipai", "secret_key", "")
         input_path = self.file_input.text()
         task_name = self.task_combo.currentText()
 
         if not api_key or not secret_key:
-            QMessageBox.warning(self, "警告", "请填写 API KEY 和 Secret Key")
+            QMessageBox.warning(self, "警告", "请先在「设置」Tab 中配置 API KEY 和 Secret Key")
             return
 
         if not input_path:

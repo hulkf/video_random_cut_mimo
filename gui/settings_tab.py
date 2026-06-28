@@ -117,6 +117,37 @@ class SettingsTab(QWidget):
         save_row.addWidget(save_btn)
         path_layout.addLayout(save_row)
 
+        # ===== 开拍 API 配置 =====
+        kaipai_group = QGroupBox("开拍 API 配置")
+        kaipai_layout = QVBoxLayout()
+
+        kaipai_key_layout = QHBoxLayout()
+        kaipai_key_layout.addWidget(QLabel("API KEY:"))
+        self.kaipai_key_input = QLineEdit()
+        self.kaipai_key_input.setPlaceholderText("输入开拍 API KEY...")
+        self.kaipai_key_input.setMinimumHeight(28)
+        kaipai_key_layout.addWidget(self.kaipai_key_input, 1)
+        kaipai_layout.addLayout(kaipai_key_layout)
+
+        kaipai_secret_layout = QHBoxLayout()
+        kaipai_secret_layout.addWidget(QLabel("Secret Key:"))
+        self.kaipai_secret_input = QLineEdit()
+        self.kaipai_secret_input.setPlaceholderText("输入开拍 Secret Key...")
+        self.kaipai_secret_input.setEchoMode(QLineEdit.Password)
+        self.kaipai_secret_input.setMinimumHeight(28)
+        kaipai_secret_layout.addWidget(self.kaipai_secret_input, 1)
+        kaipai_layout.addLayout(kaipai_secret_layout)
+
+        kaipai_btn_layout = QHBoxLayout()
+        kaipai_save_btn = QPushButton("保存 API 配置")
+        kaipai_save_btn.setFixedWidth(120)
+        kaipai_save_btn.clicked.connect(self.save_kaipai_config)
+        kaipai_btn_layout.addStretch()
+        kaipai_btn_layout.addWidget(kaipai_save_btn)
+        kaipai_layout.addLayout(kaipai_btn_layout)
+
+        kaipai_group.setLayout(kaipai_layout)
+
         # ===== Whisper 模型下载 (折叠) =====
         whisper_group = QGroupBox("Whisper 模型下载")
         whisper_layout = QVBoxLayout()
@@ -180,6 +211,7 @@ class SettingsTab(QWidget):
         layout.addWidget(theme_group)
         layout.addWidget(font_group)
         layout.addWidget(path_group)
+        layout.addWidget(kaipai_group)
         layout.addWidget(whisper_group)
         layout.addStretch()
 
@@ -280,10 +312,18 @@ class SettingsTab(QWidget):
         self.model_dir_input.blockSignals(False)
         self.refresh_model_status()
 
+        self.kaipai_key_input.setText(get_config("kaipai", "api_key", ""))
+        self.kaipai_secret_input.setText(get_config("kaipai", "secret_key", ""))
+
     def save_config(self):
         set_config("settings", "fireredasr_model_path", self.fire_path_input.text())
         set_config("settings", "funasr_model_path", self.funasr_path_input.text())
         set_config("settings", "whisper_model_dir", self.model_dir_input.text())
+
+    def save_kaipai_config(self):
+        set_config("kaipai", "api_key", self.kaipai_key_input.text())
+        set_config("kaipai", "secret_key", self.kaipai_secret_input.text())
+        QMessageBox.information(self, "成功", "开拍 API 配置已保存")
 
     def on_theme_changed(self, theme):
         font_size = self.font_size_spin.value()
