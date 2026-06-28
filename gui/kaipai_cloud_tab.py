@@ -213,15 +213,40 @@ class KaipaiCloudTab(QWidget):
 
         self.result_table = QTableWidget()
         self.result_table.setColumnCount(4)
-        self.result_table.setHorizontalHeaderLabels(["文件", "状态", "任务ID", "输出URL"])
+        self.result_table.setHorizontalHeaderLabels(["文件", "状态", "输出URL", "操作"])
         self.result_table.setMinimumHeight(150)
         self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.result_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.result_table.horizontalHeader().setStretchLastSection(True)
         self.result_table.setColumnWidth(0, 200)
         self.result_table.setColumnWidth(1, 60)
-        self.result_table.setColumnWidth(2, 280)
+        self.result_table.setColumnWidth(2, 350)
         result_layout.addWidget(self.result_table)
 
+        btn_row = QHBoxLayout()
+        self.download_selected_btn = QPushButton("下载选中")
+        self.download_selected_btn.setMinimumHeight(32)
+        self.download_selected_btn.setEnabled(False)
+        self.download_selected_btn.clicked.connect(self.download_selected)
+        btn_row.addWidget(self.download_selected_btn)
+
+        self.download_all_btn = QPushButton("下载全部")
+        self.download_all_btn.setMinimumHeight(32)
+        self.download_all_btn.setEnabled(False)
+        self.download_all_btn.clicked.connect(self.download_all)
+        btn_row.addWidget(self.download_all_btn)
+
+        self.output_folder_input = QLineEdit()
+        self.output_folder_input.setPlaceholderText("下载保存目录...")
+        self.output_folder_input.setMinimumHeight(28)
+        btn_row.addWidget(self.output_folder_input, 1)
+
+        output_folder_btn = QPushButton("选择目录")
+        output_folder_btn.setFixedWidth(80)
+        output_folder_btn.clicked.connect(self.browse_output_folder)
+        btn_row.addWidget(output_folder_btn)
+
+        result_layout.addLayout(btn_row)
         result_group.setLayout(result_layout)
 
         layout.addWidget(task_group)
@@ -400,11 +425,112 @@ class KaipaiCloudTab(QWidget):
                 status_item.setForeground(QColor("white"))
             self.result_table.setItem(i, 1, status_item)
 
-            self.result_table.setItem(i, 2, QTableWidgetItem(r.get("task_id", "")))
-            self.result_table.setItem(i, 3, QTableWidgetItem(r.get("output_url", "")))
+            url = r.get("output_url", "")
+            self.result_table.setItem(i, 2, QTableWidgetItem(url))
+
+            if url:
+                download_btn = QPushButton("下载")
+                download_btn.setFixedHeight(24)
+                download_btn.clicked.connect(lambda checked, u=url, f=r["file"]: self.download_single(u, f))
+                self.result_table.setCellWidget(i, 3, download_btn)
+            else:
+                self.result_table.setItem(i, 3, QTableWidgetItem(""))
 
         success_count = sum(1 for r in results if r["status"] == "成功")
         self.log_message(f"处理完成: 成功 {success_count}/{len(results)}")
+
+        self.download_selected_btn.setEnabled(success_count > 0)
+        self.download_all_btn.setEnabled(success_count > 0)
+
+    def browse_output_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择下载保存目录")
+        if folder:
+            self.output_folder_input.setText(folder)
+
+    def download_single(self, url, filename):
+        import requests
+        save_dir = self.output_folder_input.text()
+        if not save_dir:
+            save_dir = QFileDialog.getExistingDirectory(self, "选择下载保存目录")
+            if save_dir:
+                self.output_folder_input.setText(save_dir)
+            else:
+                return
+
+        self.log_message(f"下载: {filename}")
+        try:
+            save_path = os.path.join(save_dir, filename)
+            response = requests.get(url, timeout=120)
+            response.raise_for_status()
+            with open(save_path, "wb") as f:
+                f.write(response.content)
+            self.log_message(f"  ✓ 已保存: {save_path}")
+        except Exception as e:
+            self.log_message(f"  ✗ 下载失败: {e}")
+
+    def download_selected(self):
+        selected_rows = set()
+        for item in self.result_table.selectedItems():
+            selected_rows.add(item.row())
+
+        if not selected_rows:
+            QMessageBox.warning(self, "警告", "请先选中要下载的文件")
+            return
+
+        urls = []
+        for row in selected_rows:
+            url_item = self.result_table.item(row, 2)
+            file_item = self.result_table.item(row, 0)
+            if url_item and url_item.text():
+                urls.append((url_item.text(), file_item.text()))
+
+        if not urls:
+            QMessageBox.warning(self, "警告", "选中的文件没有输出URL")
+            return
+
+        self._download_batch(urls)
+
+    def download_all(self):
+        urls = []
+        for r in self.results:
+            if r.get("output_url") and r["status"] == "成功":
+                urls.append((r["output_url"], r["file"]))
+
+        if not urls:
+            QMessageBox.warning(self, "警告", "没有可下载的文件")
+            return
+
+        self._download_batch(urls)
+
+    def _download_batch(self, urls):
+        import requests
+        save_dir = self.output_folder_input.text()
+        if not save_dir:
+            save_dir = QFileDialog.getExistingDirectory(self, "选择下载保存目录")
+            if save_dir:
+                self.output_folder_input.setText(save_dir)
+            else:
+                return
+
+        self.log_message(f"开始批量下载 {len(urls)} 个文件到: {save_dir}")
+        success_count = 0
+        fail_count = 0
+
+        for url, filename in urls:
+            try:
+                save_path = os.path.join(save_dir, filename)
+                response = requests.get(url, timeout=120)
+                response.raise_for_status()
+                with open(save_path, "wb") as f:
+                    f.write(response.content)
+                success_count += 1
+                self.log_message(f"  ✓ {filename}")
+            except Exception as e:
+                fail_count += 1
+                self.log_message(f"  ✗ {filename}: {e}")
+
+        self.log_message(f"下载完成: 成功 {success_count}, 失败 {fail_count}")
+        QMessageBox.information(self, "下载完成", f"成功 {success_count} 个，失败 {fail_count} 个")
 
     def on_error(self, msg):
         self.start_btn.setEnabled(True)
