@@ -32,10 +32,11 @@ class KaipaiWorker(QThread):
         "视频画质修复": "hdvideoallinone",
     }
 
-    def __init__(self, files, task_name):
+    def __init__(self, files, task_name, params=None):
         super().__init__()
         self.files = files
         self.task_name = task_name
+        self.params = params or {}
         self._stop = False
 
     def stop(self):
@@ -61,7 +62,8 @@ class KaipaiWorker(QThread):
                 try:
                     result = client.execute(
                         task_name=self.task_name,
-                        source=file_path
+                        source=file_path,
+                        params=self.params if self.params else None
                     )
 
                     output_urls = result.get("output_urls", [])
@@ -111,15 +113,43 @@ class KaipaiCloudTab(QWidget):
         layout.addWidget(api_hint)
 
         task_group = QGroupBox("任务设置")
-        task_layout = QHBoxLayout()
-        task_layout.setSpacing(8)
+        task_layout = QVBoxLayout()
 
-        task_layout.addWidget(QLabel("处理功能:"))
+        task_row = QHBoxLayout()
+        task_row.setSpacing(8)
+        task_row.addWidget(QLabel("处理功能:"))
         self.task_combo = QComboBox()
         self.task_combo.addItems(["图片去水印", "图片画质修复", "视频智能全消", "视频画质修复"])
         self.task_combo.setMinimumHeight(28)
-        task_layout.addWidget(self.task_combo)
+        self.task_combo.currentTextChanged.connect(self.on_task_changed)
+        task_row.addWidget(self.task_combo)
+        task_layout.addLayout(task_row)
 
+        params_layout = QHBoxLayout()
+        params_layout.setSpacing(8)
+
+        params_layout.addWidget(QLabel("消除目标:"))
+        self.target_combo = QComboBox()
+        self.target_combo.addItems(["watermark", "text", "logo"])
+        self.target_combo.setMinimumHeight(28)
+        self.target_combo.setToolTip("图片去水印：选择要消除的目标类型")
+        params_layout.addWidget(self.target_combo)
+
+        params_layout.addWidget(QLabel("修复模式:"))
+        self.ir_mode_combo = QComboBox()
+        self.ir_mode_combo.addItems(["4", "1", "2", "3"])
+        self.ir_mode_combo.setMinimumHeight(28)
+        self.ir_mode_combo.setToolTip("图片画质修复：选择修复强度模式")
+        params_layout.addWidget(self.ir_mode_combo)
+
+        params_layout.addWidget(QLabel("切片方式:"))
+        self.slice_way_combo = QComboBox()
+        self.slice_way_combo.addItems(["1", "2"])
+        self.slice_way_combo.setMinimumHeight(28)
+        self.slice_way_combo.setToolTip("视频智能全消：选择视频切片处理方式")
+        params_layout.addWidget(self.slice_way_combo)
+
+        task_layout.addLayout(params_layout)
         task_group.setLayout(task_layout)
 
         input_group = QGroupBox("输入设置")
@@ -214,6 +244,11 @@ class KaipaiCloudTab(QWidget):
     def save_config(self):
         set_config("kaipai", "last_task", self.task_combo.currentText())
 
+    def on_task_changed(self, task_name):
+        self.target_combo.setVisible(task_name == "图片去水印")
+        self.ir_mode_combo.setVisible(task_name == "图片画质修复")
+        self.slice_way_combo.setVisible(task_name == "视频智能全消")
+
     def browse_file(self):
         file, _ = QFileDialog.getOpenFileName(
             self, "选择文件", "",
@@ -252,18 +287,34 @@ class KaipaiCloudTab(QWidget):
             QMessageBox.warning(self, "警告", "未找到可处理的文件")
             return
 
+        params = self._build_params(task_name)
         self.log_message(f"开始处理 {len(files)} 个文件，任务: {task_name}")
+        if params:
+            self.log_message(f"自定义参数: {params}")
 
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.progress_bar.setValue(0)
 
-        self.worker = KaipaiWorker(files, task_name)
+        self.worker = KaipaiWorker(files, task_name, params)
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.log.connect(self.log_message)
         self.worker.start()
+
+    def _build_params(self, task_name):
+        params = {}
+        if task_name == "图片去水印":
+            target = self.target_combo.currentText()
+            params = {"parameter": {"target": target}}
+        elif task_name == "图片画质修复":
+            ir_mode = int(self.ir_mode_combo.currentText())
+            params = {"parameter": {"ir_mode": ir_mode}}
+        elif task_name == "视频智能全消":
+            slice_way = int(self.slice_way_combo.currentText())
+            params = {"extra": {"slice_way": slice_way}}
+        return params
 
     def _collect_files(self, input_path, task_name):
         if os.path.isfile(input_path):
