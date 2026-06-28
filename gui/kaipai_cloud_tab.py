@@ -60,8 +60,9 @@ class KaipaiWorker(QThread):
                 self.log.emit(f"[{idx+1}/{total}] 处理: {file_name}")
 
                 try:
+                    api_task_name = self.TASK_MAP.get(self.task_name, self.task_name)
                     result = client.execute(
-                        task_name=self.task_name,
+                        task_name=api_task_name,
                         source=file_path,
                         params=self.params if self.params else None
                     )
@@ -248,10 +249,15 @@ class KaipaiCloudTab(QWidget):
         self.slice_way_combo.setVisible(task_name == "视频智能全消")
 
     def browse(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择文件", "",
-            "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp);;视频文件 (*.mp4 *.avi *.mov *.mkv *.flv);;所有文件 (*)"
-        )
+        task_name = self.task_combo.currentText()
+        is_video_task = "视频" in task_name
+
+        if is_video_task:
+            filter_str = "视频文件 (*.mp4 *.avi *.mov *.mkv *.flv);;所有文件 (*)"
+        else:
+            filter_str = "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp);;所有文件 (*)"
+
+        path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", filter_str)
         if not path:
             path = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if path:
