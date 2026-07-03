@@ -5,6 +5,7 @@ from gui.text_recognition_tab import TextRecognitionTab
 from gui.audio_mix_tab import AudioMixTab
 from gui.video_mix_tab import VideoMixTab
 from gui.video_concat_tab import VideoConcatTab
+from gui.video_resize_tab import VideoResizeTab
 from gui.face_detection_tab import FaceDetectionTab
 from gui.screenshot_tab import ScreenshotTab
 from gui.subtitle_tab import SubtitleTab
@@ -121,6 +122,7 @@ class MainWindow(QMainWindow):
         self.audio_mix_tab = AudioMixTab()
         self.video_mix_tab = VideoMixTab()
         self.video_concat_tab = VideoConcatTab()
+        self.video_resize_tab = VideoResizeTab()
         self.subtitle_tab = SubtitleTab()
         self.kaipai_cloud_tab = KaipaiCloudTab()
         self.settings_tab = SettingsTab(app)
@@ -132,6 +134,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.audio_mix_tab, "音频混剪")
         self.tabs.addTab(self.video_mix_tab, "视频混剪")
         self.tabs.addTab(self.video_concat_tab, "视频拼接")
+        self.tabs.addTab(self.video_resize_tab, "视频尺寸")
         self.tabs.addTab(self.subtitle_tab, "视频字幕")
         self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
         self.tabs.addTab(self.settings_tab, "设置")
