@@ -33,6 +33,10 @@ QCheckBox {
     min-height: 26px;
     spacing: 8px;
 }
+QRadioButton {
+    min-height: 26px;
+    spacing: 8px;
+}
 
 /* ===== GroupBox 内边距 ===== */
 QGroupBox {
@@ -69,6 +73,31 @@ QCheckBox::indicator:disabled {
 }
 """
 
+RADIOBUTTON_QSS = """
+QRadioButton {
+    color: #f0f0f0;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #d0d0d0;
+    border-radius: 8px;
+    background-color: #252525;
+}
+QRadioButton::indicator:hover {
+    border-color: #ffffff;
+    background-color: #333333;
+}
+QRadioButton::indicator:checked {
+    border: 2px solid #ffffff;
+    background-color: #26a69a;
+}
+QRadioButton::indicator:disabled {
+    border-color: #666666;
+    background-color: #3a3a3a;
+}
+"""
+
 
 def build_extra_qss(font_size):
     """根据字体大小生成附加 QSS。"""
@@ -79,6 +108,7 @@ QWidget {{
 }}
 {FIX_LAYOUT_QSS}
 {CHECKBOX_QSS}
+{RADIOBUTTON_QSS}
 """
 
 

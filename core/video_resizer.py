@@ -11,6 +11,8 @@ SIZE_PRESETS = {
     "1:1": (1080, 1080),
 }
 
+BLUR_BG_SCALE = 0.25
+
 
 def collect_videos(folder_path):
     videos = []
@@ -58,6 +60,8 @@ class VideoResizer:
         src_width, src_height = probe_video(video_path)
         src_ratio = src_width / src_height
         target_ratio = self.target_width / self.target_height
+        blur_width = max(2, int(self.target_width * BLUR_BG_SCALE))
+        blur_height = max(2, int(self.target_height * BLUR_BG_SCALE))
 
         if abs(src_ratio - target_ratio) < 0.01:
             return "simple", f"scale={self.target_width}:{self.target_height},setsar=1"
@@ -70,8 +74,9 @@ class VideoResizer:
 
         return "complex", (
             "[0:v]scale="
-            f"{self.target_width}:{self.target_height}:force_original_aspect_ratio=increase,"
-            f"crop={self.target_width}:{self.target_height},boxblur=20:5[bg];"
+            f"{blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+            f"crop={blur_width}:{blur_height},boxblur=12:3,"
+            f"scale={self.target_width}:{self.target_height}[bg];"
             "[0:v]scale="
             f"{self.target_width}:{self.target_height}:force_original_aspect_ratio=decrease[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
