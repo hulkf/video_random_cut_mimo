@@ -1,6 +1,5 @@
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QApplication
-from PyQt5.QtCore import Qt, pyqtSignal, QMimeData
-from PyQt5.QtGui import QDrag
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame
+from PyQt5.QtCore import Qt, pyqtSignal
 from gui.slice_tab import SliceTab
 from gui.text_recognition_tab import TextRecognitionTab
 from gui.audio_mix_tab import AudioMixTab
@@ -12,57 +11,6 @@ from gui.screenshot_tab import ScreenshotTab
 from gui.subtitle_tab import SubtitleTab
 from gui.settings_tab import SettingsTab
 from gui.kaipai_cloud_tab import KaipaiCloudTab
-from gui.config import get_config, set_config
-
-
-TAB_DRAG_MIME = "application/x-video-random-cut-tab"
-
-
-class DraggableTabButton(QPushButton):
-    def __init__(self, title, tab_widget):
-        super().__init__(title)
-        self.tab_widget = tab_widget
-        self._drag_start_pos = None
-        self.setAcceptDrops(True)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_start_pos = event.pos()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if not (event.buttons() & Qt.LeftButton) or self._drag_start_pos is None:
-            super().mouseMoveEvent(event)
-            return
-        distance = (event.pos() - self._drag_start_pos).manhattanLength()
-        if distance < QApplication.startDragDistance():
-            super().mouseMoveEvent(event)
-            return
-
-        source_index = self.tab_widget.button_index(self)
-        if source_index < 0:
-            return
-
-        drag = QDrag(self)
-        mime = QMimeData()
-        mime.setData(TAB_DRAG_MIME, str(source_index).encode("utf-8"))
-        drag.setMimeData(mime)
-        drag.exec_(Qt.MoveAction)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(TAB_DRAG_MIME):
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-    def dropEvent(self, event):
-        if not event.mimeData().hasFormat(TAB_DRAG_MIME):
-            event.ignore()
-            return
-        source_index = int(bytes(event.mimeData().data(TAB_DRAG_MIME)).decode("utf-8"))
-        target_index = self.tab_widget.button_index(self)
-        self.tab_widget.moveTab(source_index, target_index)
-        event.acceptProposedAction()
 
 
 class WrapTabWidget(QWidget):
@@ -105,7 +53,7 @@ class WrapTabWidget(QWidget):
         widget.hide()
         self.content_layout.addWidget(widget)
 
-        btn = DraggableTabButton(title, self)
+        btn = QPushButton(title)
         btn.setCheckable(True)
         btn.setMinimumHeight(32)
         btn.setStyleSheet("""
@@ -125,7 +73,7 @@ class WrapTabWidget(QWidget):
                 background-color: #484848;
             }
         """)
-        btn.clicked.connect(lambda checked, b=btn: self.setCurrentIndex(self.button_index(b)))
+        btn.clicked.connect(lambda checked, i=idx: self.setCurrentIndex(i))
         self.buttons.append(btn)
 
         # 插入到stretch前面
@@ -151,82 +99,6 @@ class WrapTabWidget(QWidget):
 
     def currentIndex(self):
         return self.current_index
-
-    def button_index(self, button):
-        try:
-            return self.buttons.index(button)
-        except ValueError:
-            return -1
-
-    def moveTab(self, source_idx, target_idx):
-        if source_idx < 0 or target_idx < 0:
-            return
-        if source_idx >= len(self.tabs) or target_idx >= len(self.tabs):
-            return
-        if source_idx == target_idx:
-            return
-
-        current_widget = None
-        if 0 <= self.current_index < len(self.tabs):
-            current_widget = self.tabs[self.current_index]
-
-        tab = self.tabs.pop(source_idx)
-        button = self.buttons.pop(source_idx)
-        self.tabs.insert(target_idx, tab)
-        self.buttons.insert(target_idx, button)
-
-        for btn in self.buttons:
-            self.tab_bar_layout.removeWidget(btn)
-        for idx, btn in enumerate(self.buttons):
-            self.tab_bar_layout.insertWidget(idx, btn)
-
-        if current_widget is not None:
-            self.current_index = self.tabs.index(current_widget)
-        for idx, btn in enumerate(self.buttons):
-            btn.setChecked(idx == self.current_index)
-        self.saveTabOrder()
-
-    def saveTabOrder(self):
-        set_config("main_window", "tab_order", [btn.text() for btn in self.buttons])
-
-    def applySavedOrder(self):
-        saved_order = get_config("main_window", "tab_order", [])
-        if not isinstance(saved_order, list):
-            return
-
-        current_widget = None
-        if 0 <= self.current_index < len(self.tabs):
-            current_widget = self.tabs[self.current_index]
-
-        title_to_items = {
-            button.text(): (tab, button)
-            for tab, button in zip(self.tabs, self.buttons)
-        }
-        ordered_items = []
-        used_titles = set()
-        for title in saved_order:
-            if title in title_to_items:
-                ordered_items.append(title_to_items[title])
-                used_titles.add(title)
-        for tab, button in zip(self.tabs, self.buttons):
-            if button.text() not in used_titles:
-                ordered_items.append((tab, button))
-
-        if len(ordered_items) != len(self.tabs):
-            return
-
-        self.tabs = [item[0] for item in ordered_items]
-        self.buttons = [item[1] for item in ordered_items]
-
-        for btn in self.buttons:
-            self.tab_bar_layout.removeWidget(btn)
-        for idx, btn in enumerate(self.buttons):
-            self.tab_bar_layout.insertWidget(idx, btn)
-
-        if current_widget is not None:
-            self.current_index = self.tabs.index(current_widget)
-        for idx, btn in enumerate(self.buttons):
-            btn.setChecked(idx == self.current_index)
 
 
 class MainWindow(QMainWindow):
@@ -261,4 +133,3 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.subtitle_tab, "视频字幕")
         self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
         self.tabs.addTab(self.settings_tab, "设置")
-        self.tabs.applySavedOrder()
