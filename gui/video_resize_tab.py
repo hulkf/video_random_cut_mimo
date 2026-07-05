@@ -4,13 +4,13 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog, QProgressBar,
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QRadioButton, QButtonGroup
+    QHeaderView, QRadioButton, QButtonGroup, QSlider
 )
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from core.video_resizer import (
     VideoResizer, collect_videos, matches_target_size,
-    PIPELINE_9X16_TO_3X4_TO_9X16, SIZE_PRESETS
+    DEFAULT_BLUR_STRENGTH, PIPELINE_9X16_TO_3X4_TO_9X16, SIZE_PRESETS
 )
 from gui.config import get_config, set_config
 
@@ -21,12 +21,13 @@ class VideoResizeWorker(QThread):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, input_folder, output_folder, target_ratio, process_mode):
+    def __init__(self, input_folder, output_folder, target_ratio, process_mode, blur_strength):
         super().__init__()
         self.input_folder = input_folder
         self.output_folder = output_folder
         self.target_ratio = target_ratio
         self.process_mode = process_mode
+        self.blur_strength = blur_strength
 
     def run(self):
         try:
@@ -34,7 +35,7 @@ class VideoResizeWorker(QThread):
             if len(videos) == 0:
                 raise ValueError("输入文件夹中没有找到视频文件")
 
-            engine = VideoResizer(self.target_ratio)
+            engine = VideoResizer(self.target_ratio, self.blur_strength)
             if self.process_mode == "mismatched":
                 videos = [
                     video_path for video_path in videos
@@ -136,6 +137,22 @@ class VideoResizeTab(QWidget):
         size_layout.addStretch()
         size_group.setLayout(size_layout)
 
+        blur_group = QGroupBox("模糊填充")
+        blur_layout = QHBoxLayout()
+        blur_layout.setSpacing(8)
+        blur_layout.addWidget(QLabel("模糊程度:"))
+        self.blur_slider = QSlider(Qt.Horizontal)
+        self.blur_slider.setRange(1, 20)
+        self.blur_slider.setValue(DEFAULT_BLUR_STRENGTH)
+        self.blur_slider.setTickPosition(QSlider.TicksBelow)
+        self.blur_slider.setTickInterval(1)
+        self.blur_slider.valueChanged.connect(self.on_blur_changed)
+        blur_layout.addWidget(self.blur_slider, 1)
+        self.blur_value_label = QLabel("")
+        self.blur_value_label.setMinimumWidth(70)
+        blur_layout.addWidget(self.blur_value_label)
+        blur_group.setLayout(blur_layout)
+
         mode_group = QGroupBox("处理范围")
         mode_layout = QHBoxLayout()
         mode_layout.setSpacing(8)
@@ -190,6 +207,7 @@ class VideoResizeTab(QWidget):
 
         layout.addWidget(input_group)
         layout.addWidget(size_group)
+        layout.addWidget(blur_group)
         layout.addWidget(mode_group)
         layout.addWidget(self.start_btn)
         layout.addWidget(progress_group)
@@ -202,14 +220,17 @@ class VideoResizeTab(QWidget):
         self.output_folder.setText(get_config("video_resize", "output_folder", ""))
         ratio = get_config("video_resize", "ratio", "9:16")
         self.ratio_buttons.get(ratio, self.ratio_buttons["9:16"]).setChecked(True)
+        self.blur_slider.setValue(int(get_config("video_resize", "blur_strength", str(DEFAULT_BLUR_STRENGTH))))
         process_mode = get_config("video_resize", "process_mode", "all")
         self.mode_buttons.get(process_mode, self.mode_buttons["all"]).setChecked(True)
         self.on_ratio_changed(self.current_ratio())
+        self.on_blur_changed(self.blur_slider.value())
 
     def save_config(self):
         set_config("video_resize", "input_folder", self.input_folder.text())
         set_config("video_resize", "output_folder", self.output_folder.text())
         set_config("video_resize", "ratio", self.current_ratio())
+        set_config("video_resize", "blur_strength", str(self.blur_slider.value()))
         set_config("video_resize", "process_mode", self.current_process_mode())
 
     def on_ratio_changed(self, ratio):
@@ -222,6 +243,9 @@ class VideoResizeTab(QWidget):
 
     def on_ratio_toggled(self):
         self.on_ratio_changed(self.current_ratio())
+
+    def on_blur_changed(self, value):
+        self.blur_value_label.setText(str(value))
 
     def current_ratio(self):
         for ratio, button in self.ratio_buttons.items():
@@ -252,6 +276,7 @@ class VideoResizeTab(QWidget):
         output_folder = self.output_folder.text()
         ratio = self.current_ratio()
         process_mode = self.current_process_mode()
+        blur_strength = self.blur_slider.value()
 
         if not input_folder or not output_folder:
             QMessageBox.warning(self, "警告", "请选择输入和输出文件夹")
@@ -268,7 +293,7 @@ class VideoResizeTab(QWidget):
         self.status_label.setText("准备处理...")
         self.start_btn.setEnabled(False)
 
-        self.worker = VideoResizeWorker(input_folder, output_folder, ratio, process_mode)
+        self.worker = VideoResizeWorker(input_folder, output_folder, ratio, process_mode, blur_strength)
         self.worker.progress.connect(self.on_progress)
         self.worker.video_done.connect(self.on_video_done)
         self.worker.finished.connect(self.on_finished)

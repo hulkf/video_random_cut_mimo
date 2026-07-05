@@ -13,6 +13,7 @@ SIZE_PRESETS = {
 
 PIPELINE_9X16_TO_3X4_TO_9X16 = "9:16->3:4->9:16"
 BLUR_BG_SCALE = 0.25
+DEFAULT_BLUR_STRENGTH = 6
 
 
 def collect_videos(folder_path):
@@ -53,14 +54,19 @@ def matches_target_size(video_path, target_ratio):
 
 
 class VideoResizer:
-    def __init__(self, target_ratio="9:16"):
+    def __init__(self, target_ratio="9:16", blur_strength=DEFAULT_BLUR_STRENGTH):
         if target_ratio not in SIZE_PRESETS and target_ratio != PIPELINE_9X16_TO_3X4_TO_9X16:
             raise ValueError(f"Unsupported target ratio: {target_ratio}")
         self.target_ratio = target_ratio
+        self.blur_strength = max(1, int(blur_strength))
         if target_ratio == PIPELINE_9X16_TO_3X4_TO_9X16:
             self.target_width, self.target_height = SIZE_PRESETS["9:16"]
         else:
             self.target_width, self.target_height = SIZE_PRESETS[target_ratio]
+
+    def blur_filter(self):
+        passes = 2 if self.blur_strength <= 10 else 3
+        return f"boxblur={self.blur_strength}:{passes}"
 
     def build_pipeline_filter(self):
         bg_width = max(2, int(self.target_width * BLUR_BG_SCALE))
@@ -72,7 +78,7 @@ class VideoResizer:
             f"crop={mid_width}:{mid_height},split[bg_src][fg_src];"
             "[bg_src]"
             f"scale={bg_width}:{bg_height}:force_original_aspect_ratio=increase,"
-            f"crop={bg_width}:{bg_height},boxblur=12:3,"
+            f"crop={bg_width}:{bg_height},{self.blur_filter()},"
             f"scale={self.target_width}:{self.target_height}[bg];"
             "[fg_src]"
             f"scale={self.target_width}:{self.target_height}:force_original_aspect_ratio=decrease[fg];"
@@ -101,7 +107,7 @@ class VideoResizer:
         return "complex", (
             "[0:v]scale="
             f"{blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
-            f"crop={blur_width}:{blur_height},boxblur=12:3,"
+            f"crop={blur_width}:{blur_height},{self.blur_filter()},"
             f"scale={self.target_width}:{self.target_height}[bg];"
             "[0:v]scale="
             f"{self.target_width}:{self.target_height}:force_original_aspect_ratio=decrease[fg];"
