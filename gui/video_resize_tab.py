@@ -9,7 +9,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from core.video_resizer import (
-    VideoResizer, collect_videos, matches_target_size, SIZE_PRESETS
+    VideoResizer, collect_videos, matches_target_size,
+    PIPELINE_9X16_TO_3X4_TO_9X16, SIZE_PRESETS
 )
 from gui.config import get_config, set_config
 
@@ -70,6 +71,8 @@ class VideoResizeWorker(QThread):
 def engine_target_rel_path(video_path, input_folder, target_ratio):
     rel_path = os.path.relpath(video_path, input_folder)
     rel_base, _ = os.path.splitext(rel_path)
+    if target_ratio == PIPELINE_9X16_TO_3X4_TO_9X16:
+        return f"{rel_base}_9x16_to_3x4_to_9x16.mp4"
     return f"{rel_base}_{target_ratio.replace(':', 'x')}.mp4"
 
 
@@ -120,7 +123,7 @@ class VideoResizeTab(QWidget):
         size_layout.addWidget(QLabel("目标比例:"))
         self.ratio_group = QButtonGroup(self)
         self.ratio_buttons = {}
-        for ratio in ["9:16", "3:4", "1:1"]:
+        for ratio in ["9:16", "3:4", "1:1", PIPELINE_9X16_TO_3X4_TO_9X16]:
             radio = QRadioButton(ratio)
             radio.setMinimumHeight(28)
             radio.toggled.connect(self.on_ratio_toggled)
@@ -179,6 +182,7 @@ class VideoResizeTab(QWidget):
 
         hint = QLabel(
             "处理规则：源视频更高更窄时裁剪上下保留中间；源视频更矮更宽时使用上下模糊填充。"
+            "“9:16->3:4->9:16”会先裁成3:4，再上下模糊填充回9:16。"
             "会递归处理子文件夹中的视频，并在输出目录保留原有子文件夹结构。"
         )
         hint.setWordWrap(True)
@@ -209,6 +213,10 @@ class VideoResizeTab(QWidget):
         set_config("video_resize", "process_mode", self.current_process_mode())
 
     def on_ratio_changed(self, ratio):
+        if ratio == PIPELINE_9X16_TO_3X4_TO_9X16:
+            width, height = SIZE_PRESETS["9:16"]
+            self.size_label.setText(f"输出尺寸: {width} x {height}，中间画面: 3:4")
+            return
         width, height = SIZE_PRESETS[ratio]
         self.size_label.setText(f"输出尺寸: {width} x {height}")
 
