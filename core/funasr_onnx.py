@@ -258,12 +258,18 @@ class FunASR_ONNX:
         MIN_PAUSE_MS = 800
         segments = []
         cur_tokens = []
+        cur_token_items = []
         cur_start = timestamps_ms[0][0]
 
         for i, (token, (st, et)) in enumerate(zip(tokens, timestamps_ms)):
             if not cur_tokens:
                 cur_start = st
             cur_tokens.append(token)
+            cur_token_items.append({
+                "text": token,
+                "start": round(st / 1000, 3),
+                "end": round(et / 1000, 3),
+            })
 
             # 判断是否需要切分
             cur_duration_sec = (et - cur_start) / 1000
@@ -279,9 +285,11 @@ class FunASR_ONNX:
                     segments.append({
                         "start": round(cur_start / 1000, 3),
                         "end": round(et / 1000, 3),
-                        "text": seg_text
+                        "text": seg_text,
+                        "tokens": cur_token_items,
                     })
                 cur_tokens = []
+                cur_token_items = []
 
         if cur_tokens:
             seg_text = self._tokens_to_text(cur_tokens).strip()
@@ -289,7 +297,8 @@ class FunASR_ONNX:
                 segments.append({
                     "start": round(cur_start / 1000, 3),
                     "end": round(timestamps_ms[-1][1] / 1000, 3),
-                    "text": seg_text
+                    "text": seg_text,
+                    "tokens": cur_token_items,
                 })
 
         return segments

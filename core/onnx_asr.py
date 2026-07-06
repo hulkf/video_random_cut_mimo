@@ -261,11 +261,14 @@ class OnnxASR:
                 # 标点清理（不二次切分，保留引擎原始时间戳）
                 text = self._clean_punctuation(text)
 
-                results.append({
+                result = {
                     "start": seg["start"],
                     "end": seg["end"],
                     "text": text,
-                })
+                }
+                if seg.get("tokens"):
+                    result["tokens"] = seg["tokens"]
+                results.append(result)
 
             return results
         except Exception:

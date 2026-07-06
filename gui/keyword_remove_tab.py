@@ -24,13 +24,15 @@ class KeywordRemoveWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, input_folder, output_folder, keywords,
-                 padding, match_mode, model_type, model_path):
+                 padding, match_mode, estimate_min_duration,
+                 model_type, model_path):
         super().__init__()
         self.input_folder = input_folder
         self.output_folder = output_folder
         self.keywords = keywords
         self.padding = padding
         self.match_mode = match_mode
+        self.estimate_min_duration = estimate_min_duration
         self.model_type = model_type
         self.model_path = model_path
         self._cancelled = False
@@ -47,7 +49,12 @@ class KeywordRemoveWorker(QThread):
             os.makedirs(self.output_folder, exist_ok=True)
             from core.onnx_asr import OnnxASR
             asr = OnnxASR(self.model_path, self.model_type)
-            remover = KeywordRemover(self.keywords, self.padding, self.match_mode)
+            remover = KeywordRemover(
+                self.keywords,
+                self.padding,
+                self.match_mode,
+                self.estimate_min_duration,
+            )
             results = []
             total = len(videos)
 
@@ -210,6 +217,18 @@ class KeywordRemoveTab(QWidget):
         padding_row.addStretch()
         trim_layout.addLayout(padding_row)
 
+        estimate_duration_row = QHBoxLayout()
+        estimate_duration_row.addWidget(QLabel("精细最小时长(秒):"))
+        self.estimate_min_duration_spin = QDoubleSpinBox()
+        self.estimate_min_duration_spin.setRange(0.2, 3.0)
+        self.estimate_min_duration_spin.setSingleStep(0.1)
+        self.estimate_min_duration_spin.setDecimals(2)
+        self.estimate_min_duration_spin.setValue(0.6)
+        self.estimate_min_duration_spin.setMinimumHeight(28)
+        estimate_duration_row.addWidget(self.estimate_min_duration_spin)
+        estimate_duration_row.addStretch()
+        trim_layout.addLayout(estimate_duration_row)
+
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("删除方式:"))
         self.match_mode_group = QButtonGroup(self)
@@ -304,6 +323,9 @@ class KeywordRemoveTab(QWidget):
         self.output_folder.setText(get_config("keyword_remove", "output_folder", ""))
         self.keyword_text.setPlainText(get_config("keyword_remove", "keywords", ""))
         self.padding_spin.setValue(float(get_config("keyword_remove", "padding", "0.15")))
+        self.estimate_min_duration_spin.setValue(float(
+            get_config("keyword_remove", "estimate_min_duration", "0.6")
+        ))
         match_mode = get_config("keyword_remove", "match_mode", MATCH_MODE_SEGMENT)
         if match_mode == MATCH_MODE_ESTIMATE:
             self.estimate_mode_radio.setChecked(True)
@@ -321,6 +343,11 @@ class KeywordRemoveTab(QWidget):
         set_config("keyword_remove", "output_folder", self.output_folder.text())
         set_config("keyword_remove", "keywords", self.keyword_text.toPlainText())
         set_config("keyword_remove", "padding", str(self.padding_spin.value()))
+        set_config(
+            "keyword_remove",
+            "estimate_min_duration",
+            str(self.estimate_min_duration_spin.value())
+        )
         set_config("keyword_remove", "match_mode", self.current_match_mode())
         set_config("keyword_remove", "model_type", self.model_combo.currentText())
         set_config("keyword_remove", "model_path", self.model_path_input.text())
@@ -378,6 +405,7 @@ class KeywordRemoveTab(QWidget):
             input_folder, output_folder, keywords,
             self.padding_spin.value(),
             self.current_match_mode(),
+            self.estimate_min_duration_spin.value(),
             self.model_combo.currentText(),
             self.model_path_input.text()
         )

@@ -4,6 +4,7 @@ SenseVoice ONNX 离线推理引擎
 支持 iic/SenseVoiceSmall 模型 (CTC-based, LFR + CMVN)
 """
 import os
+import re
 import subprocess
 import io
 import wave
@@ -285,6 +286,46 @@ class SenseVoice_ONNX:
             prev = tid
         return ids
 
+    def _ctc_greedy_decode_with_timestamps(self, logits, total_duration):
+        frame_ids = np.argmax(logits[0], axis=-1)
+        if len(frame_ids) == 0:
+            return [], []
+
+        sec_per_frame = total_duration / max(len(frame_ids), 1)
+        ids = []
+        starts = []
+        prev = -1
+        for frame_index, tid in enumerate(frame_ids):
+            tid = int(tid)
+            if tid <= self.EOS_ID:
+                prev = tid
+                continue
+            if tid != prev:
+                ids.append(tid)
+                starts.append(frame_index)
+            prev = tid
+
+        token_items = []
+        for index, tid in enumerate(ids):
+            if tid >= len(self.token_list):
+                continue
+            token_text = self.token_list[tid].replace("\u2581", " ")
+            token_text = re.sub(r"<\|[^|]*\|>", "", token_text).strip()
+            if not token_text:
+                continue
+
+            start_frame = starts[index]
+            end_frame = starts[index + 1] if index + 1 < len(starts) else len(frame_ids)
+            start = round(start_frame * sec_per_frame, 3)
+            end = round(max(end_frame * sec_per_frame, start + sec_per_frame), 3)
+            token_items.append({
+                "text": token_text,
+                "start": start,
+                "end": min(round(total_duration, 3), end),
+            })
+
+        return ids, token_items
+
     def _ids_to_text(self, token_ids):
         """将 token ID 列表转为文本，用词表查表 + ▁ 转空格"""
         pieces = []
@@ -328,7 +369,9 @@ class SenseVoice_ONNX:
             lfr_feats = self._apply_cmvn(lfr_feats)
 
             logits = self._infer(lfr_feats)
-            token_ids = self._ctc_greedy_decode(logits)
+            token_ids, token_items = self._ctc_greedy_decode_with_timestamps(
+                logits, audio_duration_sec
+            )
             if not token_ids:
                 return []
 
@@ -336,7 +379,7 @@ class SenseVoice_ONNX:
             if not text:
                 return []
 
-            segments = self._split_into_segments(text, audio_duration_sec)
+            segments = self._split_into_segments(text, audio_duration_sec, token_items)
             return segments
         except Exception:
             log_path = os.path.join(os.path.dirname(__file__), "sensevoice_error.log")
@@ -345,7 +388,9 @@ class SenseVoice_ONNX:
                 tb.print_exc(file=f)
             return []
 
-    def _split_into_segments(self, text, total_duration):
+    def _split_into_segments(self, text, total_duration, token_items=None):
+        if token_items:
+            return self._split_token_items_into_segments(token_items, total_duration)
         """按标点符号分句，均匀分配时间"""
         import re
         parts = re.split(r'([。！？!?.，,；;、\n])', text)
@@ -372,3 +417,51 @@ class SenseVoice_ONNX:
             end = round((i + 1) * seg_duration, 3)
             segments.append({"start": start, "end": end, "text": sent})
         return segments
+
+    def _split_token_items_into_segments(self, token_items, total_duration):
+        break_chars = set(",\uFF0C.\u3002!\uFF01?\uFF1F;\uFF1B:\uFF1A\u3001\n\r\t ")
+        max_segment_sec = 3.5
+        segments = []
+        current_tokens = []
+        current_text = []
+
+        def flush():
+            if not current_tokens:
+                return
+            text = "".join(current_text).strip()
+            if text:
+                segments.append({
+                    "start": round(current_tokens[0]["start"], 3),
+                    "end": round(current_tokens[-1]["end"], 3),
+                    "text": text,
+                    "tokens": list(current_tokens),
+                })
+            current_tokens.clear()
+            current_text.clear()
+
+        for token in token_items:
+            token_text = str(token.get("text", ""))
+            if not token_text:
+                continue
+            current_tokens.append(token)
+            current_text.append(token_text)
+
+            reached_pause = token_text[-1] in break_chars
+            reached_limit = (
+                current_tokens[-1]["end"] - current_tokens[0]["start"]
+                >= max_segment_sec
+            )
+            if reached_pause or reached_limit:
+                flush()
+
+        flush()
+        if segments:
+            return segments
+
+        text = "".join(str(item.get("text", "")) for item in token_items).strip()
+        return [{
+            "start": 0.0,
+            "end": round(total_duration, 3),
+            "text": text,
+            "tokens": token_items,
+        }]

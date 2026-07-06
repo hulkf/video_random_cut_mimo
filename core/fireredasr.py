@@ -250,7 +250,7 @@ class FireRedASR:
 
             # 基于 token 时间戳切分字幕（每 3-5 秒一段）
             sub_segments = self._split_by_timestamps(
-                text, token_timestamps, start_sec, sr
+                text, tokens, token_timestamps, start_sec, sr
             )
             segments.extend(sub_segments)
 
@@ -309,12 +309,23 @@ class FireRedASR:
                 })
         return segments
 
-    def _split_by_timestamps(self, text, token_timestamps, chunk_start_sec, sr):
+    def _split_by_timestamps(self, text, tokens, token_timestamps, chunk_start_sec, sr):
         """根据 token 时间戳将文本切分为字幕段"""
         if not token_timestamps:
             return [{"start": round(chunk_start_sec, 3),
                      "end": round(chunk_start_sec + len(text) * 0.1, 3),
                      "text": text}]
+
+        token_items = []
+        for token, (start_ms, end_ms) in zip(tokens, token_timestamps):
+            token_text = self._tokens_to_text([token]).strip()
+            if not token_text:
+                continue
+            token_items.append({
+                "text": token_text,
+                "start": round(chunk_start_sec + start_ms / 1000, 3),
+                "end": round(chunk_start_sec + end_ms / 1000, 3),
+            })
 
         # 按标点切分文本
         import re
@@ -348,10 +359,18 @@ class FireRedASR:
             end_ms = base_ms + total_ms * (char_pos + char_len) / total_chars
             char_pos += char_len
 
+            abs_start = round(chunk_start_sec + start_ms / 1000, 3)
+            abs_end = round(chunk_start_sec + end_ms / 1000, 3)
+            segment_tokens = [
+                item for item in token_items
+                if item["end"] > abs_start and item["start"] < abs_end
+            ]
+
             results.append({
-                "start": round(chunk_start_sec + start_ms / 1000, 3),
-                "end": round(chunk_start_sec + end_ms / 1000, 3),
+                "start": abs_start,
+                "end": abs_end,
                 "text": c,
+                "tokens": segment_tokens,
             })
         return results
 
