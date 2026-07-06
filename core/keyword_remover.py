@@ -9,6 +9,7 @@ from utils.video_utils import get_video_duration
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".flv")
 MATCH_MODE_SEGMENT = "segment"
 MATCH_MODE_ESTIMATE = "estimate"
+MATCH_IGNORE_CHARS = r"\s,，.。!！?？;；:：、\"'“”‘’（）()【】\[\]{}<>《》"
 
 
 def collect_videos(folder_path):
@@ -23,6 +24,10 @@ def collect_videos(folder_path):
 def parse_keywords(text):
     parts = re.split(r"[\n,，;；、]+", text)
     return [part.strip() for part in parts if part.strip()]
+
+
+def normalize_match_text(text):
+    return re.sub(f"[{MATCH_IGNORE_CHARS}]+", "", text).lower()
 
 
 def merge_ranges(ranges, max_duration=None):
@@ -74,10 +79,14 @@ class KeywordRemover:
 
     def _matched_keywords(self, text):
         lower_text = text.lower()
+        normalized_text = normalize_match_text(text)
         return [
             keyword.strip()
             for keyword in self.keywords
-            if keyword.strip() and keyword.strip().lower() in lower_text
+            if keyword.strip() and (
+                keyword.strip().lower() in lower_text
+                or normalize_match_text(keyword) in normalized_text
+            )
         ]
 
     def find_delete_ranges(self, segments, duration):

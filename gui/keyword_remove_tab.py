@@ -68,6 +68,7 @@ class KeywordRemoveWorker(QThread):
         rel_path = os.path.relpath(video_path, self.input_folder)
         rel_base, _ = os.path.splitext(rel_path)
         output_path = os.path.join(self.output_folder, f"{rel_base}_keywords_removed.mp4")
+        report_path = os.path.join(self.output_folder, f"{rel_base}_keyword_report.txt")
 
         try:
             segments = asr.transcribe(video_path)
@@ -76,6 +77,7 @@ class KeywordRemoveWorker(QThread):
                     "video": rel_path,
                     "output": "",
                     "success": False,
+                    "status": "失败",
                     "message": "识别失败或没有识别到口播",
                     "ranges": [],
                 }
@@ -83,20 +85,27 @@ class KeywordRemoveWorker(QThread):
             import utils.video_utils as vu
             duration = vu.get_video_duration(video_path)
             delete_ranges = remover.find_delete_ranges(segments, duration)
+            self.write_report(report_path, rel_path, segments, delete_ranges)
+            if not delete_ranges:
+                return {
+                    "video": rel_path,
+                    "output": report_path,
+                    "success": False,
+                    "status": "未命中",
+                    "message": "未命中关键词，已导出识别文本报告",
+                    "ranges": [],
+                }
+
             result_path, actual_ranges = remover.remove_ranges(
                 video_path, output_path, delete_ranges
             )
-
-            if actual_ranges:
-                message = f"删除 {len(actual_ranges)} 段"
-            else:
-                message = "未命中关键词，已复制原视频"
 
             return {
                 "video": rel_path,
                 "output": result_path,
                 "success": True,
-                "message": message,
+                "status": "成功",
+                "message": f"删除 {len(actual_ranges)} 段",
                 "ranges": actual_ranges,
             }
         except Exception as e:
@@ -104,9 +113,23 @@ class KeywordRemoveWorker(QThread):
                 "video": rel_path,
                 "output": "",
                 "success": False,
+                "status": "失败",
                 "message": str(e),
                 "ranges": [],
             }
+
+    def write_report(self, report_path, rel_path, segments, delete_ranges):
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(f"视频: {rel_path}\n")
+            f.write(f"关键词: {', '.join(self.keywords)}\n")
+            f.write(f"命中删除段: {delete_ranges}\n\n")
+            f.write("识别文本:\n")
+            for seg in segments:
+                start = float(seg.get("start", 0.0))
+                end = float(seg.get("end", start))
+                text = str(seg.get("text", "")).strip()
+                f.write(f"[{start:.2f}-{end:.2f}] {text}\n")
 
 
 class KeywordRemoveTab(QWidget):
@@ -152,10 +175,24 @@ class KeywordRemoveTab(QWidget):
         input_group.setLayout(input_layout)
 
         keyword_group = QGroupBox("关键词设置")
+        keyword_group.setMinimumHeight(190)
         keyword_layout = QVBoxLayout()
+        keyword_layout.setSpacing(8)
         self.keyword_text = QTextEdit()
         self.keyword_text.setPlaceholderText("输入要删除的关键词，多个关键词可用换行、逗号或顿号分隔")
-        self.keyword_text.setMaximumHeight(90)
+        self.keyword_text.setMinimumHeight(96)
+        self.keyword_text.setMaximumHeight(130)
+        self.keyword_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #202428;
+                color: #ffffff;
+                border: 1px solid #4f5b62;
+                padding: 6px;
+            }
+            QTextEdit:focus {
+                border: 1px solid #448aff;
+            }
+        """)
         keyword_layout.addWidget(self.keyword_text)
 
         padding_row = QHBoxLayout()
@@ -370,7 +407,7 @@ class KeywordRemoveTab(QWidget):
         self.result_table.setItem(row, 1, QTableWidgetItem(ranges_text))
         self.result_table.setItem(row, 2, QTableWidgetItem(result.get("output", "")))
 
-        status_item = QTableWidgetItem("成功" if result["success"] else "失败")
+        status_item = QTableWidgetItem(result.get("status", "成功" if result["success"] else "失败"))
         if not result["success"]:
             status_item.setForeground(Qt.red)
             status_item.setToolTip(result.get("message", ""))
