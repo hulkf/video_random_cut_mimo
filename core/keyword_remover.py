@@ -10,6 +10,7 @@ VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".flv")
 MATCH_MODE_SEGMENT = "segment"
 MATCH_MODE_ESTIMATE = "estimate"
 MATCH_IGNORE_CHARS = r"\s,，.。!！?？;；:：、\"'“”‘’（）()【】\[\]{}<>《》"
+ESTIMATE_MIN_DURATION = 1.2
 
 
 def collect_videos(folder_path):
@@ -28,6 +29,17 @@ def parse_keywords(text):
 
 def normalize_match_text(text):
     return re.sub(f"[{MATCH_IGNORE_CHARS}]+", "", text).lower()
+
+
+def normalize_match_text_with_map(text):
+    normalized = []
+    index_map = []
+    for index, char in enumerate(text):
+        if re.match(f"[{MATCH_IGNORE_CHARS}]", char):
+            continue
+        normalized.append(char.lower())
+        index_map.append(index)
+    return "".join(normalized), index_map
 
 
 def merge_ranges(ranges, max_duration=None):
@@ -111,15 +123,22 @@ class KeywordRemover:
                 ))
                 continue
 
-            lower_text = text.lower()
-
             for key in matched_keywords:
-                search_text = lower_text
-                search_key = key.lower()
+                search_text, index_map = normalize_match_text_with_map(text)
+                search_key = normalize_match_text(key)
+                if not search_text or not search_key:
+                    continue
                 pos = search_text.find(search_key)
                 while pos >= 0:
-                    match_start = seg_start + seg_duration * (pos / text_len)
-                    match_end = seg_start + seg_duration * ((pos + len(key)) / text_len)
+                    raw_start = index_map[pos]
+                    raw_end = index_map[min(pos + len(search_key) - 1, len(index_map) - 1)] + 1
+                    match_start = seg_start + seg_duration * (raw_start / text_len)
+                    match_end = seg_start + seg_duration * (raw_end / text_len)
+                    if match_end - match_start < ESTIMATE_MIN_DURATION:
+                        center = (match_start + match_end) / 2
+                        half = min(ESTIMATE_MIN_DURATION, seg_duration) / 2
+                        match_start = max(seg_start, center - half)
+                        match_end = min(seg_end, center + half)
                     ranges.append((
                         match_start - self.padding,
                         match_end + self.padding

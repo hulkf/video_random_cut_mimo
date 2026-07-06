@@ -175,13 +175,12 @@ class KeywordRemoveTab(QWidget):
         input_group.setLayout(input_layout)
 
         keyword_group = QGroupBox("关键词设置")
-        keyword_group.setMinimumHeight(190)
+        keyword_group.setMinimumHeight(145)
         keyword_layout = QVBoxLayout()
         keyword_layout.setSpacing(8)
         self.keyword_text = QTextEdit()
         self.keyword_text.setPlaceholderText("输入要删除的关键词，多个关键词可用换行、逗号或顿号分隔")
-        self.keyword_text.setMinimumHeight(96)
-        self.keyword_text.setMaximumHeight(130)
+        self.keyword_text.setFixedHeight(92)
         self.keyword_text.setStyleSheet("""
             QTextEdit {
                 background-color: #202428;
@@ -194,7 +193,11 @@ class KeywordRemoveTab(QWidget):
             }
         """)
         keyword_layout.addWidget(self.keyword_text)
+        keyword_group.setLayout(keyword_layout)
 
+        trim_group = QGroupBox("删减设置")
+        trim_layout = QVBoxLayout()
+        trim_layout.setSpacing(8)
         padding_row = QHBoxLayout()
         padding_row.addWidget(QLabel("前后余量(秒):"))
         self.padding_spin = QDoubleSpinBox()
@@ -205,7 +208,7 @@ class KeywordRemoveTab(QWidget):
         self.padding_spin.setMinimumHeight(28)
         padding_row.addWidget(self.padding_spin)
         padding_row.addStretch()
-        keyword_layout.addLayout(padding_row)
+        trim_layout.addLayout(padding_row)
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("删除方式:"))
@@ -217,8 +220,8 @@ class KeywordRemoveTab(QWidget):
         mode_row.addWidget(self.segment_mode_radio)
         mode_row.addWidget(self.estimate_mode_radio)
         mode_row.addStretch()
-        keyword_layout.addLayout(mode_row)
-        keyword_group.setLayout(keyword_layout)
+        trim_layout.addLayout(mode_row)
+        trim_group.setLayout(trim_layout)
 
         model_group = QGroupBox("识别设置")
         model_layout = QVBoxLayout()
@@ -280,6 +283,7 @@ class KeywordRemoveTab(QWidget):
 
         layout.addWidget(input_group)
         layout.addWidget(keyword_group)
+        layout.addWidget(trim_group)
         layout.addWidget(model_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.progress_bar)
