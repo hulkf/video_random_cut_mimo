@@ -4,11 +4,15 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog, QProgressBar,
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QTextEdit, QComboBox, QDoubleSpinBox
+    QHeaderView, QTextEdit, QComboBox, QDoubleSpinBox,
+    QRadioButton, QButtonGroup
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-from core.keyword_remover import KeywordRemover, collect_videos, parse_keywords
+from core.keyword_remover import (
+    KeywordRemover, collect_videos, parse_keywords,
+    MATCH_MODE_ESTIMATE, MATCH_MODE_SEGMENT
+)
 from gui.config import get_config, set_config
 from gui.subtitle_tab import FIREMODELS_DIR, FUNASR_DIR, SENSEVOICE_DIR
 
@@ -20,12 +24,13 @@ class KeywordRemoveWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, input_folder, output_folder, keywords,
-                 padding, model_type, model_path):
+                 padding, match_mode, model_type, model_path):
         super().__init__()
         self.input_folder = input_folder
         self.output_folder = output_folder
         self.keywords = keywords
         self.padding = padding
+        self.match_mode = match_mode
         self.model_type = model_type
         self.model_path = model_path
         self._cancelled = False
@@ -42,7 +47,7 @@ class KeywordRemoveWorker(QThread):
             os.makedirs(self.output_folder, exist_ok=True)
             from core.onnx_asr import OnnxASR
             asr = OnnxASR(self.model_path, self.model_type)
-            remover = KeywordRemover(self.keywords, self.padding)
+            remover = KeywordRemover(self.keywords, self.padding, self.match_mode)
             results = []
             total = len(videos)
 
@@ -164,6 +169,18 @@ class KeywordRemoveTab(QWidget):
         padding_row.addWidget(self.padding_spin)
         padding_row.addStretch()
         keyword_layout.addLayout(padding_row)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("删除方式:"))
+        self.match_mode_group = QButtonGroup(self)
+        self.segment_mode_radio = QRadioButton("删除整条命中片段（更稳）")
+        self.estimate_mode_radio = QRadioButton("按关键词位置估算（更精细）")
+        self.match_mode_group.addButton(self.segment_mode_radio)
+        self.match_mode_group.addButton(self.estimate_mode_radio)
+        mode_row.addWidget(self.segment_mode_radio)
+        mode_row.addWidget(self.estimate_mode_radio)
+        mode_row.addStretch()
+        keyword_layout.addLayout(mode_row)
         keyword_group.setLayout(keyword_layout)
 
         model_group = QGroupBox("识别设置")
@@ -217,7 +234,8 @@ class KeywordRemoveTab(QWidget):
         self.result_table.setMinimumHeight(220)
 
         hint = QLabel(
-            "命中关键词时，会按关键词在识别文本中的位置估算时间段，并删除该片段。"
+            "默认会删除整条命中关键词的识别片段，优先保证关键词被去掉；"
+            "也可以切换为按关键词位置估算时间段。"
             "输出会保留输入文件夹的子目录结构。"
         )
         hint.setWordWrap(True)
@@ -245,6 +263,11 @@ class KeywordRemoveTab(QWidget):
         self.output_folder.setText(get_config("keyword_remove", "output_folder", ""))
         self.keyword_text.setPlainText(get_config("keyword_remove", "keywords", ""))
         self.padding_spin.setValue(float(get_config("keyword_remove", "padding", "0.15")))
+        match_mode = get_config("keyword_remove", "match_mode", MATCH_MODE_SEGMENT)
+        if match_mode == MATCH_MODE_ESTIMATE:
+            self.estimate_mode_radio.setChecked(True)
+        else:
+            self.segment_mode_radio.setChecked(True)
         model_type = get_config("keyword_remove", "model_type", "FireRedASR")
         index = self.model_combo.findText(model_type)
         self.model_combo.setCurrentIndex(index if index >= 0 else 0)
@@ -257,8 +280,14 @@ class KeywordRemoveTab(QWidget):
         set_config("keyword_remove", "output_folder", self.output_folder.text())
         set_config("keyword_remove", "keywords", self.keyword_text.toPlainText())
         set_config("keyword_remove", "padding", str(self.padding_spin.value()))
+        set_config("keyword_remove", "match_mode", self.current_match_mode())
         set_config("keyword_remove", "model_type", self.model_combo.currentText())
         set_config("keyword_remove", "model_path", self.model_path_input.text())
+
+    def current_match_mode(self):
+        if self.estimate_mode_radio.isChecked():
+            return MATCH_MODE_ESTIMATE
+        return MATCH_MODE_SEGMENT
 
     def on_model_changed(self, *args):
         self.model_path_input.setText(self.default_model_path(self.model_combo.currentText()))
@@ -307,6 +336,7 @@ class KeywordRemoveTab(QWidget):
         self.worker = KeywordRemoveWorker(
             input_folder, output_folder, keywords,
             self.padding_spin.value(),
+            self.current_match_mode(),
             self.model_combo.currentText(),
             self.model_path_input.text()
         )

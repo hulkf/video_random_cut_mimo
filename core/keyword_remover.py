@@ -7,6 +7,8 @@ from utils.video_utils import get_video_duration
 
 
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+MATCH_MODE_SEGMENT = "segment"
+MATCH_MODE_ESTIMATE = "estimate"
 
 
 def collect_videos(folder_path):
@@ -65,9 +67,18 @@ def has_audio_stream(video_path):
 
 
 class KeywordRemover:
-    def __init__(self, keywords, padding=0.15):
+    def __init__(self, keywords, padding=0.15, match_mode=MATCH_MODE_SEGMENT):
         self.keywords = keywords
         self.padding = max(0.0, float(padding))
+        self.match_mode = match_mode
+
+    def _matched_keywords(self, text):
+        lower_text = text.lower()
+        return [
+            keyword.strip()
+            for keyword in self.keywords
+            if keyword.strip() and keyword.strip().lower() in lower_text
+        ]
 
     def find_delete_ranges(self, segments, duration):
         ranges = []
@@ -76,17 +87,24 @@ class KeywordRemover:
             if not text:
                 continue
 
-            lower_text = text.lower()
             text_len = max(1, len(text))
             seg_start = float(seg.get("start", 0.0))
             seg_end = float(seg.get("end", seg_start))
             seg_duration = max(0.0, seg_end - seg_start)
+            matched_keywords = self._matched_keywords(text)
+            if not matched_keywords:
+                continue
 
-            for keyword in self.keywords:
-                key = keyword.strip()
-                if not key:
-                    continue
+            if self.match_mode == MATCH_MODE_SEGMENT:
+                ranges.append((
+                    seg_start - self.padding,
+                    seg_end + self.padding
+                ))
+                continue
 
+            lower_text = text.lower()
+
+            for key in matched_keywords:
                 search_text = lower_text
                 search_key = key.lower()
                 pos = search_text.find(search_key)
