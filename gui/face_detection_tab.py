@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QProgressBar,
     QMessageBox, QGroupBox, QCheckBox, QSpinBox,
@@ -258,31 +258,34 @@ class FaceDetectionTab(QWidget):
         input_group.setLayout(input_layout)
         
         params_group = QGroupBox("检测参数")
-        params_layout = QHBoxLayout()
+        params_layout = QGridLayout()
+        params_layout.setHorizontalSpacing(8)
+        params_layout.setVerticalSpacing(8)
         
-        params_layout.addWidget(QLabel("最少检测帧数:"))
+        params_layout.addWidget(QLabel("最少检测帧数:"), 0, 0)
         self.min_face_ratio = QSpinBox()
         self.min_face_ratio.setRange(1, 20)
         self.min_face_ratio.setValue(2)
         self.min_face_ratio.setMinimumHeight(28)
         self.min_face_ratio.setToolTip("需要在多少帧中检测到人脸才判定为有人脸\n值越大越严格，误报越少")
-        params_layout.addWidget(self.min_face_ratio)
+        params_layout.addWidget(self.min_face_ratio, 0, 1)
         
-        params_layout.addWidget(QLabel("采样帧数:"))
+        params_layout.addWidget(QLabel("采样帧数:"), 0, 2)
         self.sample_count = QSpinBox()
         self.sample_count.setRange(3, 20)
         self.sample_count.setValue(8)
         self.sample_count.setMinimumHeight(28)
         self.sample_count.setToolTip("从视频中均匀采样多少帧进行检测\n帧数越多检测越准，但速度越慢")
-        params_layout.addWidget(self.sample_count)
+        params_layout.addWidget(self.sample_count, 0, 3)
 
-        params_layout.addWidget(QLabel("并行数:"))
+        params_layout.addWidget(QLabel("并行数:"), 1, 0)
         self.max_workers = QSpinBox()
         self.max_workers.setRange(1, max(1, min(8, os.cpu_count() or 1)))
         self.max_workers.setValue(min(2, self.max_workers.maximum()))
         self.max_workers.setMinimumHeight(28)
         self.max_workers.setToolTip("批量视频同时检测的数量；显存或电脑卡顿时调低")
-        params_layout.addWidget(self.max_workers)
+        params_layout.addWidget(self.max_workers, 1, 1)
+        params_layout.setColumnStretch(4, 1)
         
         params_group.setLayout(params_layout)
         
