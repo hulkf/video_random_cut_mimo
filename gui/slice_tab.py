@@ -1,5 +1,7 @@
 import os
 import json
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QSpinBox, QFileDialog,
@@ -16,41 +18,108 @@ class SliceWorker(QThread):
     video_done = pyqtSignal(list)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
-    
-    def __init__(self, folder_path, output_dir, min_dur, max_dur, separate_folders=False):
+    paused = pyqtSignal()
+    resumed = pyqtSignal()
+
+    def __init__(self, folder_path, output_dir, min_dur, max_dur, separate_folders=False, max_workers=2):
         super().__init__()
         self.folder_path = folder_path
         self.output_dir = output_dir
         self.min_dur = min_dur
         self.max_dur = max_dur
         self.separate_folders = separate_folders
-    
+        self.max_workers = max(1, int(max_workers))
+        self._paused = False
+        self._stop = False
+        self._resume_index = 0
+
+    def pause(self):
+        self._paused = True
+
+    def resume(self):
+        self._paused = False
+
+    def stop(self):
+        self._stop = True
+        self._paused = False
+
+    def _wait_if_paused(self):
+        while self._paused and not self._stop:
+            time.sleep(0.1)
+
+    def _slice_one_video(self, folder_dir, file):
+        slicer = VideoSlicer(self.min_dur, self.max_dur, detect_text=False)
+        video_path = os.path.join(folder_dir, file)
+        video_name = os.path.splitext(file)[0]
+        if self.separate_folders:
+            video_output = os.path.join(self.output_dir, video_name)
+        else:
+            video_output = self.output_dir
+        return slicer.slice_video(video_path, video_output)
+
     def run(self):
         try:
-            slicer = VideoSlicer(self.min_dur, self.max_dur, detect_text=False)
             video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
-            video_files = [f for f in os.listdir(self.folder_path) if f.lower().endswith(video_exts)]
+
+            if os.path.isfile(self.folder_path):
+                video_files = [os.path.basename(self.folder_path)]
+                folder_dir = os.path.dirname(self.folder_path)
+            elif os.path.isdir(self.folder_path):
+                video_files = [f for f in os.listdir(self.folder_path) if f.lower().endswith(video_exts)]
+                folder_dir = self.folder_path
+            else:
+                self.error.emit(f"路径不存在: {self.folder_path}")
+                return
+
             total = len(video_files)
-            
-            for idx, file in enumerate(video_files):
-                video_path = os.path.join(self.folder_path, file)
-                video_name = os.path.splitext(file)[0]
-                
-                if self.separate_folders:
-                    video_output = os.path.join(self.output_dir, video_name)
-                else:
-                    video_output = self.output_dir
-                
-                results = slicer.slice_video(video_path, video_output)
-                self.video_done.emit(results)
-                self.progress.emit(idx + 1, total)
-            
+            if total == 0:
+                self.error.emit(f"未找到视频文件\n路径: {self.folder_path}\n请检查路径是否正确，或文件扩展名是否为 .mp4/.avi/.mov/.mkv/.flv")
+                return
+
             all_results = []
+            completed = 0
+            next_index = self._resume_index
+            worker_count = min(self.max_workers, total)
+
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {}
+
+                def submit_next():
+                    nonlocal next_index
+                    while len(futures) < worker_count and next_index < total and not self._stop:
+                        self._wait_if_paused()
+                        if self._stop:
+                            break
+                        file = video_files[next_index]
+                        futures[executor.submit(self._slice_one_video, folder_dir, file)] = next_index
+                        next_index += 1
+
+                submit_next()
+                while futures:
+                    done, _ = wait(futures, timeout=0.1, return_when=FIRST_COMPLETED)
+                    if self._stop:
+                        for future in futures:
+                            future.cancel()
+                        break
+                    if not done:
+                        continue
+
+                    for future in done:
+                        idx = futures.pop(future)
+                        results = future.result()
+                        all_results.extend(results)
+                        self.video_done.emit(results)
+                        completed += 1
+                        self.progress.emit(completed, total)
+                        self._resume_index = idx + 1
+
+                    submit_next()
+
             report_path = os.path.join(self.output_dir, "slice_report.json")
-            if os.path.exists(report_path):
-                with open(report_path, "r", encoding="utf-8") as f:
-                    all_results = json.load(f)
-            
+            os.makedirs(self.output_dir, exist_ok=True)
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump(all_results, f, ensure_ascii=False, indent=2)
+
             self.finished.emit(all_results)
         except Exception as e:
             self.error.emit(str(e))
@@ -76,7 +145,7 @@ class SliceTab(QWidget):
         folder_layout.setSpacing(8)
         self.folder_input = QLineEdit()
         self.folder_input.setMinimumHeight(30)
-        self.folder_input.setPlaceholderText("选择视频文件夹...")
+        self.folder_input.setPlaceholderText("选择视频文件或文件夹...")
         folder_btn = QPushButton("浏览")
         folder_btn.setFixedWidth(80)
         folder_btn.clicked.connect(self.browse_folder)
@@ -115,6 +184,14 @@ class SliceTab(QWidget):
         self.max_duration.setValue(5)
         self.max_duration.setMinimumHeight(28)
         params_layout.addWidget(self.max_duration)
+
+        params_layout.addWidget(QLabel("并发数:"))
+        self.max_workers = QSpinBox()
+        self.max_workers.setRange(1, 8)
+        self.max_workers.setValue(2)
+        self.max_workers.setMinimumHeight(28)
+        self.max_workers.setToolTip("批量视频同时处理的数量，机器卡顿时调低")
+        params_layout.addWidget(self.max_workers)
         params_layout.addStretch()
 
         params_group.setLayout(params_layout)
@@ -156,6 +233,23 @@ class SliceTab(QWidget):
         self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self.start_slicing)
 
+        self.pause_btn = QPushButton("暂停")
+        self.pause_btn.setMinimumHeight(36)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self.toggle_pause)
+
+        self.stop_btn = QPushButton("结束")
+        self.stop_btn.setMinimumHeight(36)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_slicing)
+
+        btn_container = QWidget()
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setSpacing(8)
+        btn_layout.addWidget(self.start_btn, 1)
+        btn_layout.addWidget(self.pause_btn, 1)
+        btn_layout.addWidget(self.stop_btn, 1)
+
         self.progress_bar = QProgressBar()
 
         self.result_table = QTableWidget()
@@ -173,7 +267,7 @@ class SliceTab(QWidget):
         layout.addWidget(params_group)
         layout.addWidget(options_group)
         layout.addWidget(organize_group)
-        layout.addWidget(self.start_btn)
+        layout.addWidget(btn_container)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.stats_label)
         layout.addWidget(self.result_table, 1)
@@ -185,6 +279,7 @@ class SliceTab(QWidget):
         self.output_input.setText(get_config("slice", "output", ""))
         self.min_duration.setValue(int(get_config("slice", "min_duration", "3")))
         self.max_duration.setValue(int(get_config("slice", "max_duration", "5")))
+        self.max_workers.setValue(int(get_config("slice", "max_workers", "2")))
         self.separate_folders_check.setChecked(get_config("slice", "separate_folders", "false") == "true")
     
     def save_config(self):
@@ -192,9 +287,19 @@ class SliceTab(QWidget):
         set_config("slice", "output", self.output_input.text())
         set_config("slice", "min_duration", str(self.min_duration.value()))
         set_config("slice", "max_duration", str(self.max_duration.value()))
+        set_config("slice", "max_workers", str(self.max_workers.value()))
         set_config("slice", "separate_folders", str(self.separate_folders_check.isChecked()).lower())
     
     def browse_folder(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择视频文件或文件夹",
+            "",
+            "视频文件 (*.mp4 *.avi *.mov *.mkv *.flv);;所有文件 (*)"
+        )
+        if file_path:
+            self.folder_input.setText(file_path)
+            self.save_config()
+            return
         folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
         if folder:
             self.folder_input.setText(folder)
@@ -209,17 +314,20 @@ class SliceTab(QWidget):
     def start_slicing(self):
         folder = self.folder_input.text()
         output = self.output_input.text()
-        
+
         if not folder or not output:
-            QMessageBox.warning(self, "警告", "请选择输入和输出文件夹")
+            QMessageBox.warning(self, "警告", "请选择输入文件/文件夹和输出文件夹")
             return
-        
+
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "警告", "任务正在执行中")
             return
-        
+
         self.save_config()
         self.start_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.pause_btn.setText("暂停")
+        self.stop_btn.setEnabled(True)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.result_table.setRowCount(0)
@@ -228,13 +336,32 @@ class SliceTab(QWidget):
             folder, output,
             self.min_duration.value(),
             self.max_duration.value(),
-            self.separate_folders_check.isChecked()
+            self.separate_folders_check.isChecked(),
+            self.max_workers.value()
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.video_done.connect(self.on_video_done)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
+
+    def toggle_pause(self):
+        if not self.worker or not self.worker.isRunning():
+            return
+        if self.worker._paused:
+            self.worker.resume()
+            self.pause_btn.setText("暂停")
+            self.stats_label.setText("统计: 切片进行中...")
+        else:
+            self.worker.pause()
+            self.pause_btn.setText("继续")
+            self.stats_label.setText("统计: 已暂停")
+
+    def stop_slicing(self):
+        if not self.worker or not self.worker.isRunning():
+            return
+        self.worker.stop()
+        self.stats_label.setText("统计: 正在停止...")
     
     def on_progress(self, current, total):
         self.progress_bar.setMaximum(total)
@@ -257,28 +384,34 @@ class SliceTab(QWidget):
     
     def on_finished(self, results):
         self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("暂停")
+        self.stop_btn.setEnabled(False)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(100)
-        
+
         unique_videos = set()
         total_duration = 0.0
         for r in results:
             video_name = os.path.basename(r["file"]).rsplit("_", 1)[0]
             unique_videos.add(video_name)
             total_duration += r["duration"]
-        
+
         minutes = int(total_duration // 60)
         seconds = total_duration % 60
-        
+
         self.stats_label.setText(
             f"统计: 切割 {len(unique_videos)} 个视频, "
             f"产出 {len(results)} 个片段, "
             f"总时长 {minutes}分{seconds:.1f}秒"
         )
         QMessageBox.information(self, "完成", f"切片完成，共{len(results)}个片段")
-    
+
     def on_error(self, msg):
         self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("暂停")
+        self.stop_btn.setEnabled(False)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.stats_label.setText("统计: 切片失败")

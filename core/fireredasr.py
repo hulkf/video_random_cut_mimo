@@ -11,6 +11,25 @@ FIREMODELS_DIR = r"D:\Models\FireRed"
 
 
 class FireRedASR:
+    """FireRedASR AED 模型 ONNX 推理引擎
+
+    关键修复：
+    - 使用 AED decoder（self-cross KV cache 自回归解码），不再用 CTC 贪心。
+      CTC 头只是训练辅助任务，正式推理必须用 decoder，否则错字率显著偏高。
+    - 特征提取对齐官方 frontend_conf（conf.yaml）：povey 窗 + dither=0 + snip_edges。
+    - VAD 分块后逐块 encoder/decoder，保留 CTC token 级时间戳用于字幕切分对齐。
+    """
+
+    # 解码时跳过的特殊 token
+    _SPECIAL_TOKENS = frozenset({"<blank>", "<unk>", "<pad>", "<sos>", "<eos>",
+                                  "<sil>", "<noise>", "<mus>"})
+
+    # 与模型 frontend_conf 对齐（见 conf.yaml）
+    _N_MELS = 80
+    _N_FFT = 512
+    _FRAME_LENGTH = 25   # ms
+    _FRAME_SHIFT = 10    # ms
+
     def __init__(self, model_dir=None):
         if model_dir is None:
             model_dir = os.path.join(
@@ -19,10 +38,15 @@ class FireRedASR:
             )
         self.model_dir = model_dir
         self.sr = 16000
+
         self._load_tokens()
         self._load_cmvn()
+        self._build_mel_filterbank()
         self._load_models()
 
+    # ------------------------------------------------------------------ #
+    # 模型加载
+    # ------------------------------------------------------------------ #
     def _load_tokens(self):
         tokens_path = os.path.join(self.model_dir, "tokens.txt")
         self.token_list = []
@@ -40,6 +64,7 @@ class FireRedASR:
         self.sos_id = self.token2id.get("<sos>", 3)
         self.eos_id = self.token2id.get("<eos>", 4)
         self.blank_id = self.token2id.get("<blank>", 0)
+        self.vocab_size = len(self.token_list)
 
     def _load_cmvn(self):
         mvn_path = os.path.join(self.model_dir, "am.mvn")
@@ -58,20 +83,52 @@ class FireRedASR:
             self.cmvn_scale = np.array([float(v) for v in vals], dtype=np.float32)
 
     def _load_models(self):
-        opts = ort.SessionOptions()
-        opts.log_severity_level = 3
-        opts.inter_op_num_threads = 2
-        opts.intra_op_num_threads = 2
+        from core.onnx_providers import get_providers, get_session_options
+        opts = get_session_options(inter_op=2, intra_op=2)
+        providers = get_providers()
 
         self.encoder = ort.InferenceSession(
-            os.path.join(self.model_dir, "encoder.int8.onnx"), opts
+            os.path.join(self.model_dir, "encoder.int8.onnx"),
+            sess_options=opts, providers=providers
         )
-        self.ctc = ort.InferenceSession(
-            os.path.join(self.model_dir, "ctc.int8.onnx"), opts
-        )
+        # 加载 AED decoder（替代原来只用 CTC 头解码的错误路径）
+        decoder_path = os.path.join(self.model_dir, "decoder.int8.onnx")
+        if os.path.exists(decoder_path):
+            self.decoder = ort.InferenceSession(
+                decoder_path, sess_options=opts, providers=providers
+            )
+        else:
+            self.decoder = None
+            print("[FireRedASR] 警告：未找到 decoder.int8.onnx，将回退到 CTC 解码（质量较差）")
 
+        # CTC 头仅用于时间戳提取，不再作为主解码路径
+        ctc_path = os.path.join(self.model_dir, "ctc.int8.onnx")
+        self.ctc = ort.InferenceSession(ctc_path, sess_options=opts, providers=providers) \
+            if os.path.exists(ctc_path) else None
+
+        # 探测 decoder 结构（selfcrosskv: 16 层，dim=1280）
+        self._num_layers, self._dim = self._probe_decoder_struct()
+
+    def _probe_decoder_struct(self):
+        """从 decoder 输入签名推断层数和维度"""
+        if self.decoder is None:
+            return 0, 0
+        names = [i.name for i in self.decoder.get_inputs()]
+        num_layers = 0
+        while f"self_k_cache_{num_layers}" in names:
+            num_layers += 1
+        dim = 0
+        for i in self.decoder.get_inputs():
+            if i.name == "self_k_cache_0" and i.shape:
+                dim = i.shape[-1] if isinstance(i.shape[-1], int) else 0
+                break
+        return num_layers, dim
+
+    # ------------------------------------------------------------------ #
+    # 音频提取
+    # ------------------------------------------------------------------ #
     def _extract_audio(self, video_path):
-        """提取音频"""
+        """提取音频（16kHz mono pcm）"""
         import io, wave
         cmd = [
             "ffmpeg", "-i", video_path,
@@ -92,7 +149,16 @@ class FireRedASR:
         from core.audio_utils import separate_vocals
         return separate_vocals(audio, sample_rate)
 
-    def _mel_filterbank(self, n_freqs, n_mels, sample_rate, n_fft):
+    # ------------------------------------------------------------------ #
+    # 特征提取（对齐官方 conf.yaml: WavFrontend + povey 窗）
+    # ------------------------------------------------------------------ #
+    def _build_mel_filterbank(self):
+        """预先构建 mel 滤波器组"""
+        n_freqs = self._N_FFT // 2 + 1
+        n_mels = self._N_MELS
+        sample_rate = self.sr
+        n_fft = self._N_FFT
+
         low_freq_mel = 0
         high_freq_mel = 2595 * np.log10(1 + (sample_rate / 2) / 700)
         mel_points = np.linspace(low_freq_mel, high_freq_mel, n_mels + 2)
@@ -110,32 +176,43 @@ class FireRedASR:
             for k in range(f_center, f_right):
                 if k < n_freqs and f_right != f_center:
                     fbank[m - 1, k] = (f_right - k) / (f_right - f_center)
-        return fbank
+        self._mel_fb = fbank
 
-    def _compute_fbank(self, audio, sample_rate=16000, n_mels=80,
-                       frame_length=25, frame_shift=10):
-        frame_size = int(sample_rate * frame_length / 1000)
-        hop_size = int(sample_rate * frame_shift / 1000)
-        n_fft = 512
-        n_freqs = n_fft // 2 + 1
+    def _povey_window(self, n):
+        """povey 窗（kaldi 默认）：周期形式的汉明窗。
 
+        官方 conf.yaml 指定 window=povey。原代码用 np.hanning 导致
+        特征分布与训练时不一致，直接拉高错字率。
+        """
+        if n <= 1:
+            return np.ones(n, dtype=np.float32)
+        return (0.54 - 0.46 * np.cos(2 * np.pi * np.arange(n) / (n - 1))).astype(np.float32)
+
+    def _compute_fbank(self, audio, sample_rate=16000):
+        """80 维 log-mel filterbank + CMVN，对齐 FireRedASR 训练分布"""
+        n_mels = self._N_MELS
+        frame_size = int(sample_rate * self._FRAME_LENGTH / 1000)   # 400
+        hop_size = int(sample_rate * self._FRAME_SHIFT / 1000)      # 160
+        n_fft = self._N_FFT
+
+        # snip_edges=true（kaldi 默认）：帧数 = 1 + (len-frame)//hop
         num_frames = 1 + (len(audio) - frame_size) // hop_size
         if num_frames <= 0:
             return np.zeros((1, n_mels), dtype=np.float32)
 
+        # 用 as_strided 风格的切片构造帧（比逐帧循环快）
         frames = np.zeros((num_frames, frame_size), dtype=np.float32)
         for i in range(num_frames):
             start = i * hop_size
             frames[i] = audio[start:start + frame_size]
 
-        window = np.hanning(frame_size)
-        frames *= window
+        # povey 窗（替代原来错误的 hanning）
+        frames *= self._povey_window(frame_size)
 
         spec = np.abs(np.fft.rfft(frames, n=n_fft))
         spec = np.maximum(spec, 1e-10)
 
-        mel_fb = self._mel_filterbank(n_freqs, n_mels, sample_rate, n_fft)
-        mel_spec = np.dot(spec, mel_fb.T)
+        mel_spec = np.dot(spec, self._mel_fb.T)
         mel_spec = np.maximum(mel_spec, 1e-10)
 
         fbank = np.log(mel_spec).astype(np.float32)
@@ -145,56 +222,99 @@ class FireRedASR:
 
         return fbank
 
-    # CTC 解码时需要跳过的特殊 token（不写入字幕文本）
-    _SPECIAL_TOKENS = frozenset({"<blank>", "<unk>", "<pad>", "<sos>", "<eos>",
-                                  "<sil>", "<noise>", "<mus>"})
+    # ------------------------------------------------------------------ #
+    # AED 自回归解码（核心修复）
+    # ------------------------------------------------------------------ #
+    def _aed_decode(self, enc_out, src_mask, cross_kv, max_len=200):
+        """使用 AED decoder 自回归解码，返回 token id 列表
 
-    def _ctc_greedy_decode(self, logits):
-        tokens = []
-        prev = -1
-        for t in range(logits.shape[0]):
-            idx = int(np.argmax(logits[t]))
-            if idx != self.blank_id and idx != prev:
-                if idx < len(self.token_list):
-                    tok = self.token_list[idx]
-                    # 跳过特殊控制 token，避免 SRT 中出现 <sil> 等 HTML 标签
-                    if tok not in self._SPECIAL_TOKENS:
-                        tokens.append(tok)
-            prev = idx
-        return tokens
+        Args:
+            enc_out: encoder 输出 [1, enc_time, 1280]
+            src_mask: encoder 输出的 mask [1, 1, enc_time]
+            cross_kv: encoder 输出的 cross k/v 列表（每层一对）
+            max_len: 最大解码步数
+        Returns:
+            list[int]: 生成的 token id（不含 sos/eos）
+        """
+        if self.decoder is None or self._num_layers == 0:
+            return []
+
+        batch_size = 1
+        cache_len = 0
+        num_layers = self._num_layers
+        dim = self._dim
+
+        self_k = [np.zeros((batch_size, cache_len, dim), dtype=np.float32)
+                  for _ in range(num_layers)]
+        self_v = [np.zeros((batch_size, cache_len, dim), dtype=np.float32)
+                  for _ in range(num_layers)]
+
+        token = np.array([[self.sos_id]], dtype=np.int64)
+        step = np.array([0], dtype=np.int64)
+
+        generated = []
+        for _ in range(max_len):
+            decoder_inputs = {
+                "token": token,
+                "step": step,
+                "src_mask": src_mask,
+            }
+            for li in range(num_layers):
+                decoder_inputs[f"self_k_cache_{li}"] = self_k[li]
+                decoder_inputs[f"self_v_cache_{li}"] = self_v[li]
+                # cross_kv 由 encoder 一次性算出，每步复用
+                decoder_inputs[f"cross_k_{li}"] = cross_kv[li * 2]
+                decoder_inputs[f"cross_v_{li}"] = cross_kv[li * 2 + 1]
+
+            outputs = self.decoder.run(None, decoder_inputs)
+            logits = outputs[0]
+            new_caches = outputs[1:]
+
+            next_token = int(np.argmax(logits))
+            if next_token == self.eos_id:
+                break
+            if 0 <= next_token < self.vocab_size:
+                generated.append(next_token)
+
+            token = np.array([[next_token]], dtype=np.int64)
+            step = np.array([step[0] + 1], dtype=np.int64)
+
+            # 更新 KV cache（输出顺序：new_k_0, new_v_0, new_k_1, new_v_1, ...）
+            for li in range(num_layers):
+                self_k[li] = new_caches[li * 2]
+                self_v[li] = new_caches[li * 2 + 1]
+
+        return generated
+
+    def _ids_to_tokens(self, ids):
+        return [self.token_list[i] for i in ids if 0 <= i < self.vocab_size]
 
     def _tokens_to_text(self, tokens):
-        text = "".join(tokens)
-        # 去掉 SentencePiece 空格前缀
+        text = "".join(t for t in tokens if t not in self._SPECIAL_TOKENS)
         text = text.replace("▁", " ").strip()
-        # 二次清理：移除残留的 <xxx> 格式特殊 token
         import re as _re
         text = _re.sub(r"<[^>]+>", "", text)
         return text.strip()
 
-    def _ctc_decode_with_timestamps(self, logits, frame_shift_ms=10):
-        """CTC 解码 + 帧级时间戳
-
-        Args:
-            logits: [frames, vocab_size]
-            frame_shift_ms: 每帧对应毫秒数
-
-        Returns:
-            tokens: list of token strings
-            timestamps: list of (start_ms, end_ms) for each token
-        """
+    # ------------------------------------------------------------------ #
+    # CTC 时间戳提取（用于字幕切分对齐）
+    # ------------------------------------------------------------------ #
+    def _ctc_decode_with_timestamps(self, logits):
+        """CTC 帧级时间戳，仅用于辅助字幕时间对齐（不再作为主文本来源）"""
+        if self.ctc is None:
+            return [], []
         tokens = []
         timestamps = []
         prev = -1
+        frame_shift_ms = self._FRAME_SHIFT
         for t in range(logits.shape[0]):
             idx = int(np.argmax(logits[t]))
             if idx != self.blank_id and idx != prev:
-                if idx < len(self.token_list):
+                if idx < self.vocab_size:
                     tok = self.token_list[idx]
                     if tok not in self._SPECIAL_TOKENS:
                         tokens.append(tok)
                         start_ms = t * frame_shift_ms
-                        # 寻找下一个 blank 或重复帧作为结束
                         end_ms = start_ms + frame_shift_ms
                         for t2 in range(t + 1, logits.shape[0]):
                             idx2 = int(np.argmax(logits[t2]))
@@ -205,6 +325,9 @@ class FireRedASR:
             prev = idx
         return tokens, timestamps
 
+    # ------------------------------------------------------------------ #
+    # 主流程
+    # ------------------------------------------------------------------ #
     def transcribe(self, video_path, audio=None, skip_vocal_separation=False):
         if audio is not None:
             sr = self.sr
@@ -216,7 +339,6 @@ class FireRedASR:
         if not skip_vocal_separation:
             audio = self._separate_vocals(audio, sr)
 
-        # ③ VAD 分块
         vad_segments = self._vad_segment(audio, sr)
 
         segments = []
@@ -236,23 +358,37 @@ class FireRedASR:
                 {"input": fbank, "input_lengths": input_lengths}
             )
 
-            ctc_logits, = self.ctc.run(None, {"encoder_outputs": enc_out})
+            # ① 主解码：AED 自回归解码（高精度）
+            if self.decoder is not None and len(cross_kv) >= self._num_layers * 2:
+                token_ids = self._aed_decode(enc_out, mask, cross_kv, max_len=200)
+                tokens = self._ids_to_tokens(token_ids)
+                text = self._tokens_to_text(tokens).strip()
+                if not text:
+                    continue
 
-            # ⑥ CTC 帧级时间戳
-            tokens, token_timestamps = self._ctc_decode_with_timestamps(ctc_logits[0])
+                # CTC 仅用于时间戳辅助（可选，失败不影响主文本）
+                ctc_tokens, ctc_timestamps = [], []
+                if self.ctc is not None:
+                    ctc_logits, = self.ctc.run(None, {"encoder_outputs": enc_out})
+                    ctc_tokens, ctc_timestamps = self._ctc_decode_with_timestamps(ctc_logits[0])
 
-            if not tokens:
-                continue
-
-            text = self._tokens_to_text(tokens).strip()
-            if not text:
-                continue
-
-            # 基于 token 时间戳切分字幕（每 3-5 秒一段）
-            sub_segments = self._split_by_timestamps(
-                text, tokens, token_timestamps, start_sec, sr
-            )
-            segments.extend(sub_segments)
+                sub_segments = self._split_by_timestamps(
+                    text, ctc_tokens, ctc_timestamps, start_sec, sr
+                )
+                segments.extend(sub_segments)
+            else:
+                # 回退路径：CTC 解码（decoder 不可用时）
+                if self.ctc is None:
+                    continue
+                ctc_logits, = self.ctc.run(None, {"encoder_outputs": enc_out})
+                ctc_tokens, ctc_timestamps = self._ctc_decode_with_timestamps(ctc_logits[0])
+                text = self._tokens_to_text(ctc_tokens).strip()
+                if not text:
+                    continue
+                sub_segments = self._split_by_timestamps(
+                    text, ctc_tokens, ctc_timestamps, start_sec, sr
+                )
+                segments.extend(sub_segments)
 
         return segments
 
@@ -309,15 +445,17 @@ class FireRedASR:
                 })
         return segments
 
-    def _split_by_timestamps(self, text, tokens, token_timestamps, chunk_start_sec, sr):
-        """根据 token 时间戳将文本切分为字幕段"""
-        if not token_timestamps:
+    def _split_by_timestamps(self, text, ctc_tokens, ctc_timestamps, chunk_start_sec, sr):
+        """根据标点 + CTC token 时间戳将文本切分为字幕段"""
+        if not ctc_timestamps:
+            # 无时间戳：按字符数估算时长
+            est_end = chunk_start_sec + len(text) * 0.1
             return [{"start": round(chunk_start_sec, 3),
-                     "end": round(chunk_start_sec + len(text) * 0.1, 3),
+                     "end": round(est_end, 3),
                      "text": text}]
 
         token_items = []
-        for token, (start_ms, end_ms) in zip(tokens, token_timestamps):
+        for token, (start_ms, end_ms) in zip(ctc_tokens, ctc_timestamps):
             token_text = self._tokens_to_text([token]).strip()
             if not token_text:
                 continue
@@ -346,13 +484,13 @@ class FireRedASR:
         if not clauses:
             clauses = [text]
 
-        # 按字符数比例分配 token 时间戳
-        total_chars = max(sum(len(c) for c in clauses), 1)
-        total_ms = token_timestamps[-1][1] - token_timestamps[0][0] if token_timestamps else 1000
-        base_ms = token_timestamps[0][0] if token_timestamps else 0
+        # 按 token 时间戳累计切分（比纯字符比例更准）
+        total_ms = ctc_timestamps[-1][1] - ctc_timestamps[0][0] if ctc_timestamps else 1000
+        base_ms = ctc_timestamps[0][0] if ctc_timestamps else 0
 
         results = []
         char_pos = 0
+        total_chars = max(sum(len(c) for c in clauses), 1)
         for c in clauses:
             char_len = len(c)
             start_ms = base_ms + total_ms * char_pos / total_chars
@@ -373,63 +511,3 @@ class FireRedASR:
                 "tokens": segment_tokens,
             })
         return results
-
-    def transcribe_with_decoder(self, video_path, max_len=200):
-        audio, sr = self._extract_audio(video_path)
-        if audio is None or len(audio) == 0:
-            return []
-
-        fbank = self._compute_fbank(audio, sr)
-        fbank = fbank[np.newaxis, :, :]
-        input_lengths = np.array([fbank.shape[1]], dtype=np.int64)
-
-        enc_out, enc_lens, mask, *cross_kv = self.encoder.run(
-            None,
-            {"input": fbank, "input_lengths": input_lengths}
-        )
-
-        batch_size = 1
-        cache_len = 0
-        num_layers = 16
-        dim = 1280
-
-        self_k = [np.zeros((batch_size, cache_len, dim), dtype=np.float32) for _ in range(num_layers)]
-        self_v = [np.zeros((batch_size, cache_len, dim), dtype=np.float32) for _ in range(num_layers)]
-
-        token = np.array([[self.sos_id]], dtype=np.int64)
-        step = np.array([0], dtype=np.int64)
-        src_mask = mask
-
-        generated = []
-        for i in range(max_len):
-            decoder_inputs = {
-                "token": token,
-                "step": step,
-                "src_mask": src_mask,
-            }
-            for li in range(num_layers):
-                decoder_inputs[f"self_k_cache_{li}"] = self_k[li]
-                decoder_inputs[f"self_v_cache_{li}"] = self_v[li]
-                decoder_inputs[f"cross_k_{li}"] = cross_kv[li * 2]
-                decoder_inputs[f"cross_v_{li}"] = cross_kv[li * 2 + 1]
-
-            outputs = self.decoder.run(None, decoder_inputs)
-            logits = outputs[0]
-            new_caches = outputs[1:]
-
-            next_token = int(np.argmax(logits[0, -1]))
-            if next_token == self.eos_id:
-                break
-            if next_token < len(self.token_list):
-                generated.append(self.token_list[next_token])
-
-            token = np.array([[next_token]], dtype=np.int64)
-            step = np.array([step[0] + 1], dtype=np.int64)
-
-            for li in range(num_layers):
-                self_k[li] = new_caches[li * 2]
-                self_v[li] = new_caches[li * 2 + 1]
-
-        text = self._tokens_to_text(generated)
-        audio_duration = len(audio) / sr
-        return [{"start": 0.0, "end": round(audio_duration, 3), "text": text.strip()}]

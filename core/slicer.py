@@ -1,8 +1,9 @@
 import os
 import json
+import random
 from core.text_detector import TextDetector
 from utils.video_utils import (
-    get_video_duration, extract_frames, cut_video
+    get_video_duration, extract_frames, cut_video_fast
 )
 
 
@@ -78,18 +79,17 @@ class VideoSlicer:
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         
         while start < duration:
-            segment_duration = min(
-                self.max_duration,
-                duration - start
-            )
-            if segment_duration < self.min_duration:
+            remaining = duration - start
+            if remaining < self.min_duration:
                 break
+
+            segment_duration = random.uniform(self.min_duration, min(self.max_duration, remaining))
             
             output_path = os.path.join(
                 output_dir,
                 f"{video_name}_segment_{segment_index:04d}.mp4"
             )
-            cut_video(video_path, start, segment_duration, output_path)
+            cut_video_fast(video_path, start, segment_duration, output_path)
             
             has_text = False
             if self.detect_text:

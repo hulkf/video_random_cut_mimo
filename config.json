@@ -1,9 +1,9 @@
 {
   "slice": {
-    "folder": "D:/千川素材/1301/1301 增强 02",
-    "output": "D:/千川素材/1301/素材切片",
+    "folder": "D:\\千川素材\\6310\\平铺视频-无字幕",
+    "output": "D:\\千川素材\\6310\\平铺视频-切片",
     "min_duration": "3",
-    "max_duration": "5",
+    "max_duration": "7",
     "separate_folders": "false"
   },
   "video_mix": {
@@ -31,7 +31,7 @@
   },
   "audio_mix": {
     "audio_folder": "",
-    "clips_folder": "D:/千川素材/1301/素材切片-无字幕",
+    "clips_folder": "D:/C_Mirror/Downloads/无文字 切片",
     "output_folder": "D:/千川素材/1301/1301 音频混剪结果",
     "media_folder": "D:/千川素材/1301/音频素材",
     "cover_enabled": "true",
@@ -50,8 +50,8 @@
     "sample_count": "8"
   },
   "screenshot": {
-    "folder": "D:/千川素材/1301/素材切片",
-    "output": "D:/千川素材/1301/素材截图",
+    "folder": "D:\\千川素材\\2556\\平铺视频\\916",
+    "output": "D:\\千川素材\\2556\\视频截图",
     "frame_count": "5",
     "separate_folders": "false",
     "delete_faces": "false",
@@ -78,5 +78,37 @@
     "fireredasr_model_path": "D:/Models/FireRed/fireredasr2-aed-large-zh-en-int8-onnx-selfcrosskv-offline-20260212",
     "funasr_model_path": "D:/Models/FunASR/paraformer-large-zh-en-timestamp-onnx-offline",
     "sensevoice_model_path": "D:/Models/SenseVoiceSmall"
+  },
+  "kaipai": {
+    "api_key": "f26bd01400414e2786165fd001a5b77a",
+    "secret_key": "e8e93448389d4162a747c6347a01eed7",
+    "last_task": "视频画质修复"
+  },
+  "video_concat": {
+    "folder_a": "D:\\千川素材\\M810\\模特0708 增强",
+    "folder_b": "D:\\千川素材\\M810\\M810 千川素材 0325\\M810 千川素材 2K 0325",
+    "output_folder": "D:\\千川素材\\M810\\M810 千川素材 0708",
+    "cover_enabled": "true",
+    "cover_folder": "D:\\千川素材\\M810\\视频截图",
+    "cover_mode": "0",
+    "cover_duration_min": "0.2",
+    "cover_duration_max": "0.5"
+  },
+  "video_resize": {
+    "input_folder": "D:\\千川素材\\M810\\模特0708",
+    "output_folder": "D:\\千川素材\\M810\\模特0708\\916",
+    "ratio": "9:16->3:4->9:16",
+    "process_mode": "all",
+    "blur_strength": "4"
+  },
+  "keyword_remove": {
+    "input_folder": "D:\\千川素材\\2556\\测试",
+    "output_folder": "D:\\千川素材\\2556\\测试",
+    "keywords": "草本初色,草本出色",
+    "padding": "0.1",
+    "model_type": "SenseVoice",
+    "model_path": "D:/Models/SenseVoiceSmall",
+    "match_mode": "estimate",
+    "estimate_min_duration": "0.6"
   }
 }

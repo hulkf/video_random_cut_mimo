@@ -166,11 +166,10 @@ class SenseVoice_ONNX:
         model_path = os.path.join(self.model_dir, "model.1.onnx")
         if not os.path.exists(model_path):
             model_path = os.path.join(self.model_dir, "model.onnx")
-        opts = ort.SessionOptions()
-        opts.log_severity_level = 3
-        opts.inter_op_num_threads = 2
-        opts.intra_op_num_threads = 2
-        self._session = ort.InferenceSession(model_path, opts)
+        from core.onnx_providers import get_providers, get_session_options
+        opts = get_session_options(inter_op=2, intra_op=2)
+        providers = get_providers()
+        self._session = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
         self._model_path = model_path
 
     def _load_model(self):

@@ -489,6 +489,14 @@ class SherpaASR:
                 sub_segments = self._split_subtitle(text, start_sec, end_sec, timestamps)
                 results.extend(sub_segments)
 
+            # 后处理：行业术语同音字/形近字纠正（所有引擎通用）
+            if results:
+                try:
+                    from core.hotword_corrector import HotwordCorrector
+                    results = HotwordCorrector.shared().correct_segments(results)
+                except Exception:
+                    pass
+
             return results
         except Exception:
             log_path = os.path.join(self._base_dir, "core", "sherpa_asr_error.log")

@@ -14,10 +14,14 @@ class SCRFDetector:
         self.score_thresh = score_thresh
         self.nms_thresh = nms_thresh
         
-        # 创建推理会话
+        # 创建推理会话（启用 DirectML 核显加速，回退到 CPU）
+        from core.onnx_providers import get_providers, get_session_options
+        opts = get_session_options(inter_op=2, intra_op=2)
+        providers = get_providers()
         self.session = ort.InferenceSession(
             model_path,
-            providers=['CPUExecutionProvider']  # 只用CPU避免警告
+            sess_options=opts,
+            providers=providers
         )
         self.input_name = self.session.get_inputs()[0].name
         

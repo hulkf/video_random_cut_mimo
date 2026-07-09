@@ -32,8 +32,8 @@ def main():
     window = MainWindow(app)
     window.setWindowIcon(QIcon(icon_path))
     window.show()
-    sys.exit(app.exec_())
+    return app.exec_()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -48,6 +48,39 @@ def cut_video(video_path, start_time, duration, output_path):
     return output_path
 
 
+def cut_video_fast(video_path, start_time, duration, output_path):
+    """Cut a segment using input-side seeking for faster batch slicing."""
+    cmd = [
+        "ffmpeg",
+        "-ss", str(start_time),
+        "-i", video_path,
+        "-t", str(duration),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-avoid_negative_ts", "make_zero",
+        "-y", output_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
+    if result.returncode != 0 or not os.path.exists(output_path):
+        raise RuntimeError(f"cut_video_fast failed: {result.stderr}")
+    return output_path
+
+
+def cut_video_no_audio(video_path, start_time, duration, output_path):
+    """Cut a video-only segment for filler clips."""
+    cmd = [
+        "ffmpeg", "-i", video_path,
+        "-ss", str(start_time), "-t", str(duration),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-an",
+        "-y", output_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
+    if result.returncode != 0 or not os.path.exists(output_path):
+        raise RuntimeError(f"cut_video_no_audio failed: {result.stderr}")
+    return output_path
+
+
 def extract_audio(video_path, output_path):
     """Extract audio from video."""
     cmd = [

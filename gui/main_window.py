@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from gui.slice_tab import SliceTab
 from gui.text_recognition_tab import TextRecognitionTab
 from gui.audio_mix_tab import AudioMixTab
@@ -136,3 +136,31 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.subtitle_tab, "视频字幕")
         self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
         self.tabs.addTab(self.settings_tab, "设置")
+
+    def closeEvent(self, event):
+        """关闭窗口时停止所有后台线程，确保进程（及启动它的终端）能随之退出"""
+        tabs = [
+            self.slice_tab, self.screenshot_tab, self.text_recognition_tab,
+            self.face_detection_tab, self.audio_mix_tab, self.video_mix_tab,
+            self.video_concat_tab, self.video_resize_tab, self.keyword_remove_tab,
+            self.subtitle_tab, self.kaipai_cloud_tab,
+        ]
+        for tab in tabs:
+            worker = getattr(tab, "worker", None)
+            if not isinstance(worker, QThread):
+                continue
+            if not worker.isRunning():
+                continue
+            # 优先通知优雅停止（部分 worker 实现了 stop()）
+            if hasattr(worker, "stop"):
+                try:
+                    worker.stop()
+                except Exception:
+                    pass
+            # 给一点时间在安全点退出
+            worker.wait(1500)
+            # 仍在运行则强制终止，避免进程挂起导致终端不关闭
+            if worker.isRunning():
+                worker.terminate()
+                worker.wait(1500)
+        event.accept()

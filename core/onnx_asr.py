@@ -270,6 +270,14 @@ class OnnxASR:
                     result["tokens"] = seg["tokens"]
                 results.append(result)
 
+            # 后处理：行业术语同音字/形近字纠正（所有引擎通用）
+            if results:
+                try:
+                    from core.hotword_corrector import HotwordCorrector
+                    results = HotwordCorrector.shared().correct_segments(results)
+                except Exception:
+                    pass
+
             return results
         except Exception:
             log_path = os.path.join(self._base_dir, "core", "onnx_asr_error.log")

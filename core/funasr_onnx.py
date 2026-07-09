@@ -69,11 +69,10 @@ class FunASR_ONNX:
 
     def _load_model(self):
         model_path = os.path.join(self.model_dir, "model.onnx")
-        opts = ort.SessionOptions()
-        opts.log_severity_level = 3
-        opts.inter_op_num_threads = 2
-        opts.intra_op_num_threads = 2
-        self.session = ort.InferenceSession(model_path, opts)
+        from core.onnx_providers import get_providers, get_session_options
+        opts = get_session_options(inter_op=2, intra_op=2)
+        providers = get_providers()
+        self.session = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
 
     def _build_mel_filterbank(self):
         """构建 80 维 Mel 滤波器组 (用于 hamming window 后的幅度谱)"""

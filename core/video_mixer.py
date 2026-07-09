@@ -3,7 +3,7 @@ import random
 import tempfile
 import shutil
 from utils.video_utils import (
-    get_video_duration, cut_video, remove_audio,
+    get_video_duration, cut_video, cut_video_no_audio,
     concat_videos, add_audio, add_audio_with_silence, image_to_video
 )
 
@@ -30,6 +30,8 @@ class VideoMixerEngine:
         self.cover_folder = config.get("cover_folder", "")
         self.cover_duration_min = config.get("cover_duration_min", 2)
         self.cover_duration_max = config.get("cover_duration_max", 4)
+        self._clip_duration_cache = {}
+        self._cover_images_cache = None
     
     def get_base_videos(self, video_folder):
         video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
@@ -53,12 +55,15 @@ class VideoMixerEngine:
         """Get list of cover images from the specified folder and all subfolders."""
         if not self.cover_enabled or not self.cover_folder:
             return []
+        if self._cover_images_cache is not None:
+            return self._cover_images_cache
         image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
         images = []
         for root, dirs, files in os.walk(self.cover_folder):
             for f in files:
                 if f.lower().endswith(image_exts):
                     images.append(os.path.join(root, f))
+        self._cover_images_cache = images
         return images
     
     def generate_plan(self, duration):
@@ -155,20 +160,15 @@ class VideoMixerEngine:
         Returns a list of clip segments that fill the gap.
         Multiple clips can be added, and the last one is trimmed if needed.
         """
-        if not hasattr(self, '_clip_duration_cache'):
-            self._clip_duration_cache = {}
-        
-        for clip in clips:
-            if clip not in self._clip_duration_cache:
-                self._clip_duration_cache[clip] = get_video_duration(clip)
-        
         clips_in_gap = []
         remaining = gap_duration
-        current_start = 0
         
         while remaining > 0.1:
             clip = random.choice(clips)
-            clip_duration = self._clip_duration_cache[clip]
+            clip_duration = self._clip_duration_cache.get(clip)
+            if clip_duration is None:
+                clip_duration = get_video_duration(clip)
+                self._clip_duration_cache[clip] = clip_duration
             
             if clip_duration >= remaining:
                 clip_start = random.uniform(0, max(0, clip_duration - remaining))
@@ -177,11 +177,8 @@ class VideoMixerEngine:
                 clip_start = 0
                 actual_duration = clip_duration
             
-            clip_cut_path = os.path.join(tmp_dir, f"clip_cut_{part_index}_{len(clips_in_gap)}.mp4")
-            cut_video(clip, clip_start, actual_duration, clip_cut_path)
-            
             clip_path = os.path.join(tmp_dir, f"clip_{part_index}_{len(clips_in_gap)}.mp4")
-            remove_audio(clip_cut_path, clip_path)
+            cut_video_no_audio(clip, clip_start, actual_duration, clip_path)
             
             clips_in_gap.append({
                 "path": clip_path,
