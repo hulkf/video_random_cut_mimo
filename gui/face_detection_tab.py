@@ -3,6 +3,7 @@ import csv
 import subprocess
 import cv2
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog,
@@ -15,6 +16,78 @@ from gui.config import get_config, set_config
 from core.screenshot import SCRFDetector
 
 
+_FACE_DETECTOR = None
+
+
+def _init_face_worker(model_path, score_thresh):
+    global _FACE_DETECTOR
+    cv2.setNumThreads(1)
+    _FACE_DETECTOR = SCRFDetector(model_path, score_thresh=score_thresh)
+
+
+def _detect_face_video(video_path, detector, min_face_ratio, sample_count, resize_max_side=960):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return False
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames == 0:
+        cap.release()
+        return False
+
+    face_detections = 0
+    checked_frames = 0
+    step = max(1, total_frames // sample_count)
+
+    try:
+        for i in range(sample_count):
+            remaining = sample_count - checked_frames
+            if face_detections >= min_face_ratio:
+                return True
+            if face_detections + remaining < min_face_ratio:
+                return False
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, min(i * step, total_frames - 1))
+            ret, frame = cap.read()
+            if not ret:
+                checked_frames += 1
+                continue
+
+            h, w = frame.shape[:2]
+            max_side = max(h, w)
+            if resize_max_side and max_side > resize_max_side:
+                scale = resize_max_side / max_side
+                frame = cv2.resize(
+                    frame,
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            faces = detector.detect(frame)
+            checked_frames += 1
+            if len(faces) > 0:
+                face_detections += 1
+    finally:
+        cap.release()
+
+    return face_detections >= min_face_ratio
+
+
+def _detect_face_task(args):
+    video_path, folder_path, min_face_ratio, sample_count = args
+    has_face = _detect_face_video(
+        video_path,
+        _FACE_DETECTOR,
+        min_face_ratio,
+        sample_count,
+    )
+    return {
+        "file": os.path.relpath(video_path, folder_path),
+        "full_path": video_path,
+        "has_face": has_face,
+    }
+
+
 class FaceDetectionWorker(QThread):
     progress = pyqtSignal(int, int)
     video_done = pyqtSignal(dict)
@@ -22,7 +95,8 @@ class FaceDetectionWorker(QThread):
     error = pyqtSignal(str)
     
     def __init__(self, folder_path, min_face_ratio=2, sample_count=8, 
-                 model_path=None, score_thresh=0.5, auto_delete=False):
+                 model_path=None, score_thresh=0.5, auto_delete=False,
+                 max_workers=2):
         super().__init__()
         self.folder_path = folder_path
         self.min_face_ratio = min_face_ratio
@@ -30,13 +104,15 @@ class FaceDetectionWorker(QThread):
         self.model_path = model_path or r"D:\Models\scrfd_10g\det_10g.onnx"
         self.score_thresh = score_thresh
         self.auto_delete = auto_delete
+        self.max_workers = max(1, max_workers)
     
     def run(self):
         try:
             # 初始化SCRFD检测器
             detector = None
             if os.path.exists(self.model_path):
-                detector = SCRFDetector(self.model_path, score_thresh=self.score_thresh)
+                if self.max_workers <= 1:
+                    detector = SCRFDetector(self.model_path, score_thresh=self.score_thresh)
             else:
                 self.error.emit(f"模型文件不存在: {self.model_path}")
                 return
@@ -51,34 +127,79 @@ class FaceDetectionWorker(QThread):
                         video_files.append(os.path.join(root, f))
             
             total = len(video_files)
-            for idx, video_path in enumerate(video_files):
-                has_face = self._detect_face(video_path, detector)
-                rel_path = os.path.relpath(video_path, self.folder_path)
-                
-                video_deleted = False
-                if has_face and self.auto_delete:
-                    try:
-                        os.remove(video_path)
-                        video_deleted = True
-                    except Exception:
-                        pass
-                
-                result = {
-                    "file": rel_path,
-                    "full_path": video_path,
-                    "has_face": has_face,
-                    "video_deleted": video_deleted
-                }
-                results.append(result)
-                self.video_done.emit(result)
-                self.progress.emit(idx + 1, total)
+            if total == 0:
+                self.finished.emit(results)
+                return
+
+            if self.max_workers <= 1:
+                for idx, video_path in enumerate(video_files):
+                    result = self._build_result(
+                        video_path,
+                        _detect_face_video(
+                            video_path,
+                            detector,
+                            self.min_face_ratio,
+                            self.sample_count,
+                        ),
+                    )
+                    results.append(result)
+                    self.video_done.emit(result)
+                    self.progress.emit(idx + 1, total)
+            else:
+                tasks = [
+                    (video_path, self.folder_path, self.min_face_ratio, self.sample_count)
+                    for video_path in video_files
+                ]
+                completed = 0
+                with ProcessPoolExecutor(
+                    max_workers=self.max_workers,
+                    initializer=_init_face_worker,
+                    initargs=(self.model_path, self.score_thresh),
+                ) as executor:
+                    future_map = {
+                        executor.submit(_detect_face_task, task): task[0]
+                        for task in tasks
+                    }
+                    for future in as_completed(future_map):
+                        raw_result = future.result()
+                        result = self._build_result(
+                            raw_result["full_path"],
+                            raw_result["has_face"],
+                            raw_result["file"],
+                        )
+                        results.append(result)
+                        completed += 1
+                        self.video_done.emit(result)
+                        self.progress.emit(completed, total)
             
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
+
+    def _build_result(self, video_path, has_face, rel_path=None):
+        video_deleted = False
+        if has_face and self.auto_delete:
+            try:
+                os.remove(video_path)
+                video_deleted = True
+            except Exception:
+                pass
+
+        return {
+            "file": rel_path or os.path.relpath(video_path, self.folder_path),
+            "full_path": video_path,
+            "has_face": has_face,
+            "video_deleted": video_deleted
+        }
     
     def _detect_face(self, video_path, detector):
         """使用SCRFD检测视频是否包含人脸"""
+        return _detect_face_video(
+            video_path,
+            detector,
+            self.min_face_ratio,
+            self.sample_count,
+        )
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return False
@@ -154,6 +275,14 @@ class FaceDetectionTab(QWidget):
         self.sample_count.setMinimumHeight(28)
         self.sample_count.setToolTip("从视频中均匀采样多少帧进行检测\n帧数越多检测越准，但速度越慢")
         params_layout.addWidget(self.sample_count)
+
+        params_layout.addWidget(QLabel("并行数:"))
+        self.max_workers = QSpinBox()
+        self.max_workers.setRange(1, max(1, min(8, os.cpu_count() or 1)))
+        self.max_workers.setValue(min(2, self.max_workers.maximum()))
+        self.max_workers.setMinimumHeight(28)
+        self.max_workers.setToolTip("批量视频同时检测的数量；显存或电脑卡顿时调低")
+        params_layout.addWidget(self.max_workers)
         
         params_group.setLayout(params_layout)
         
@@ -244,6 +373,7 @@ class FaceDetectionTab(QWidget):
         self.auto_delete_face_check.setChecked(get_config("face_detection", "auto_delete_face", "false") == "true")
         self.min_face_ratio.setValue(int(get_config("face_detection", "min_face_ratio", "2")))
         self.sample_count.setValue(int(get_config("face_detection", "sample_count", "8")))
+        self.max_workers.setValue(int(get_config("face_detection", "max_workers", "2")))
     
     def save_config(self):
         set_config("face_detection", "folder", self.folder_input.text())
@@ -251,6 +381,7 @@ class FaceDetectionTab(QWidget):
         set_config("face_detection", "auto_delete_face", str(self.auto_delete_face_check.isChecked()).lower())
         set_config("face_detection", "min_face_ratio", str(self.min_face_ratio.value()))
         set_config("face_detection", "sample_count", str(self.sample_count.value()))
+        set_config("face_detection", "max_workers", str(self.max_workers.value()))
     
     def browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
@@ -286,7 +417,8 @@ class FaceDetectionTab(QWidget):
             folder,
             self.min_face_ratio.value(),
             self.sample_count.value(),
-            auto_delete=self.auto_delete_face_check.isChecked()
+            auto_delete=self.auto_delete_face_check.isChecked(),
+            max_workers=self.max_workers.value()
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.video_done.connect(self.on_video_done)

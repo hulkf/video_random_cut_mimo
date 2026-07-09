@@ -230,6 +230,29 @@ class SCRFDetector:
             # Reshape to (feat_h, feat_w, num_anchors, ...)
             score_map = score_data.reshape(feat_h, feat_w, num_anc)
             bbox_map = bbox_data.reshape(feat_h, feat_w, num_anc, 4)
+
+            ys, xs, anchors = np.where(score_map >= self.score_thresh)
+            if ys.size > 0:
+                selected_scores = score_map[ys, xs, anchors].astype(np.float32, copy=False)
+                selected_bbox = bbox_map[ys, xs, anchors].astype(np.float32, copy=False)
+
+                cx = xs.astype(np.float32) * stride + stride / 2
+                cy = ys.astype(np.float32) * stride + stride / 2
+
+                fast_boxes = np.empty((ys.size, 4), dtype=np.float32)
+                fast_boxes[:, 0] = (cx - selected_bbox[:, 0] * stride) / scale
+                fast_boxes[:, 1] = (cy - selected_bbox[:, 1] * stride) / scale
+                fast_boxes[:, 2] = (cx + selected_bbox[:, 2] * stride) / scale
+                fast_boxes[:, 3] = (cy + selected_bbox[:, 3] * stride) / scale
+
+                fast_boxes[:, [0, 2]] = np.clip(fast_boxes[:, [0, 2]], 0, w)
+                fast_boxes[:, [1, 3]] = np.clip(fast_boxes[:, [1, 3]], 0, h)
+
+                valid = (fast_boxes[:, 2] > fast_boxes[:, 0]) & (fast_boxes[:, 3] > fast_boxes[:, 1])
+                if np.any(valid):
+                    all_boxes.append(fast_boxes[valid])
+                    all_scores.append(selected_scores[valid])
+            continue
             
             boxes = []
             scores = []
