@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QScrollArea
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from core.video_concatenator import VideoConcatenatorEngine
+from core.video_concatenator import VideoConcatenatorEngine, normalize_input_path
 from gui.config import get_config, set_config
 
 
@@ -213,11 +213,11 @@ class VideoConcatTab(QWidget):
         self.on_cover_changed(Qt.Checked if self.cover_check.isChecked() else Qt.Unchecked)
 
     def save_config(self):
-        set_config("video_concat", "folder_a", self.folder_a_input.text())
-        set_config("video_concat", "folder_b", self.folder_b_input.text())
-        set_config("video_concat", "output_folder", self.output_folder_input.text())
+        set_config("video_concat", "folder_a", normalize_input_path(self.folder_a_input.text()))
+        set_config("video_concat", "folder_b", normalize_input_path(self.folder_b_input.text()))
+        set_config("video_concat", "output_folder", normalize_input_path(self.output_folder_input.text()))
         set_config("video_concat", "cover_enabled", str(self.cover_check.isChecked()).lower())
-        set_config("video_concat", "cover_folder", self.cover_folder_input.text())
+        set_config("video_concat", "cover_folder", normalize_input_path(self.cover_folder_input.text()))
         set_config("video_concat", "cover_mode", str(self.cover_mode_combo.currentIndex()))
         set_config("video_concat", "cover_duration_min", str(self.cover_duration_min.value()))
         set_config("video_concat", "cover_duration_max", str(self.cover_duration_max.value()))
@@ -255,9 +255,9 @@ class VideoConcatTab(QWidget):
             self.save_config()
 
     def start_concat(self):
-        folder_a = self.folder_a_input.text()
-        folder_b = self.folder_b_input.text()
-        output_folder = self.output_folder_input.text()
+        folder_a = normalize_input_path(self.folder_a_input.text())
+        folder_b = normalize_input_path(self.folder_b_input.text())
+        output_folder = normalize_input_path(self.output_folder_input.text())
 
         if not folder_a or not folder_b or not output_folder:
             QMessageBox.warning(self, "警告", "请填写所有必填项")
@@ -274,7 +274,7 @@ class VideoConcatTab(QWidget):
             "folder_b": folder_b,
             "output_folder": output_folder,
             "cover_enabled": self.cover_check.isChecked(),
-            "cover_folder": self.cover_folder_input.text(),
+            "cover_folder": normalize_input_path(self.cover_folder_input.text()),
             "cover_mode": self.cover_mode_combo.currentIndex(),
             "cover_duration_min": self.cover_duration_min.value(),
             "cover_duration_max": self.cover_duration_max.value()

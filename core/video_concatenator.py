@@ -9,14 +9,21 @@ from utils.video_utils import (
 )
 
 
+def normalize_input_path(path):
+    path = (path or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in ("'", '"'):
+        path = path[1:-1].strip()
+    return path
+
+
 class VideoConcatenatorEngine:
     def __init__(self, config):
         self.config = config
-        self.folder_a = config["folder_a"]
-        self.folder_b = config["folder_b"]
-        self.output_folder = config["output_folder"]
+        self.folder_a = normalize_input_path(config["folder_a"])
+        self.folder_b = normalize_input_path(config["folder_b"])
+        self.output_folder = normalize_input_path(config["output_folder"])
         self.cover_enabled = config.get("cover_enabled", False)
-        self.cover_folder = config.get("cover_folder", "")
+        self.cover_folder = normalize_input_path(config.get("cover_folder", ""))
         self.cover_duration_min = config.get("cover_duration_min", 0.5)
         self.cover_duration_max = config.get("cover_duration_max", 1.0)
         self.cover_mode = config.get("cover_mode", "front")  # front, back, both
