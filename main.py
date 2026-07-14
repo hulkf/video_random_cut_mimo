@@ -20,6 +20,8 @@ from gui.styles import apply_theme_and_font
 
 def main():
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
+    app.lastWindowClosed.connect(app.quit)
     
     # 设置应用图标（任务栏 + 窗口左上角）
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
@@ -36,4 +38,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = main()
+    os._exit(exit_code)
