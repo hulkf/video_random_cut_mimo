@@ -29,7 +29,11 @@ class VideoConcatenatorEngine:
         self.cover_mode = config.get("cover_mode", "front")  # front, back, both
 
     def get_videos(self, folder):
+        folder = normalize_input_path(folder)
         video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        if os.path.isfile(folder):
+            return [folder] if folder.lower().endswith(video_exts) else []
+
         videos = []
         for root, dirs, files in os.walk(folder):
             for f in sorted(files):
@@ -72,6 +76,7 @@ class VideoConcatenatorEngine:
         try:
             ref = self._probe_video(video_a)
             ref_w, ref_h = ref["width"], ref["height"]
+            ref_fps = round(ref["fps"], 3)
 
             # 获取两个视频的时长
             dur_a = get_video_duration(video_a)
@@ -105,13 +110,13 @@ class VideoConcatenatorEngine:
 
             # 封面图视频（如果有）
             if cover_video:
-                filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},setsar=1[v_cover]")
+                filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1[v_cover]")
                 video_idx += 1
 
             # 视频A和B
-            filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},setsar=1[v_a]")
+            filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1[v_a]")
             video_idx += 1
-            filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},setsar=1[v_b]")
+            filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1[v_b]")
             video_idx += 1
 
             # 拼接视频流
