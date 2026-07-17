@@ -113,6 +113,9 @@ class VideoConcatenatorEngine:
                 filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1[v_cover]")
                 video_idx += 1
 
+            # 音频起始索引 = 视频A的输入索引（有封面时=1，无封面时=0）
+            audio_idx = video_idx
+
             # 视频A和B
             filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1[v_a]")
             video_idx += 1
@@ -127,7 +130,6 @@ class VideoConcatenatorEngine:
 
             # 音频处理：静音 + 音频A + 音频B
             audio_filter_parts = []
-            audio_idx = 1  # 从第2个输入开始是音频
 
             if total_silence > 0:
                 filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100[silence]")
