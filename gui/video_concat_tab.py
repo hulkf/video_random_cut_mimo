@@ -84,6 +84,18 @@ class VideoConcatTab(QWidget):
         self.cover_check.stateChanged.connect(self.on_cover_changed)
         cover_layout.addWidget(self.cover_check)
 
+        cover_source_row = QHBoxLayout()
+        cover_source_row.addWidget(QLabel("封面来源:"))
+        self.cover_source_combo = QComboBox()
+        self.cover_source_combo.addItem("封面图文件夹随机选图", "folder")
+        self.cover_source_combo.addItem("从文件夹B当前视频抽帧", "video_b_frame")
+        self.cover_source_combo.setEnabled(False)
+        self.cover_source_combo.setMinimumHeight(28)
+        self.cover_source_combo.currentIndexChanged.connect(self.on_cover_changed)
+        cover_source_row.addWidget(self.cover_source_combo)
+        cover_source_row.addStretch()
+        cover_layout.addLayout(cover_source_row)
+
         cover_folder_row = QHBoxLayout()
         cover_folder_row.setSpacing(8)
         cover_folder_row.addWidget(QLabel("封面图文件夹:"))
@@ -181,7 +193,8 @@ class VideoConcatTab(QWidget):
             "2. A和B视频按文件名排序后依次配对（A1+B1, A2+B2, ...）\n"
             "3. 如果两个文件夹视频数量不同，较少的文件夹会循环使用\n"
             "4. 启用封面图时，可选择在拼接视频的开头/结尾/首尾添加图片\n"
-            "5. 封面图无音频，时长可设置区间随机"
+            "5. 封面图可来自图片文件夹，也可从当前配对的文件夹B视频抽帧\n"
+            "6. 封面图无音频，时长可设置区间随机"
         )
         desc_label.setStyleSheet("color: gray; padding: 5px;")
         desc_label.setWordWrap(True)
@@ -206,6 +219,9 @@ class VideoConcatTab(QWidget):
         self.folder_b_input.setText(get_config("video_concat", "folder_b", ""))
         self.output_folder_input.setText(get_config("video_concat", "output_folder", ""))
         self.cover_check.setChecked(get_config("video_concat", "cover_enabled", "false") == "true")
+        cover_source = get_config("video_concat", "cover_source", "folder")
+        cover_source_index = self.cover_source_combo.findData(cover_source)
+        self.cover_source_combo.setCurrentIndex(cover_source_index if cover_source_index >= 0 else 0)
         self.cover_folder_input.setText(get_config("video_concat", "cover_folder", ""))
         self.cover_mode_combo.setCurrentIndex(int(get_config("video_concat", "cover_mode", "0")))
         self.cover_duration_min.setValue(float(get_config("video_concat", "cover_duration_min", "0.5")))
@@ -217,15 +233,18 @@ class VideoConcatTab(QWidget):
         set_config("video_concat", "folder_b", normalize_input_path(self.folder_b_input.text()))
         set_config("video_concat", "output_folder", normalize_input_path(self.output_folder_input.text()))
         set_config("video_concat", "cover_enabled", str(self.cover_check.isChecked()).lower())
+        set_config("video_concat", "cover_source", self.cover_source_combo.currentData())
         set_config("video_concat", "cover_folder", normalize_input_path(self.cover_folder_input.text()))
         set_config("video_concat", "cover_mode", str(self.cover_mode_combo.currentIndex()))
         set_config("video_concat", "cover_duration_min", str(self.cover_duration_min.value()))
         set_config("video_concat", "cover_duration_max", str(self.cover_duration_max.value()))
 
     def on_cover_changed(self, state):
-        enabled = state == Qt.Checked
-        self.cover_folder_input.setEnabled(enabled)
-        self.cover_folder_btn.setEnabled(enabled)
+        enabled = self.cover_check.isChecked()
+        folder_enabled = enabled and self.cover_source_combo.currentData() == "folder"
+        self.cover_source_combo.setEnabled(enabled)
+        self.cover_folder_input.setEnabled(folder_enabled)
+        self.cover_folder_btn.setEnabled(folder_enabled)
         self.cover_mode_combo.setEnabled(enabled)
         self.cover_duration_min.setEnabled(enabled)
         self.cover_duration_max.setEnabled(enabled)
@@ -274,6 +293,7 @@ class VideoConcatTab(QWidget):
             "folder_b": folder_b,
             "output_folder": output_folder,
             "cover_enabled": self.cover_check.isChecked(),
+            "cover_source": self.cover_source_combo.currentData(),
             "cover_folder": normalize_input_path(self.cover_folder_input.text()),
             "cover_mode": self.cover_mode_combo.currentIndex(),
             "cover_duration_min": self.cover_duration_min.value(),

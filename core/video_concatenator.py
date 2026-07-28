@@ -23,6 +23,7 @@ class VideoConcatenatorEngine:
         self.folder_b = normalize_input_path(config["folder_b"])
         self.output_folder = normalize_input_path(config["output_folder"])
         self.cover_enabled = config.get("cover_enabled", False)
+        self.cover_source = config.get("cover_source", "folder")
         self.cover_folder = normalize_input_path(config.get("cover_folder", ""))
         self.cover_duration_min = config.get("cover_duration_min", 0.5)
         self.cover_duration_max = config.get("cover_duration_max", 1.0)
@@ -70,6 +71,27 @@ class VideoConcatenatorEngine:
             "fps": float(num) / float(den)
         }
 
+    def _cover_mode_name(self):
+        modes = {0: "front", 1: "back", 2: "both"}
+        if isinstance(self.cover_mode, int):
+            return modes.get(self.cover_mode, "front")
+        if isinstance(self.cover_mode, str) and self.cover_mode.isdigit():
+            return modes.get(int(self.cover_mode), "front")
+        return self.cover_mode if self.cover_mode in ("front", "back", "both") else "front"
+
+    def _extract_cover_frame(self, video_path, output_path, duration):
+        timestamp = 0
+        if duration > 0.5:
+            timestamp = random.uniform(0.1, max(0.1, duration - 0.1))
+        cmd = [
+            "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", video_path,
+            "-frames:v", "1", "-q:v", "2", output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise RuntimeError(f"extract cover frame failed: {result.stderr}")
+        return output_path
+
     def concat_pair(self, video_a, video_b, output_path, cover_img=None):
         """拼接两个视频，保留音频，封面图用静音"""
         tmp_dir = tempfile.mkdtemp()
@@ -85,6 +107,11 @@ class VideoConcatenatorEngine:
             # 封面图处理
             cover_duration = 0
             cover_video = None
+            if self.cover_enabled and self.cover_source == "video_b_frame":
+                cover_img = self._extract_cover_frame(
+                    video_b, os.path.join(tmp_dir, "cover_from_b.jpg"), dur_b
+                )
+
             if self.cover_enabled and cover_img:
                 cover_duration = random.uniform(self.cover_duration_min, self.cover_duration_max)
                 cover_video = os.path.join(tmp_dir, "cover.mp4")
@@ -107,10 +134,19 @@ class VideoConcatenatorEngine:
             # 构建 filter_complex
             filter_parts = []
             video_idx = 0
+            cover_mode = self._cover_mode_name()
+            cover_at_front = bool(cover_video and cover_mode in ("front", "both"))
+            cover_at_back = bool(cover_video and cover_mode in ("back", "both"))
 
             # 封面图视频（如果有）
             if cover_video:
-                filter_parts.append(f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1[v_cover]")
+                cover_filter = f"[{video_idx}:v]scale={ref_w}:{ref_h},fps={ref_fps},setsar=1"
+                if cover_at_front and cover_at_back:
+                    filter_parts.append(f"{cover_filter},split=2[v_cover_front][v_cover_back]")
+                elif cover_at_back:
+                    filter_parts.append(f"{cover_filter}[v_cover_back]")
+                else:
+                    filter_parts.append(f"{cover_filter}[v_cover_front]")
                 video_idx += 1
 
             # 音频起始索引 = 视频A的输入索引（有封面时=1，无封面时=0）
@@ -123,18 +159,21 @@ class VideoConcatenatorEngine:
             video_idx += 1
 
             # 拼接视频流
-            if cover_video:
-                filter_parts.append("[v_cover][v_a][v_b]concat=n=3:v=1:a=0[outv]")
-            else:
-                filter_parts.append("[v_a][v_b]concat=n=2:v=1:a=0[outv]")
+            video_parts = []
+            if cover_at_front:
+                video_parts.append("[v_cover_front]")
+            video_parts.extend(["[v_a]", "[v_b]"])
+            if cover_at_back:
+                video_parts.append("[v_cover_back]")
+            filter_parts.append(f"{''.join(video_parts)}concat=n={len(video_parts)}:v=1:a=0[outv]")
 
             # 音频处理：静音 + 音频A + 音频B
             audio_filter_parts = []
 
-            if total_silence > 0:
-                filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100[silence]")
-                filter_parts.append(f"[silence]atrim=0:{total_silence},asetpts=PTS-STARTPTS[silence_padded]")
-                audio_filter_parts.append("[silence_padded]")
+            if cover_at_front and total_silence > 0:
+                filter_parts.append("anullsrc=channel_layout=stereo:sample_rate=44100[silence_front]")
+                filter_parts.append(f"[silence_front]atrim=0:{total_silence},asetpts=PTS-STARTPTS[silence_front_padded]")
+                audio_filter_parts.append("[silence_front_padded]")
 
             # 音频A
             filter_parts.append(f"[{audio_idx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_a]")
@@ -144,6 +183,11 @@ class VideoConcatenatorEngine:
             # 音频B
             filter_parts.append(f"[{audio_idx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_b]")
             audio_filter_parts.append("[a_b]")
+
+            if cover_at_back and total_silence > 0:
+                filter_parts.append("anullsrc=channel_layout=stereo:sample_rate=44100[silence_back]")
+                filter_parts.append(f"[silence_back]atrim=0:{total_silence},asetpts=PTS-STARTPTS[silence_back_padded]")
+                audio_filter_parts.append("[silence_back_padded]")
 
             # 合并音频
             concat_audio = "".join(audio_filter_parts)
@@ -337,7 +381,10 @@ class VideoConcatenatorEngine:
             output_name = f"{name_a}+{name_b}.mp4"
             output_path = os.path.join(self.output_folder, output_name)
 
-            cover_img = random.choice(cover_images) if cover_images else None
+            if self.cover_source == "video_b_frame":
+                cover_img = None
+            else:
+                cover_img = random.choice(cover_images) if cover_images else None
 
             if callback:
                 callback(i, total, f"拼接: {name_a} + {name_b}", 0)
