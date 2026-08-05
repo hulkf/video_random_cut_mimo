@@ -45,56 +45,81 @@ class VideoFissionTab(QWidget):
         self.init_ui()
         self.load_config()
 
+    # ── 构建 UI ──────────────────────────────────────────────
     def init_ui(self):
-        layout = QVBoxLayout()
-        layout.setSpacing(10)
-        layout.setContentsMargins(12, 12, 12, 12)
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(16, 12, 16, 12)
 
-        input_group = QGroupBox("输入设置")
-        input_layout = QVBoxLayout()
-        input_layout.setSpacing(8)
+        # ── 1) 输入 / 输出文件夹 ──────────────────────────────
+        input_group = QGroupBox("输入 / 输出")
+        il = QVBoxLayout()
+        il.setSpacing(10)
 
-        folder_row = QHBoxLayout()
-        folder_row.setSpacing(8)
+        # 输入行
+        in_row = QHBoxLayout()
+        in_row.setSpacing(8)
         self.input_folder = QLineEdit()
-        self.input_folder.setMinimumHeight(30)
-        self.input_folder.setPlaceholderText("选择需要裂变的视频文件夹（自动递归处理子文件夹）...")
-        input_btn = QPushButton("浏览")
-        input_btn.setFixedWidth(80)
-        input_btn.clicked.connect(self.browse_input)
-        folder_row.addWidget(self.input_folder, 1)
-        folder_row.addWidget(input_btn)
-        input_layout.addLayout(folder_row)
+        self.input_folder.setMinimumHeight(32)
+        self.input_folder.setPlaceholderText("输入文件夹（放视频的目录）")
+        in_btn = QPushButton("浏览")
+        in_btn.setFixedWidth(70)
+        in_btn.setMinimumHeight(32)
+        in_btn.clicked.connect(self.browse_input)
+        in_row.addWidget(self.input_folder, 1)
+        in_row.addWidget(in_btn)
+        il.addLayout(in_row)
 
-        output_row = QHBoxLayout()
-        output_row.setSpacing(8)
+        # 输出行
+        out_row = QHBoxLayout()
+        out_row.setSpacing(8)
         self.output_folder = QLineEdit()
-        self.output_folder.setMinimumHeight(30)
-        self.output_folder.setPlaceholderText("选择输出文件夹...")
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output)
-        output_row.addWidget(self.output_folder, 1)
-        output_row.addWidget(output_btn)
-        input_layout.addLayout(output_row)
-        input_group.setLayout(input_layout)
+        self.output_folder.setMinimumHeight(32)
+        self.output_folder.setPlaceholderText("输出文件夹（裂变后的视频存到这里）")
+        out_btn = QPushButton("浏览")
+        out_btn.setFixedWidth(70)
+        out_btn.setMinimumHeight(32)
+        out_btn.clicked.connect(self.browse_output)
+        out_row.addWidget(self.output_folder, 1)
+        out_row.addWidget(out_btn)
+        il.addLayout(out_row)
 
-        transform_group = QGroupBox("变换选项（勾选要做的处理）")
-        transform_layout = QVBoxLayout()
-        transform_layout.setSpacing(6)
-        self.flip_cb = QCheckBox("水平翻转（去重最有效，画面左右反转，对产品视频几乎无感）")
-        self.color_cb = QCheckBox("调色（色相/饱和度/亮度/对比度，轻微随机）")
-        self.noise_cb = QCheckBox("加噪点（像素级扰动，几乎看不出）")
-        self.resample_cb = QCheckBox("缩放重采样（1% 缩放后裁回原尺寸，零观感差别）")
+        input_group.setLayout(il)
+        main_layout.addWidget(input_group)
+
+        # ── 2) 变换选项 + 强度（左右两栏）──────────────────────
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+
+        # 左栏：变换勾选
+        tg = QGroupBox("变换选项")
+        tl = QVBoxLayout()
+        tl.setSpacing(8)
+
+        self.flip_cb = QCheckBox("水平翻转")
+        self.flip_cb.setToolTip("画面左右镜像。去重效果最好，对产品/风景几乎无感；含文字或人脸朝向的视频慎用")
+        self.color_cb = QCheckBox("调色")
+        self.color_cb.setToolTip("随机微调色相/饱和度/亮度/对比度，肉眼几乎无感")
+        self.noise_cb = QCheckBox("加噪点")
+        self.noise_cb.setToolTip("像素级极轻微扰动，改变指纹但看不出")
+        self.resample_cb = QCheckBox("缩放重采样")
+        self.resample_cb.setToolTip("缩放约1%%后裁回原尺寸，零观感差别")
+
         for cb in (self.flip_cb, self.color_cb, self.noise_cb, self.resample_cb):
-            cb.setMinimumHeight(26)
-            transform_layout.addWidget(cb)
-        transform_group.setLayout(transform_layout)
+            cb.setMinimumHeight(28)
+            tl.addWidget(cb)
+        tl.addStretch()
+        tg.setLayout(tl)
+        top_row.addWidget(tg, 1)
 
-        intensity_group = QGroupBox("变换强度")
-        intensity_layout = QHBoxLayout()
-        intensity_layout.setSpacing(8)
-        intensity_layout.addWidget(QLabel("幅度:"))
+        # 右栏：强度 + 随机化 + 编码
+        right_col = QVBoxLayout()
+        right_col.setSpacing(10)
+
+        # 强度
+        ig = QGroupBox("变换幅度")
+        ig_layout = QHBoxLayout()
+        ig_layout.setSpacing(12)
         self.intensity_group = QButtonGroup(self)
         self.intensity_buttons = {}
         for key, text in [("mild", "轻微"), ("medium", "中等"), ("strong", "强烈")]:
@@ -102,99 +127,110 @@ class VideoFissionTab(QWidget):
             radio.setMinimumHeight(28)
             self.intensity_group.addButton(radio)
             self.intensity_buttons[key] = radio
-            intensity_layout.addWidget(radio)
-        intensity_layout.addStretch()
-        transform_group_intensity = intensity_group
-        transform_group_intensity.setLayout(intensity_layout)
+            ig_layout.addWidget(radio)
+        ig_layout.addStretch()
+        ig.setLayout(ig_layout)
+        right_col.addWidget(ig)
 
-        random_group = QGroupBox("随机化")
-        random_layout = QHBoxLayout()
-        random_layout.setSpacing(8)
-        self.random_cb = QCheckBox("每条视频随机参数（保证输出互不相同）")
+        # 随机化
+        rg = QGroupBox("随机化")
+        rg_layout = QHBoxLayout()
+        rg_layout.setSpacing(8)
+        self.random_cb = QCheckBox("每条视频随机参数")
         self.random_cb.setChecked(True)
-        self.random_cb.setMinimumHeight(26)
-        random_layout.addWidget(self.random_cb)
-        random_layout.addStretch()
-        random_group.setLayout(random_layout)
+        self.random_cb.setToolTip("开启后每条视频的变换参数都不同，保证输出互不重复")
+        self.random_cb.setMinimumHeight(28)
+        rg_layout.addWidget(self.random_cb)
+        rg_layout.addStretch()
+        rg.setLayout(rg_layout)
+        right_col.addWidget(rg)
 
-        encode_group = QGroupBox("编码设置")
-        encode_layout = QHBoxLayout()
-        encode_layout.setSpacing(8)
-        encode_layout.addWidget(QLabel("编码速度:"))
+        # 编码设置
+        eg = QGroupBox("编码")
+        eg_layout = QHBoxLayout()
+        eg_layout.setSpacing(8)
+        eg_layout.addWidget(QLabel("速度:"))
         self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["superfast", "veryfast", "ultrafast"])
+        self.preset_combo.addItems(["ultrafast", "superfast", "veryfast"])
         self.preset_combo.setCurrentText("ultrafast")
         self.preset_combo.setMinimumHeight(28)
-        encode_layout.addWidget(self.preset_combo)
-        encode_layout.addWidget(QLabel("画质(CRF):"))
+        eg_layout.addWidget(self.preset_combo)
+        eg_layout.addWidget(QLabel("CRF:"))
         self.crf_slider = QSlider(Qt.Horizontal)
         self.crf_slider.setRange(16, 28)
         self.crf_slider.setValue(20)
-        self.crf_slider.setTickPosition(QSlider.TicksBelow)
-        self.crf_slider.setTickInterval(1)
+        self.crf_slider.setMinimumWidth(120)
         self.crf_slider.valueChanged.connect(self.on_crf_changed)
-        encode_layout.addWidget(self.crf_slider, 1)
+        eg_layout.addWidget(self.crf_slider, 1)
         self.crf_label = QLabel("20")
-        self.crf_label.setMinimumWidth(28)
-        encode_layout.addWidget(self.crf_label)
-        encode_layout.addStretch()
-        encode_group.setLayout(encode_layout)
+        self.crf_label.setMinimumWidth(24)
+        eg_layout.addWidget(self.crf_label)
+        eg_layout.addStretch()
+        eg.setLayout(eg_layout)
+        right_col.addWidget(eg)
 
-        seed_group = QGroupBox("随机种子（可选）")
-        seed_layout = QHBoxLayout()
-        seed_layout.setSpacing(8)
+        # 随机种子
+        sg = QGroupBox("随机种子（可选）")
+        sg_layout = QHBoxLayout()
+        sg_layout.setSpacing(8)
         self.seed_edit = QLineEdit()
         self.seed_edit.setMinimumHeight(30)
-        self.seed_edit.setPlaceholderText("留空 = 每条视频随机；填固定值可复现同一批结果")
-        seed_layout.addWidget(self.seed_edit, 1)
-        seed_group.setLayout(seed_layout)
+        self.seed_edit.setPlaceholderText("留空=每次随机；填固定值可复现结果")
+        sg_layout.addWidget(self.seed_edit, 1)
+        sg.setLayout(sg_layout)
+        right_col.addWidget(sg)
 
+        right_col.addStretch()
+        top_row.addLayout(right_col, 1)
+        main_layout.addLayout(top_row)
+
+        # ── 3) 开始按钮 ───────────────────────────────────────
         self.start_btn = QPushButton("开始裂变")
-        self.start_btn.setMinimumHeight(36)
+        self.start_btn.setMinimumHeight(40)
         self.start_btn.clicked.connect(self.start_fission)
+        main_layout.addWidget(self.start_btn)
 
-        progress_group = QGroupBox("处理进度")
-        progress_layout = QVBoxLayout()
-        progress_row = QHBoxLayout()
-        progress_row.addWidget(QLabel("进度:"))
+        # ── 4) 进度 ────────────────────────────────────────────
+        pg = QGroupBox("处理进度")
+        pl = QVBoxLayout()
+        pl.setSpacing(6)
+        prow = QHBoxLayout()
+        prow.setSpacing(8)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        progress_row.addWidget(self.progress_bar)
+        self.progress_bar.setMinimumHeight(24)
         self.progress_label = QLabel("0%")
-        progress_row.addWidget(self.progress_label)
-        progress_layout.addLayout(progress_row)
+        self.progress_label.setMinimumWidth(36)
+        prow.addWidget(self.progress_bar, 1)
+        prow.addWidget(self.progress_label)
+        pl.addLayout(prow)
         self.status_label = QLabel("就绪")
-        progress_layout.addWidget(self.status_label)
-        progress_group.setLayout(progress_layout)
+        pl.addWidget(self.status_label)
+        pg.setLayout(pl)
+        main_layout.addWidget(pg)
 
+        # ── 5) 结果表格 ────────────────────────────────────────
         self.result_table = QTableWidget()
         self.result_table.setColumnCount(2)
         self.result_table.setHorizontalHeaderLabels(["输入文件", "输出文件"])
         self.result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.result_table.setMinimumHeight(220)
+        self.result_table.setMinimumHeight(160)
+        main_layout.addWidget(self.result_table, 1)
 
+        # ── 6) 底部提示 ────────────────────────────────────────
         hint = QLabel(
             "原理：平台靠画面感知哈希(pHash)判重。本工具对画面做温和且随机的变换"
             "（翻转/调色/噪点/像素重采样），人眼几乎看不出差别，但 pHash 会明显改变。"
-            "音频直接复制、分辨率保持不变，处理速度快。输出文件名带 _fission 后缀，"
-            "并在输出目录保留原有子文件夹结构。"
+            "音频直接复制、分辨率保持不变，处理速度快。"
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray; padding: 5px;")
+        hint.setStyleSheet("color: gray; padding: 6px 2px;")
+        main_layout.addWidget(hint)
 
-        layout.addWidget(input_group)
-        layout.addWidget(transform_group)
-        layout.addWidget(transform_group_intensity)
-        layout.addWidget(random_group)
-        layout.addWidget(encode_group)
-        layout.addWidget(seed_group)
-        layout.addWidget(self.start_btn)
-        layout.addWidget(progress_group)
-        layout.addWidget(self.result_table, 1)
-        layout.addWidget(hint)
-        self.setLayout(layout)
+        self.setLayout(main_layout)
 
+    # ── 配置持久化 ───────────────────────────────────────────
     def load_config(self):
         self.input_folder.setText(get_config("video_fission", "input_folder", ""))
         self.output_folder.setText(get_config("video_fission", "output_folder", ""))
@@ -206,7 +242,7 @@ class VideoFissionTab(QWidget):
         intensity = get_config("video_fission", "intensity", "mild")
         self.intensity_buttons.get(intensity, self.intensity_buttons["mild"]).setChecked(True)
         preset = get_config("video_fission", "preset", "ultrafast")
-        self.preset_combo.setCurrentText(preset if preset in ("superfast", "veryfast", "ultrafast") else "ultrafast")
+        self.preset_combo.setCurrentText(preset if preset in ("ultrafast", "superfast", "veryfast") else "ultrafast")
         self.crf_slider.setValue(int(get_config("video_fission", "crf", "20")))
         self.on_crf_changed(self.crf_slider.value())
 
@@ -223,6 +259,7 @@ class VideoFissionTab(QWidget):
         set_config("video_fission", "crf", str(self.crf_slider.value()))
         set_config("video_fission", "seed", self.seed_edit.text().strip())
 
+    # ── 回调 ─────────────────────────────────────────────────
     def on_crf_changed(self, value):
         self.crf_label.setText(str(value))
 
@@ -247,7 +284,7 @@ class VideoFissionTab(QWidget):
         }
 
     def browse_input(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
+        folder = QFileDialog.getExistingDirectory(self, "选择输入文件夹")
         if folder:
             self.input_folder.setText(folder)
             self.save_config()
@@ -258,6 +295,7 @@ class VideoFissionTab(QWidget):
             self.output_folder.setText(folder)
             self.save_config()
 
+    # ── 执行 ─────────────────────────────────────────────────
     def start_fission(self):
         input_folder = self.input_folder.text()
         output_folder = self.output_folder.text()
