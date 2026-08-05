@@ -12,6 +12,8 @@ from gui.screenshot_tab import ScreenshotTab
 from gui.subtitle_tab import SubtitleTab
 from gui.settings_tab import SettingsTab
 from gui.kaipai_cloud_tab import KaipaiCloudTab
+from gui.voice_clone_tab import VoiceCloneTab
+from gui.video_fission_tab import VideoFissionTab
 
 
 class WrapTabWidget(QWidget):
@@ -123,6 +125,8 @@ class MainWindow(QMainWindow):
         self.subtitle_tab = SubtitleTab()
         self.kaipai_cloud_tab = KaipaiCloudTab()
         self.settings_tab = SettingsTab(app)
+        self.voice_clone_tab = VoiceCloneTab()
+        self.video_fission_tab = VideoFissionTab()
 
         self.tabs.addTab(self.slice_tab, "视频切片")
         self.tabs.addTab(self.screenshot_tab, "视频截图")
@@ -135,6 +139,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.keyword_remove_tab, "去关键词")
         self.tabs.addTab(self.subtitle_tab, "视频字幕")
         self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
+        self.tabs.addTab(self.video_fission_tab, "视频裂变")
+        self.tabs.addTab(self.voice_clone_tab, "音色复刻")
         self.tabs.addTab(self.settings_tab, "设置")
 
     def closeEvent(self, event):
@@ -143,7 +149,8 @@ class MainWindow(QMainWindow):
             self.slice_tab, self.screenshot_tab, self.text_recognition_tab,
             self.face_detection_tab, self.audio_mix_tab, self.video_mix_tab,
             self.video_concat_tab, self.video_resize_tab, self.keyword_remove_tab,
-            self.subtitle_tab, self.kaipai_cloud_tab,
+            self.subtitle_tab, self.kaipai_cloud_tab, self.video_fission_tab,
+            self.voice_clone_tab,
         ]
         for tab in tabs:
             worker = getattr(tab, "worker", None)
