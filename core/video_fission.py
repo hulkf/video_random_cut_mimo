@@ -6,81 +6,62 @@ from core.video_resizer import collect_videos, probe_video
 
 
 class VideoFission:
-    """视频裂变（去重搬运）：对画面做温和且随机的变换，改变感知哈希(pHash)，
-    同时尽量保持画面观感不变。每条视频使用随机参数，保证输出互不相同。
+    """视频裂变（去重搬运）：一个视频 → N 个不同指纹的副本。
 
-    设计目标：
-      - 看不出差别：变换幅度控制在人眼几乎无感的范围（±6°色相、±3%亮度、1%缩放等）
-      - 改掉指纹：水平翻转 / 像素重采样对 pHash 极其敏感
-      - 速度快：仅轻量滤镜 + libx264 -preset ultrafast，音频直接 copy 不重编码
+    原理：
+      对画面做温和且随机的变换（调色/噪点/缩放重采样），每份用不同的随机参数，
+      使平台感知哈希(pHash)各不相同，但人眼几乎看不出差别。
+
+      不使用水平翻转(hflip)，避免文字/人脸镜像反转。
     """
 
     INTENSITY_FACTOR = {"mild": 1.0, "medium": 2.0, "strong": 3.5}
 
-    def __init__(self, options=None, seed=None):
+    def __init__(self, options=None):
         self.options = options or {}
         self.intensity = self.options.get("intensity", "mild")
-        self.random_params = self.options.get("random_params", True)
         self.preset = self.options.get("preset", "ultrafast")
         self.crf = int(self.options.get("crf", 20))
         self.ifactor = self.INTENSITY_FACTOR.get(self.intensity, 1.0)
-        # seed=None 时每条视频随机；给定种子则参数可复现
-        self._rng = random.Random(seed)
 
-    def _rand(self, lo, hi):
-        return self._rng.uniform(lo, hi) if self.random_params else (lo + hi) / 2.0
-
-    def _rand_int(self, lo, hi):
-        return self._rng.randint(lo, hi) if self.random_params else (lo + hi) // 2
-
-    def build_filter(self, video_path):
+    def _build_filter(self, video_path, rng):
+        """构建一份随机滤镜链。每次调用参数都不同。"""
         width, height = probe_video(video_path)
         filters = []
-        o = self.options
 
-        # 水平翻转：对 pHash 极有效，对无文字/人脸朝向不敏感的产品视频几乎无感
-        if o.get("flip") and self._rand(0, 1) < 0.9:
-            filters.append("hflip")
-
-        # 调色：色相 / 饱和度 / 亮度 / 对比度，温和随机
-        if o.get("color"):
-            hue = self._rand_int(-6, 6)
-            sat = self._rand(0.94, 1.06)
-            bri = self._rand(-0.03, 0.03) * self.ifactor
-            con = self._rand(0.97, 1.03)
-            # 色相用 hue 滤镜，亮度/饱和度/对比度用 eq 滤镜（eq 不支持 hue 参数）
-            filters.append("hue=h={}".format(hue))
-            filters.append(
-                "eq=saturation={s:.3f}:brightness={b:.3f}:contrast={c:.3f}".format(
-                    s=sat, b=bri, c=con
-                )
+        # 1) 调色：色相微偏 + 饱和度/亮度/对比度轻微浮动
+        hue = rng.randint(-8, 8)
+        sat = rng.uniform(0.92, 1.08)
+        bri = rng.uniform(-0.04, 0.04) * self.ifactor
+        con = rng.uniform(0.96, 1.04)
+        filters.append("hue=h={}".format(hue))
+        filters.append(
+            "eq=saturation={s:.3f}:brightness={b:.3f}:contrast={c:.3f}".format(
+                s=sat, b=bri, c=con
             )
+        )
 
-        # 轻微噪点：改变像素，几乎无感
-        if o.get("noise"):
-            strength = max(0.3, self._rand(0.5, 1.5) * self.ifactor)
-            filters.append("noise=alls={:.1f}".format(strength))
+        # 2) 轻微噪点：像素级扰动
+        strength = max(0.5, rng.uniform(0.8, 2.0) * self.ifactor)
+        filters.append("noise=alls={:.1f}:allf=t".format(strength))
 
-        # 缩放重采样 + 裁回原尺寸：触发像素重采样，零视觉差别但强烈扰动 pHash
-        if o.get("resample"):
-            pct = 1.0 + max(0.004, self._rand(0.005, 0.02) * self.ifactor)
-            nw = int(round(width * pct / 2) * 2)
-            nh = int(round(height * pct / 2) * 2)
-            filters.append("scale={}:{}".format(nw, nh))
-            filters.append("crop={}:{}".format(width, height))
+        # 3) 缩放重采样：微调尺寸后裁回原尺寸，触发像素重采样
+        pct = 1.0 + max(0.006, rng.uniform(0.008, 0.025) * self.ifactor)
+        nw = int(round(width * pct / 2) * 2)
+        nh = int(round(height * pct / 2) * 2)
+        filters.append("scale={}:{}".format(nw, nh))
+        filters.append("crop={}:{}".format(width, height))
 
-        # 兜底：至少做一次翻转，避免完全没改到指纹
-        if not filters:
-            filters.append("hflip")
-
-        # 保证输出尺寸为偶数（libx264 要求），偶数尺寸时此步无实际变化
+        # 保证输出偶数尺寸
         filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
 
         return ",".join(filters)
 
-    def fission_video(self, video_path, output_path):
+    def fission_one(self, video_path, output_path, seed=None):
+        """对单个视频做一次裂变，输出到指定路径。"""
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        vf = self.build_filter(video_path)
+        rng = random.Random(seed)
+        vf = self._build_filter(video_path, rng)
         cmd = [
             "ffmpeg", "-i", video_path,
             "-vf", vf,
@@ -95,21 +76,51 @@ class VideoFission:
             raise RuntimeError("裂变失败: " + (result.stderr or "")[-500:])
         return output_path
 
-    def fission_folder(self, input_folder, output_folder, callback=None):
+    def fission_folder(self, input_folder, output_folder, count=1, callback=None):
+        """批量裂变：每个视频生成 count 个不同版本。
+
+        Args:
+            input_folder:  输入视频文件夹
+            output_folder: 输出根目录
+            count:         每个源视频生成几个变种（默认 1）
+            callback:      progress(current, total, rel_path) 回调
+
+        Returns:
+            [{"input": ..., "outputs": [path1, path2, ...], "subfolder": ...}, ...]
+        """
         videos = collect_videos(input_folder)
         results = []
         total = len(videos)
-        seed = self.options.get("seed")
+        base_seed = self.options.get("seed")
+
         for index, video_path in enumerate(videos):
             rel = os.path.relpath(video_path, input_folder)
-            rel_base, _ = os.path.splitext(rel)
-            out = os.path.join(output_folder, "{}_fission.mp4".format(rel_base))
+            rel_dir = os.path.dirname(rel)
+            rel_base, _ = os.path.splitext(os.path.basename(rel))
+
+            # 每个源视频一个子文件夹，存放它的所有裂变产物
+            subfolder = os.path.join(output_folder, rel_dir, rel_base + "_fissions")
+            os.makedirs(subfolder, exist_ok=True)
+
             if callback:
                 callback(index, total, rel)
-            # 每条视频独立随机，保证输出互不相同
-            engine = VideoFission(self.options, seed=seed)
-            out_path = engine.fission_video(video_path, out)
-            results.append({"input": video_path, "output": out_path})
+
+            outputs = []
+            for i in range(count):
+                # 每份用不同的种子，保证参数互不相同
+                seed = None if base_seed is None else (base_seed + i)
+                out_name = "{}_{:03d}.mp4".format(rel_base, i + 1)
+                out_path = os.path.join(subfolder, out_name)
+                self.fission_one(video_path, out_path, seed=seed)
+                outputs.append(out_path)
+
+            results.append({
+                "input": video_path,
+                "outputs": outputs,
+                "subfolder": subfolder,
+            })
+
             if callback:
                 callback(index + 1, total, rel)
+
         return results
