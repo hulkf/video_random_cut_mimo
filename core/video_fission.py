@@ -154,30 +154,66 @@ class VideoFission:
         except Exception:
             return False
 
-    def fission_folder(self, input_folder, output_folder, count=1, callback=None):
+    def fission_folder(self, input_paths, output_folder, count=1, separate_folder=True, callback=None):
         """批量裂变：每个视频生成 count 个不同版本。
 
+        支持多个输入源（文件夹 或 单个视频文件），共享同一个输出文件夹。
+        路径首尾如果带双引号/单引号会自动剥离兼容。
+
         Args:
-            input_folder:  输入视频文件夹
-            output_folder: 输出根目录
-            count:         每个源视频生成几个变种（默认 1）
-            callback:      progress(current, total, rel_path) 回调
+            input_paths:     文件夹路径或单个视频文件路径的列表（list[str]）
+            output_folder:   输出根目录
+            count:           每个源视频生成几个变种（默认 1）
+            separate_folder: True=每个源视频的产物放独立子文件夹；
+                             False=所有产物统一平铺在输出根目录下
+            callback:        progress(current, total, rel_path) 回调
 
         Returns:
-            [{"input": ..., "outputs": [path1, path2, ...], "subfolder": ...}, ...]
+            [{"input": ..., "outputs": [path1, ...], "subfolder": ...}, ...]
         """
-        videos = collect_videos(input_folder)
+        # 收集所有输入源（文件夹递归 / 单个文件），并记录各自的根目录
+        videos = []  # (video_path, source_root)
+        for p in input_paths or []:
+            p = (p or "").strip().strip('"').strip("'")
+            if not p:
+                continue
+            if os.path.isdir(p):
+                for v in collect_videos(p):
+                    videos.append((v, p))
+            elif os.path.isfile(p):
+                videos.append((p, os.path.dirname(p)))
+
+        # 去重排序（不同输入源可能重复指向同一文件）
+        videos = sorted(set(videos), key=lambda x: x[0])
+
+        # 计算每个源视频的名字基础：相对路径中的目录用下划线拼进名字
+        from collections import Counter
+        bases = [
+            os.path.splitext(os.path.relpath(v, root))[0].replace(os.sep, "_").replace("/", "_")
+            for v, root in videos
+        ]
+        # 出现重名（不同输入源有同名文件）时，加上来源文件夹名前缀区分
+        dup = {b for b, c in Counter(bases).items() if c > 1}
+        names = []
+        for (v, root), b in zip(videos, bases):
+            if b in dup:
+                src_name = os.path.basename(os.path.normpath(root)) or "src"
+                names.append("{}_{}".format(src_name, b))
+            else:
+                names.append(b)
+
         results = []
         total = len(videos)
         base_seed = self.options.get("seed")
 
-        for index, video_path in enumerate(videos):
-            rel = os.path.relpath(video_path, input_folder)
-            rel_dir = os.path.dirname(rel)
-            rel_base, _ = os.path.splitext(os.path.basename(rel))
+        for index, ((video_path, source_root), rel_base) in enumerate(zip(videos, names)):
 
-            # 每个源视频一个子文件夹，存放它的所有裂变产物
-            subfolder = os.path.join(output_folder, rel_dir, rel_base + "_fissions")
+            if separate_folder:
+                # 规则A：每个源视频的产物放独立子文件夹
+                subfolder = os.path.join(output_folder, rel_base + "_fissions")
+            else:
+                # 规则B：所有产物统一平铺在输出根目录
+                subfolder = output_folder
             os.makedirs(subfolder, exist_ok=True)
 
             if callback:
@@ -189,6 +225,12 @@ class VideoFission:
                 seed = None if base_seed is None else (base_seed + i)
                 out_name = "{}_{:03d}.mp4".format(rel_base, i + 1)
                 out_path = os.path.join(subfolder, out_name)
+                # 防重名保护：文件已存在则追加序号（理论上 rel_base 已唯一，双保险）
+                k = 2
+                while os.path.exists(out_path):
+                    out_path = os.path.join(
+                        subfolder, "{}_{:03d}_{}.mp4".format(rel_base, i + 1, k))
+                    k += 1
                 self.fission_one(video_path, out_path, seed=seed)
                 outputs.append(out_path)
 
