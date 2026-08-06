@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog, QProgressBar,
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSpinBox, QSlider, QComboBox,
+    QHeaderView, QSpinBox, QSlider, QComboBox, QCheckBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
@@ -139,6 +139,22 @@ class VideoFissionTab(QWidget):
         param_group.setLayout(param_lay)
         main.addWidget(param_group)
 
+        # ── 文件层保险 ──────────────────────────────────────────
+        file_group = QGroupBox("文件层保险（可选，默认开启）")
+        file_lay = QHBoxLayout()
+        file_lay.setSpacing(16)
+        self.meta_cb = QCheckBox("清空视频元数据")
+        self.meta_cb.setChecked(True)
+        self.meta_cb.setToolTip("去除视频内置的作者/软件/描述等信息，并写入随机注释，抹掉工具痕迹")
+        self.ts_cb = QCheckBox("随机化文件时间戳")
+        self.ts_cb.setChecked(True)
+        self.ts_cb.setToolTip("将产物的创建/修改/访问时间改为随机值，文件属性层面也互不相同")
+        file_lay.addWidget(self.meta_cb)
+        file_lay.addWidget(self.ts_cb)
+        file_lay.addStretch()
+        file_group.setLayout(file_lay)
+        main.addWidget(file_group)
+
         # ── 开始按钮 ───────────────────────────────────────────
         self.start_btn = QPushButton("开始裂变")
         self.start_btn.setMinimumHeight(44)
@@ -179,7 +195,8 @@ class VideoFissionTab(QWidget):
         hint = QLabel(
             "原理：对画面做随机调色 + 轻微噪点 + 像素重采样，每份参数不同，"
             "平台指纹(pHash)各不相同，但人眼几乎看不出差别。"
-            "不使用水平翻转，文字/人脸不会镜像反转。音频直接复制，分辨率不变。"
+            "不使用水平翻转，文字/人脸不会镜像反转。音频直接复制。"
+            "分辨率与宽高比严格锁定原视频，不会改动。"
             "\n双击结果行可打开对应文件夹查看产物。"
         )
         hint.setWordWrap(True)
@@ -199,6 +216,8 @@ class VideoFissionTab(QWidget):
         preset = get_config("video_fission", "preset", "ultrafast")
         self.preset_combo.setCurrentText(preset if preset in ("ultrafast", "superfast", "veryfast") else "ultrafast")
         self.crf_slider.setValue(int(get_config("video_fission", "crf", "20")))
+        self.meta_cb.setChecked(get_config("video_fission", "clean_metadata", True) in (True, "true", "True"))
+        self.ts_cb.setChecked(get_config("video_fission", "random_timestamps", True) in (True, "true", "True"))
         self._on_crf(self.crf_slider.value())
 
     def save_config(self):
@@ -209,6 +228,8 @@ class VideoFissionTab(QWidget):
         set_config("video_fission", "intensity", imap.get(self.intensity_combo.currentIndex(), "mild"))
         set_config("video_fission", "preset", self.preset_combo.currentText())
         set_config("video_fission", "crf", str(self.crf_slider.value()))
+        set_config("video_fission", "clean_metadata", str(self.meta_cb.isChecked()))
+        set_config("video_fission", "random_timestamps", str(self.ts_cb.isChecked()))
 
     # ── 回调 ──────────────────────────────────────────────────
     def _on_crf(self, v):
@@ -259,6 +280,8 @@ class VideoFissionTab(QWidget):
             "intensity": self._intensity_key(),
             "preset": self.preset_combo.currentText(),
             "crf": self.crf_slider.value(),
+            "clean_metadata": self.meta_cb.isChecked(),
+            "random_timestamps": self.ts_cb.isChecked(),
         }
 
         self.worker = VideoFissionWorker(options, input_dir, output_dir, count)
