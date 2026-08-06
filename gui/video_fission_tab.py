@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QSpinBox, QSlider, QComboBox, QCheckBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 
 from core.video_fission import VideoFission, FissionStopped
 from gui.config import get_config, set_config
@@ -62,6 +62,97 @@ def strip_quotes(path):
     return p
 
 
+class _WrappingRow(QWidget):
+    """根据可用宽度自动在“单行”与“换行”之间切换，避免窗口缩放时控件堆叠。
+
+    main_widgets: 始终位于主行，第一个控件会拉伸占满剩余宽度（如输入框）。
+    tail_widgets: 宽度足够时排在主行末尾；不够时自动换到下方缩进副行。
+    """
+
+    def __init__(self, main_widgets, tail_widgets, spacing=8, indent=12, parent=None):
+        super().__init__(parent)
+        self._spacing = spacing
+        self._main_widgets = list(main_widgets)
+        self._tail_widgets = list(tail_widgets)
+
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._root.setSpacing(4)
+
+        self._main = QHBoxLayout()
+        self._main.setSpacing(spacing)
+        self._tail = QHBoxLayout()
+        self._tail.setSpacing(spacing)
+        self._tail.setContentsMargins(indent, 0, 0, 0)
+
+        self._root.addLayout(self._main)
+        self._root.addLayout(self._tail)
+
+        for i, w in enumerate(self._main_widgets):
+            self._main.addWidget(w, 1 if i == 0 else 0)
+        for w in self._tail_widgets:
+            self._tail.addWidget(w)
+
+        self._tail_on_main = False
+        self._in_relayout = False
+
+    def _wid_of(self, widgets):
+        total = 0
+        for w in widgets:
+            total += max(w.sizeHint().width(), w.minimumSize().width())
+        if len(widgets) > 1:
+            total += self._spacing * (len(widgets) - 1)
+        return total
+
+    def _single_line_width(self):
+        return self._wid_of(self._main_widgets) + self._spacing + self._wid_of(self._tail_widgets)
+
+    def minimumSizeHint(self):
+        # 始终按“换行态”报告最小宽度（只主行），让父布局允许本行缩到主行宽度；
+        # 否则 tail 在主行时最小宽度被撑大，窗口缩放时永远缩不进去、换行无法触发。
+        w = self._wid_of(self._main_widgets)
+        h = max((x.sizeHint().height() for x in self._main_widgets), default=0)
+        return QSize(w, h)
+
+    def sizeHint(self):
+        main_h = max((x.sizeHint().height() for x in self._main_widgets), default=0)
+        if self._tail_on_main:
+            return QSize(self._single_line_width(), main_h)
+        tail_h = max((x.sizeHint().height() for x in self._tail_widgets), default=0)
+        w = max(self._wid_of(self._main_widgets), self._wid_of(self._tail_widgets))
+        return QSize(w, main_h + self._root.spacing() + tail_h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._relayout()
+
+    def _relayout(self):
+        if self._in_relayout:
+            return
+        avail = self.width()
+        need = self._single_line_width()
+        if avail >= need and not self._tail_on_main:
+            self._in_relayout = True
+            for w in self._tail_widgets:
+                self._tail.removeWidget(w)
+                self._main.addWidget(w)
+            self._tail_on_main = True
+            self._in_relayout = False
+            self.updateGeometry()
+        elif avail < need and self._tail_on_main:
+            self._in_relayout = True
+            for w in self._tail_widgets:
+                self._main.removeWidget(w)
+                self._tail.addWidget(w)
+            self._tail_on_main = False
+            self._in_relayout = False
+            self.updateGeometry()
+
+
 class VideoFissionTab(QWidget):
     # ===== 三保险 QLineEdit 样式（带 !important 强制覆盖任何主题）=====
     LINEEDIT_QSS = """
@@ -102,10 +193,9 @@ class VideoFissionTab(QWidget):
         self.input_edits = []
         self.count_spins = []
         for i in range(1, 4):
-            row = QHBoxLayout()
-            row.setSpacing(8)
             edit = QLineEdit()
             edit.setMinimumHeight(32)
+            edit.setMinimumWidth(200)
             edit.setPlaceholderText(
                 "输入 {}：文件夹路径，或直接填一个视频文件路径（可留空）".format(i))
             # 三保险：每个 QLineEdit 单独强制样式（绕开父级继承 / qt-material 覆盖）
@@ -114,22 +204,22 @@ class VideoFissionTab(QWidget):
             btn.setFixedWidth(68)
             btn.setMinimumHeight(32)
             btn.clicked.connect(lambda _, idx=i - 1: self._browse_input(idx))
-            row.addWidget(edit, 1)
-            row.addWidget(btn)
 
-            # 每个输入源自己的裂变数量
-            row.addSpacing(10)
-            row.addWidget(QLabel("每个视频生成:"))
+            # 每个输入源自己的裂变数量（作为尾部组，宽度不够时自动换到下方副行）
+            count_lbl = QLabel("每个视频生成:")
             count_spin = QSpinBox()
             count_spin.setRange(1, 200)
             count_spin.setValue(10)
-            count_spin.setMinimumHeight(32)
+            count_spin.setMinimumHeight(30)
             count_spin.setFixedWidth(70)
             count_spin.setToolTip("该输入源里的每个视频裂变成多少个不同版本")
-            row.addWidget(count_spin)
-            row.addWidget(QLabel("个版本"))
+            ver_lbl = QLabel("个版本")
 
-            io_lay.addLayout(row)
+            row = _WrappingRow(
+                main_widgets=[edit, btn],
+                tail_widgets=[count_lbl, count_spin, ver_lbl],
+            )
+            io_lay.addWidget(row)
             self.input_edits.append(edit)
             self.count_spins.append(count_spin)
 
