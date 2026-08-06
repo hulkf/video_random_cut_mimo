@@ -6,6 +6,7 @@ from gui.audio_mix_tab import AudioMixTab
 from gui.video_mix_tab import VideoMixTab
 from gui.video_concat_tab import VideoConcatTab
 from gui.video_resize_tab import VideoResizeTab
+from gui.video_enhance_tab import VideoEnhanceTab
 from gui.keyword_remove_tab import KeywordRemoveTab
 from gui.face_detection_tab import FaceDetectionTab
 from gui.screenshot_tab import ScreenshotTab
@@ -14,6 +15,7 @@ from gui.settings_tab import SettingsTab
 from gui.kaipai_cloud_tab import KaipaiCloudTab
 from gui.voice_clone_tab import VoiceCloneTab
 from gui.video_fission_tab import VideoFissionTab
+from gui.video_download_tab import VideoDownloadTab
 
 
 class WrapTabWidget(QWidget):
@@ -121,12 +123,14 @@ class MainWindow(QMainWindow):
         self.video_mix_tab = VideoMixTab()
         self.video_concat_tab = VideoConcatTab()
         self.video_resize_tab = VideoResizeTab()
+        self.video_enhance_tab = VideoEnhanceTab()
         self.keyword_remove_tab = KeywordRemoveTab()
         self.subtitle_tab = SubtitleTab()
         self.kaipai_cloud_tab = KaipaiCloudTab()
         self.settings_tab = SettingsTab(app)
         self.voice_clone_tab = VoiceCloneTab()
         self.video_fission_tab = VideoFissionTab()
+        self.video_download_tab = VideoDownloadTab()
 
         self.tabs.addTab(self.slice_tab, "视频切片")
         self.tabs.addTab(self.screenshot_tab, "视频截图")
@@ -136,11 +140,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.video_mix_tab, "视频混剪")
         self.tabs.addTab(self.video_concat_tab, "视频拼接")
         self.tabs.addTab(self.video_resize_tab, "视频尺寸")
+        self.tabs.addTab(self.video_enhance_tab, "视频优化")
         self.tabs.addTab(self.keyword_remove_tab, "去关键词")
         self.tabs.addTab(self.subtitle_tab, "视频字幕")
         self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
         self.tabs.addTab(self.video_fission_tab, "视频裂变")
         self.tabs.addTab(self.voice_clone_tab, "音色复刻")
+        self.tabs.addTab(self.video_download_tab, "视频下载")
         self.tabs.addTab(self.settings_tab, "设置")
 
     def closeEvent(self, event):
@@ -148,9 +154,11 @@ class MainWindow(QMainWindow):
         tabs = [
             self.slice_tab, self.screenshot_tab, self.text_recognition_tab,
             self.face_detection_tab, self.audio_mix_tab, self.video_mix_tab,
-            self.video_concat_tab, self.video_resize_tab, self.keyword_remove_tab,
+            self.video_concat_tab, self.video_resize_tab, self.video_enhance_tab,
+            self.keyword_remove_tab,
             self.subtitle_tab, self.kaipai_cloud_tab, self.video_fission_tab,
             self.voice_clone_tab,
+            self.video_download_tab,
         ]
         for tab in tabs:
             worker = getattr(tab, "worker", None)
