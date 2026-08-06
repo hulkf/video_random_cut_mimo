@@ -83,24 +83,20 @@ class VideoFission:
             "-c:a", "copy",
             "-map", "0:v:0", "-map", "0:a?",
             "-movflags", "+faststart",
+            # 默认硬编码：清空元数据（-fflags +bitexact 阻止 ffmpeg 写回 Lavf），
+            # 并写入一条随机注释抹掉工具痕迹
+            "-fflags", "+bitexact",
+            "-map_metadata", "-1",
+            "-metadata", "comment=wb{}".format(rng.randint(100000, 999999)),
+            "-y", output_path,
         ]
-
-        # 文件层保险 1：清空视频内置元数据，并写入一条随机注释，抹掉工具痕迹。
-        # -fflags +bitexact 阻止 ffmpeg 自动写回 encoder 标记（否则会残留 Lavf 版本号）
-        if self.options.get("clean_metadata", True):
-            cmd += ["-fflags", "+bitexact",
-                    "-map_metadata", "-1",
-                    "-metadata", "comment=wb{}".format(rng.randint(100000, 999999))]
-
-        cmd += ["-y", output_path]
 
         result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
         if result.returncode != 0 or not os.path.exists(output_path):
             raise RuntimeError("裂变失败: " + (result.stderr or "")[-500:])
 
-        # 文件层保险 2：随机化产物时间戳（创建/修改/访问）
-        if self.options.get("random_timestamps", True):
-            self._set_random_file_times(output_path, rng)
+        # 默认硬编码：随机化产物时间戳（创建/修改/访问）
+        self._set_random_file_times(output_path, rng)
 
         return output_path
 

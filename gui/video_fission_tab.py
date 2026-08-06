@@ -65,7 +65,7 @@ class VideoFissionTab(QWidget):
         main.setContentsMargins(18, 14, 18, 14)
 
         # ── 输入设置（最多 3 个源，可填文件夹或单个视频文件）──
-        io_group = QGroupBox("输入设置（最多 3 个源：文件夹 或 单个视频文件，可留空）")
+        io_group = QGroupBox("输入设置（最多 3 个源：文件夹或单个视频文件，可留空）")
         io_lay = QVBoxLayout()
         io_lay.setSpacing(8)
 
@@ -73,16 +73,14 @@ class VideoFissionTab(QWidget):
         for i in range(1, 4):
             row = QHBoxLayout()
             row.setSpacing(8)
-            label = QLabel("输入 {}:".format(i))
-            label.setMinimumWidth(48)
             edit = QLineEdit()
             edit.setMinimumHeight(32)
-            edit.setPlaceholderText("文件夹路径，或直接填一个视频文件路径")
+            edit.setPlaceholderText(
+                "输入 {}：文件夹路径，或直接填一个视频文件路径（可留空）".format(i))
             btn = QPushButton("浏览")
             btn.setFixedWidth(68)
             btn.setMinimumHeight(32)
             btn.clicked.connect(lambda _, idx=i - 1: self._browse_input(idx))
-            row.addWidget(label)
             row.addWidget(edit, 1)
             row.addWidget(btn)
             io_lay.addLayout(row)
@@ -154,10 +152,7 @@ class VideoFissionTab(QWidget):
         param_group.setLayout(param_lay)
         main.addWidget(param_group)
 
-        # ── 存放规则 + 文件层保险（并排一行）───────────────────
-        opt_row = QHBoxLayout()
-        opt_row.setSpacing(12)
-
+        # ── 存放规则 ───────────────────────────────────────────
         rule_group = QGroupBox("存放规则")
         rule_lay = QHBoxLayout()
         rule_lay.setSpacing(8)
@@ -167,24 +162,7 @@ class VideoFissionTab(QWidget):
         rule_lay.addWidget(self.separate_cb)
         rule_lay.addStretch()
         rule_group.setLayout(rule_lay)
-        opt_row.addWidget(rule_group, 3)
-
-        file_group = QGroupBox("文件层保险（可选，默认开启）")
-        file_lay = QHBoxLayout()
-        file_lay.setSpacing(12)
-        self.meta_cb = QCheckBox("清空元数据")
-        self.meta_cb.setChecked(True)
-        self.meta_cb.setToolTip("去除视频内置的作者/软件/描述等信息，抹掉工具痕迹")
-        self.ts_cb = QCheckBox("随机时间戳")
-        self.ts_cb.setChecked(True)
-        self.ts_cb.setToolTip("将产物的创建/修改/访问时间改为随机值")
-        file_lay.addWidget(self.meta_cb)
-        file_lay.addWidget(self.ts_cb)
-        file_lay.addStretch()
-        file_group.setLayout(file_lay)
-        opt_row.addWidget(file_group, 4)
-
-        main.addLayout(opt_row)
+        main.addWidget(rule_group)
 
         # ── 开始按钮 ───────────────────────────────────────────
         self.start_btn = QPushButton("开始裂变")
@@ -227,12 +205,13 @@ class VideoFissionTab(QWidget):
             "原理：对画面做随机调色 + 轻微噪点 + 像素重采样，每份参数不同，"
             "平台指纹(pHash)各不相同，但人眼几乎看不出差别。"
             "分辨率与宽高比严格锁定原视频，不会改动。"
+            "默认已清空元数据、随机化时间戳，让文件属性也彻底不同。"
             "输入支持文件夹或单个视频文件，路径带引号也能识别。"
             "\n双击结果行可打开对应文件夹查看产物。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray; padding: 4px 2px;")
-        hint.setMaximumHeight(52)
+        hint.setMaximumHeight(60)
         main.addWidget(hint)
 
         self.setLayout(main)
@@ -252,8 +231,6 @@ class VideoFissionTab(QWidget):
         self.preset_combo.setCurrentText(preset if preset in ("ultrafast", "superfast", "veryfast") else "ultrafast")
         self.crf_slider.setValue(int(get_config("video_fission", "crf", "20")))
         self.separate_cb.setChecked(get_config("video_fission", "separate_folder", True) in (True, "true", "True"))
-        self.meta_cb.setChecked(get_config("video_fission", "clean_metadata", True) in (True, "true", "True"))
-        self.ts_cb.setChecked(get_config("video_fission", "random_timestamps", True) in (True, "true", "True"))
         self._on_crf(self.crf_slider.value())
 
     def save_config(self):
@@ -266,8 +243,6 @@ class VideoFissionTab(QWidget):
         set_config("video_fission", "preset", self.preset_combo.currentText())
         set_config("video_fission", "crf", str(self.crf_slider.value()))
         set_config("video_fission", "separate_folder", str(self.separate_cb.isChecked()))
-        set_config("video_fission", "clean_metadata", str(self.meta_cb.isChecked()))
-        set_config("video_fission", "random_timestamps", str(self.ts_cb.isChecked()))
 
     # ── 回调 ──────────────────────────────────────────────────
     def _on_crf(self, v):
@@ -279,7 +254,7 @@ class VideoFissionTab(QWidget):
     def _browse_input(self, idx):
         # 支持选择文件夹或单个文件
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择视频文件（或点右侧选文件夹）",
+            self, "选择视频文件（或点取消再选文件夹）",
             "", "视频文件 (*.mp4 *.avi *.mov *.mkv *.flv *.wmv *.ts *.m4v)")
         if file_path:
             self.input_edits[idx].setText(file_path)
@@ -331,8 +306,6 @@ class VideoFissionTab(QWidget):
             "intensity": self._intensity_key(),
             "preset": self.preset_combo.currentText(),
             "crf": self.crf_slider.value(),
-            "clean_metadata": self.meta_cb.isChecked(),
-            "random_timestamps": self.ts_cb.isChecked(),
         }
 
         self.worker = VideoFissionWorker(
