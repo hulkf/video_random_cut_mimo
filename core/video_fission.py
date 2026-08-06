@@ -273,22 +273,33 @@ class VideoFission:
                 callback(index, total, rel)
 
             outputs = []
-            for i in range(count):
-                # 中断检查：每份产物前（细粒度，尽快响应停止）
-                self._check_stop()
+            try:
+                for i in range(count):
+                    # 中断检查：每份产物前（细粒度，尽快响应停止）
+                    self._check_stop()
 
-                # 每份用不同的种子，保证参数互不相同
-                seed = None if base_seed is None else (base_seed + i)
-                out_name = "{}_{:03d}.mp4".format(rel_base, i + 1)
-                out_path = os.path.join(subfolder, out_name)
-                # 防重名保护：文件已存在则追加序号（理论上 rel_base 已唯一，双保险）
-                k = 2
-                while os.path.exists(out_path):
-                    out_path = os.path.join(
-                        subfolder, "{}_{:03d}_{}.mp4".format(rel_base, i + 1, k))
-                    k += 1
-                self.fission_one(video_path, out_path, seed=seed)
-                outputs.append(out_path)
+                    # 每份用不同的种子，保证参数互不相同
+                    seed = None if base_seed is None else (base_seed + i)
+                    out_name = "{}_{:03d}.mp4".format(rel_base, i + 1)
+                    out_path = os.path.join(subfolder, out_name)
+                    # 防重名保护：文件已存在则追加序号（理论上 rel_base 已唯一，双保险）
+                    k = 2
+                    while os.path.exists(out_path):
+                        out_path = os.path.join(
+                            subfolder, "{}_{:03d}_{}.mp4".format(rel_base, i + 1, k))
+                        k += 1
+                    self.fission_one(video_path, out_path, seed=seed)
+                    outputs.append(out_path)
+            except FissionStopped:
+                # 中断：当前视频已完成的部分产物也保留并记录，不丢弃
+                if outputs:
+                    results.append({
+                        "input": video_path,
+                        "outputs": outputs,
+                        "subfolder": subfolder,
+                    })
+                    self.partial_results = list(results)
+                raise
 
             results.append({
                 "input": video_path,
