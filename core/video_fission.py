@@ -177,6 +177,12 @@ class VideoFission:
             filters.append("scale={}:{}".format(nw, nh))
             filters.append("crop={}:{}".format(width, height))
 
+        # 4) 强制 SAR=1:1（关键！）：
+        #    scale 非整数倍放大会让 ffmpeg 调整 SAR 以"保持显示比例"，
+        #    导致输出 DAR 偏离精确 9:16（实测 SAR=2943:2944、DAR=26487:47104），
+        #    千川会判定"素材尺寸不符合规范"。setsar=1 锁死 SAR，DAR 恒等于像素比。
+        filters.append("setsar=1")
+
         return ",".join(filters)
 
     def fission_one(self, video_path, output_path, seed=None):
