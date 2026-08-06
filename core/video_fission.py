@@ -145,7 +145,9 @@ class VideoFission:
     def _build_filter(self, video_path, rng):
         """构建一份随机滤镜链。每次调用参数都不同。
 
-        关键约束：滤镜链执行完毕后，输出尺寸必须精确等于源视频 width×height。
+        输出尺寸策略：
+          - 默认：严格等于源视频 width×height（分辨率铁保证）
+          - force_1080x1920 开启：统一输出 1080×1920（9:16 竖屏，居中裁切不变形）
         """
         width, height = probe_video(video_path)
         filters = []
@@ -166,16 +168,21 @@ class VideoFission:
         strength = max(0.5, rng.uniform(0.8, 2.0) * self.ifactor)
         filters.append("noise=alls={:.1f}:allf=t".format(strength))
 
-        # 3) 缩放重采样：仅当宽高均为偶数时执行。
-        #    scale 放大约1%（取偶数尺寸）→ crop 精确裁回原宽高，最终分辨率严格不变。
-        #    奇数尺寸源视频不做缩放（libx264 要求偶数尺寸，放大裁回会产生 1px 偏差），
-        #    只做调色+噪点，分辨率天然不变。
-        if width % 2 == 0 and height % 2 == 0:
+        # 3) 尺寸策略
+        if self.options.get("force_1080x1920"):
+            # 可选：统一转 1080×1920（9:16）。
+            # force_original_aspect_ratio=increase 保持原比例放大到覆盖目标，
+            # crop 居中裁切 —— 9:16 源无损；其他比例源居中裁切不变形。
+            filters.append("scale=1080:1920:force_original_aspect_ratio=increase")
+            filters.append("crop=1080:1920")
+        elif width % 2 == 0 and height % 2 == 0:
+            # 默认：分辨率铁保证（偶数源）——scale 放大约1%（取偶数）→ crop 精确裁回原宽高
             pct = 1.0 + max(0.006, rng.uniform(0.008, 0.025) * self.ifactor)
             nw = int(round(width * pct / 2) * 2)
             nh = int(round(height * pct / 2) * 2)
             filters.append("scale={}:{}".format(nw, nh))
             filters.append("crop={}:{}".format(width, height))
+        # 奇数尺寸源默认不缩放，只做调色+噪点，分辨率天然不变
 
         # 4) 强制 SAR=1:1（关键！）：
         #    scale 非整数倍放大会让 ffmpeg 调整 SAR 以"保持显示比例"，

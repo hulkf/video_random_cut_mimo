@@ -209,11 +209,16 @@ class VideoFissionTab(QWidget):
         # ── 存放规则 ───────────────────────────────────────────
         rule_group = QGroupBox("存放规则")
         rule_lay = QHBoxLayout()
-        rule_lay.setSpacing(8)
+        rule_lay.setSpacing(16)
         self.separate_cb = QCheckBox("每个文件的裂变结果放单独文件夹")
         self.separate_cb.setChecked(True)
         self.separate_cb.setToolTip("勾选：产物放在「输出/原名_fissions」子文件夹；\n不勾选：所有产物统一平铺在输出文件夹下")
         rule_lay.addWidget(self.separate_cb)
+        self.force_1080_cb = QCheckBox("统一转 1080×1920（9:16）")
+        self.force_1080_cb.setToolTip(
+            "勾选：所有产物统一输出 1080×1920 竖屏（9:16 源无损，其他比例居中裁切不变形）。\n"
+            "适合千川等要求统一尺寸的平台；不勾选则保持原视频分辨率")
+        rule_lay.addWidget(self.force_1080_cb)
         rule_lay.addStretch()
         rule_group.setLayout(rule_lay)
         main.addWidget(rule_group)
@@ -310,6 +315,7 @@ class VideoFissionTab(QWidget):
         self.crf_slider.setValue(int(get_config("video_fission", "crf", "20")))
         self.workers_spin.setValue(int(get_config("video_fission", "max_workers", "0")))
         self.separate_cb.setChecked(get_config("video_fission", "separate_folder", True) in (True, "true", "True"))
+        self.force_1080_cb.setChecked(get_config("video_fission", "force_1080x1920", False) in (True, "true", "True"))
         self._on_crf(self.crf_slider.value())
 
     def save_config(self):
@@ -324,6 +330,7 @@ class VideoFissionTab(QWidget):
         set_config("video_fission", "crf", str(self.crf_slider.value()))
         set_config("video_fission", "max_workers", str(self.workers_spin.value()))
         set_config("video_fission", "separate_folder", str(self.separate_cb.isChecked()))
+        set_config("video_fission", "force_1080x1920", str(self.force_1080_cb.isChecked()))
 
     # ── 回调 ──────────────────────────────────────────────────
     def _on_crf(self, v):
@@ -391,6 +398,7 @@ class VideoFissionTab(QWidget):
             "intensity": self._intensity_key(),
             "preset": self.preset_combo.currentText(),
             "crf": self.crf_slider.value(),
+            "force_1080x1920": self.force_1080_cb.isChecked(),
         }
 
         self.worker = VideoFissionWorker(
