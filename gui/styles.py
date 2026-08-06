@@ -14,10 +14,21 @@ QPushButton[text*="浏览"] {
     min-width: 72px;
 }
 
-/* ===== 输入框高度修复 ===== */
+/* ===== 输入框：清晰边框 + 背景（修复 placeholder 视觉堆叠） ===== */
 QLineEdit {
     min-height: 30px;
-    padding: 2px 6px;
+    padding: 4px 8px;
+    border: 1px solid #5a5a5a;
+    border-radius: 4px;
+    background-color: #1e1e1e;
+    selection-background-color: #4d8fff;
+}
+QLineEdit:hover {
+    border-color: #7a7a7a;
+}
+QLineEdit:focus {
+    border: 1px solid #4d8fff;
+    background-color: #252525;
 }
 
 /* ===== 下拉框/数字框高度修复 ===== */
