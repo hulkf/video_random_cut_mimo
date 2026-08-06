@@ -19,20 +19,20 @@ class VideoFissionWorker(QThread):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, options, input_paths, output_folder, count, separate_folder):
+    def __init__(self, options, input_sources, output_folder, separate_folder):
         super().__init__()
         self.options = options
-        self.input_paths = input_paths
+        # input_sources: [(path, count), ...] 每个输入源独立裂变数量
+        self.input_sources = input_sources
         self.output_folder = output_folder
-        self.count = count
         self.separate_folder = separate_folder
 
     def run(self):
         try:
             engine = VideoFission(self.options)
             results = engine.fission_folder(
-                self.input_paths, self.output_folder,
-                count=self.count, separate_folder=self.separate_folder,
+                self.input_sources, self.output_folder,
+                separate_folder=self.separate_folder,
                 callback=self._cb,
             )
             self.finished.emit(results)
@@ -64,12 +64,13 @@ class VideoFissionTab(QWidget):
         main.setSpacing(12)
         main.setContentsMargins(18, 14, 18, 14)
 
-        # ── 输入设置（最多 3 个源，可填文件夹或单个视频文件）──
-        io_group = QGroupBox("输入设置（最多 3 个源：文件夹或单个视频文件，可留空）")
+        # ── 输入设置（最多 3 个源，每个源可单独设置裂变数量）──
+        io_group = QGroupBox("输入设置（最多 3 个源：文件夹或单个视频文件，每个源独立设置裂变数量）")
         io_lay = QVBoxLayout()
         io_lay.setSpacing(8)
 
         self.input_edits = []
+        self.count_spins = []
         for i in range(1, 4):
             row = QHBoxLayout()
             row.setSpacing(8)
@@ -83,8 +84,22 @@ class VideoFissionTab(QWidget):
             btn.clicked.connect(lambda _, idx=i - 1: self._browse_input(idx))
             row.addWidget(edit, 1)
             row.addWidget(btn)
+
+            # 每个输入源自己的裂变数量
+            row.addSpacing(10)
+            row.addWidget(QLabel("每个视频生成:"))
+            count_spin = QSpinBox()
+            count_spin.setRange(1, 200)
+            count_spin.setValue(10)
+            count_spin.setMinimumHeight(32)
+            count_spin.setFixedWidth(70)
+            count_spin.setToolTip("该输入源里的每个视频裂变成多少个不同版本")
+            row.addWidget(count_spin)
+            row.addWidget(QLabel("个版本"))
+
             io_lay.addLayout(row)
             self.input_edits.append(edit)
+            self.count_spins.append(count_spin)
 
         io_group.setLayout(io_lay)
         main.addWidget(io_group)
@@ -105,21 +120,10 @@ class VideoFissionTab(QWidget):
         out_group.setLayout(out_lay)
         main.addWidget(out_group)
 
-        # ── 裂变参数 ───────────────────────────────────────────
+        # ── 裂变参数（数量已在每个输入源行内单独设置）──────────
         param_group = QGroupBox("裂变参数")
         param_lay = QHBoxLayout()
         param_lay.setSpacing(16)
-
-        param_lay.addWidget(QLabel("每个视频生成:"))
-        self.count_spin = QSpinBox()
-        self.count_spin.setRange(1, 200)
-        self.count_spin.setValue(10)
-        self.count_spin.setMinimumHeight(30)
-        self.count_spin.setToolTip("同一个视频裂变成多少个不同版本")
-        param_lay.addWidget(self.count_spin)
-        param_lay.addWidget(QLabel("个版本"))
-
-        param_lay.addSpacing(16)
 
         param_lay.addWidget(QLabel("强度:"))
         self.intensity_combo = QComboBox()
@@ -238,8 +242,15 @@ class VideoFissionTab(QWidget):
             for i, edit in enumerate(self.input_edits):
                 if i < len(paths):
                     edit.setText(paths[i])
+        counts = get_config("video_fission", "input_counts", "")
+        if isinstance(counts, list):
+            for i, spin in enumerate(self.count_spins):
+                if i < len(counts):
+                    try:
+                        spin.setValue(int(counts[i]))
+                    except (TypeError, ValueError):
+                        pass
         self.output_edit.setText(get_config("video_fission", "output_folder", ""))
-        self.count_spin.setValue(int(get_config("video_fission", "count", 10)))
         idx_map = {"mild": 0, "medium": 1, "strong": 2}
         self.intensity_combo.setCurrentIndex(idx_map.get(get_config("video_fission", "intensity", "mild"), 0))
         preset = get_config("video_fission", "preset", "ultrafast")
@@ -251,8 +262,9 @@ class VideoFissionTab(QWidget):
     def save_config(self):
         set_config("video_fission", "input_folders",
                    [edit.text() for edit in self.input_edits])
+        set_config("video_fission", "input_counts",
+                   [spin.value() for spin in self.count_spins])
         set_config("video_fission", "output_folder", self.output_edit.text())
-        set_config("video_fission", "count", str(self.count_spin.value()))
         imap = {0: "mild", 1: "medium", 2: "strong"}
         set_config("video_fission", "intensity", imap.get(self.intensity_combo.currentIndex(), "mild"))
         set_config("video_fission", "preset", self.preset_combo.currentText())
@@ -294,15 +306,18 @@ class VideoFissionTab(QWidget):
 
     # ── 执行 ──────────────────────────────────────────────────
     def _start(self):
-        input_paths = [strip_quotes(e.text()) for e in self.input_edits]
-        input_paths = [p for p in input_paths if p]
+        # 每个输入源配对各自的裂变数量
+        input_sources = []
+        for edit, spin in zip(self.input_edits, self.count_spins):
+            p = strip_quotes(edit.text())
+            if p:
+                input_sources.append((p, spin.value()))
         output_dir = strip_quotes(self.output_edit.text())
-        count = self.count_spin.value()
 
-        if not input_paths:
+        if not input_sources:
             QMessageBox.warning(self, "提示", "请至少填一个输入源（文件夹或视频文件）")
             return
-        for p in input_paths:
+        for p, _c in input_sources:
             if not os.path.exists(p):
                 QMessageBox.warning(self, "提示", "输入路径不存在:\n{}".format(p))
                 return
@@ -324,7 +339,7 @@ class VideoFissionTab(QWidget):
         }
 
         self.worker = VideoFissionWorker(
-            options, input_paths, output_dir, count, self.separate_cb.isChecked())
+            options, input_sources, output_dir, self.separate_cb.isChecked())
         self.worker.progress.connect(self._on_progress)
         self.worker.video_done.connect(self._on_video_done)
         self.worker.finished.connect(self._on_finished)
