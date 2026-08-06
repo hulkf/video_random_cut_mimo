@@ -20,13 +20,14 @@ class VideoFissionWorker(QThread):
     stopped = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, options, input_sources, output_folder, separate_folder):
+    def __init__(self, options, input_sources, output_folder, separate_folder, max_workers=0):
         super().__init__()
         self.options = options
         # input_sources: [(path, count), ...] 每个输入源独立裂变数量
         self.input_sources = input_sources
         self.output_folder = output_folder
         self.separate_folder = separate_folder
+        self.max_workers = max_workers
         self._engine = None
 
     def run(self):
@@ -36,6 +37,7 @@ class VideoFissionWorker(QThread):
                 self.input_sources, self.output_folder,
                 separate_folder=self.separate_folder,
                 callback=self._cb,
+                max_workers=self.max_workers or None,
             )
             self.finished.emit(results)
         except FissionStopped:
@@ -155,7 +157,7 @@ class VideoFissionTab(QWidget):
         # ── 裂变参数（数量已在每个输入源行内单独设置）──────────
         param_group = QGroupBox("裂变参数")
         param_lay = QHBoxLayout()
-        param_lay.setSpacing(16)
+        param_lay.setSpacing(14)
 
         param_lay.addWidget(QLabel("强度:"))
         self.intensity_combo = QComboBox()
@@ -164,7 +166,7 @@ class VideoFissionTab(QWidget):
         self.intensity_combo.setMinimumHeight(30)
         param_lay.addWidget(self.intensity_combo)
 
-        param_lay.addSpacing(16)
+        param_lay.addSpacing(14)
 
         param_lay.addWidget(QLabel("编码:"))
         self.preset_combo = QComboBox()
@@ -177,12 +179,28 @@ class VideoFissionTab(QWidget):
         self.crf_slider = QSlider(Qt.Horizontal)
         self.crf_slider.setRange(16, 28)
         self.crf_slider.setValue(20)
-        self.crf_slider.setMinimumWidth(90)
+        self.crf_slider.setMinimumWidth(80)
         self.crf_slider.valueChanged.connect(self._on_crf)
         param_lay.addWidget(self.crf_slider)
         self.crf_label = QLabel("20")
         self.crf_label.setMinimumWidth(22)
         param_lay.addWidget(self.crf_label)
+
+        param_lay.addSpacing(14)
+
+        param_lay.addWidget(QLabel("并行任务:"))
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(0, 16)
+        self.workers_spin.setValue(0)
+        self.workers_spin.setMinimumHeight(30)
+        self.workers_spin.setFixedWidth(60)
+        self.workers_spin.setToolTip(
+            "同时编码几个视频。0=自动（硬件编码3个/软件编码按CPU核数）；\n"
+            "调大可更快，但吃满CPU/显卡；电脑要做别的事时调小")
+        param_lay.addWidget(self.workers_spin)
+        self.workers_hint = QLabel("0=自动")
+        self.workers_hint.setStyleSheet("color: gray;")
+        param_lay.addWidget(self.workers_hint)
 
         param_lay.addStretch()
         param_group.setLayout(param_lay)
@@ -290,6 +308,7 @@ class VideoFissionTab(QWidget):
         preset = get_config("video_fission", "preset", "ultrafast")
         self.preset_combo.setCurrentText(preset if preset in ("ultrafast", "superfast", "veryfast") else "ultrafast")
         self.crf_slider.setValue(int(get_config("video_fission", "crf", "20")))
+        self.workers_spin.setValue(int(get_config("video_fission", "max_workers", "0")))
         self.separate_cb.setChecked(get_config("video_fission", "separate_folder", True) in (True, "true", "True"))
         self._on_crf(self.crf_slider.value())
 
@@ -303,6 +322,7 @@ class VideoFissionTab(QWidget):
         set_config("video_fission", "intensity", imap.get(self.intensity_combo.currentIndex(), "mild"))
         set_config("video_fission", "preset", self.preset_combo.currentText())
         set_config("video_fission", "crf", str(self.crf_slider.value()))
+        set_config("video_fission", "max_workers", str(self.workers_spin.value()))
         set_config("video_fission", "separate_folder", str(self.separate_cb.isChecked()))
 
     # ── 回调 ──────────────────────────────────────────────────
@@ -374,7 +394,8 @@ class VideoFissionTab(QWidget):
         }
 
         self.worker = VideoFissionWorker(
-            options, input_sources, output_dir, self.separate_cb.isChecked())
+            options, input_sources, output_dir, self.separate_cb.isChecked(),
+            max_workers=self.workers_spin.value())
         self.worker.progress.connect(self._on_progress)
         self.worker.video_done.connect(self._on_video_done)
         self.worker.finished.connect(self._on_finished)
