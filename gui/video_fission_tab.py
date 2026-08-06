@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-from core.video_fission import VideoFission
+from core.video_fission import VideoFission, FissionStopped
 from gui.config import get_config, set_config
 
 
@@ -17,6 +17,7 @@ class VideoFissionWorker(QThread):
     progress = pyqtSignal(int, int, str)
     video_done = pyqtSignal(dict)
     finished = pyqtSignal(list)
+    stopped = pyqtSignal(list)
     error = pyqtSignal(str)
 
     def __init__(self, options, input_sources, output_folder, separate_folder):
@@ -26,18 +27,26 @@ class VideoFissionWorker(QThread):
         self.input_sources = input_sources
         self.output_folder = output_folder
         self.separate_folder = separate_folder
+        self._engine = None
 
     def run(self):
         try:
-            engine = VideoFission(self.options)
-            results = engine.fission_folder(
+            self._engine = VideoFission(self.options)
+            results = self._engine.fission_folder(
                 self.input_sources, self.output_folder,
                 separate_folder=self.separate_folder,
                 callback=self._cb,
             )
             self.finished.emit(results)
+        except FissionStopped:
+            self.stopped.emit(list(self._engine.partial_results))
         except Exception as e:
             self.error.emit(str(e))
+
+    def request_stop(self):
+        """请求中断：立即终止正在运行的 ffmpeg 并停止后续处理。"""
+        if self._engine is not None:
+            self._engine.request_stop()
 
     def _cb(self, current, total, rel):
         self.progress.emit(current, total, rel)
@@ -168,11 +177,25 @@ class VideoFissionTab(QWidget):
         rule_group.setLayout(rule_lay)
         main.addWidget(rule_group)
 
-        # ── 开始按钮 ───────────────────────────────────────────
+        # ── 开始 / 停止按钮 ────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
         self.start_btn = QPushButton("开始裂变")
         self.start_btn.setMinimumHeight(42)
         self.start_btn.clicked.connect(self._start)
-        main.addWidget(self.start_btn)
+        btn_row.addWidget(self.start_btn, 1)
+
+        self.stop_btn = QPushButton("停止")
+        self.stop_btn.setMinimumHeight(42)
+        self.stop_btn.setFixedWidth(110)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet(
+            "QPushButton { background-color: #a32d2d; color: white; }"
+            "QPushButton:disabled { background-color: #3a3a3a; color: #888; }"
+        )
+        self.stop_btn.clicked.connect(self._stop)
+        btn_row.addWidget(self.stop_btn)
+        main.addLayout(btn_row)
 
         # ── 进度 ───────────────────────────────────────────────
         pg = QGroupBox("处理进度")
@@ -331,6 +354,7 @@ class VideoFissionTab(QWidget):
         self.pct_label.setText("0%")
         self.status_lbl.setText("准备处理...")
         self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
 
         options = {
             "intensity": self._intensity_key(),
@@ -343,8 +367,16 @@ class VideoFissionTab(QWidget):
         self.worker.progress.connect(self._on_progress)
         self.worker.video_done.connect(self._on_video_done)
         self.worker.finished.connect(self._on_finished)
+        self.worker.stopped.connect(self._on_stopped)
         self.worker.error.connect(self._on_error)
         self.worker.start()
+
+    def _stop(self):
+        """点击停止：请求中断，正在处理的视频会终止，已完成的保留。"""
+        if self.worker and self.worker.isRunning():
+            self.stop_btn.setEnabled(False)
+            self.status_lbl.setText("正在停止...")
+            self.worker.request_stop()
 
     def _on_progress(self, current, total, rel):
         pct = int((current / total) * 100) if total else 0
@@ -361,6 +393,7 @@ class VideoFissionTab(QWidget):
 
     def _on_finished(self, results):
         self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
         self.progress_bar.setValue(100)
         self.pct_label.setText("100%")
         total_videos = sum(len(r["outputs"]) for r in results)
@@ -369,7 +402,20 @@ class VideoFissionTab(QWidget):
             "裂变完成！\n\n源视频: {} 个\n生成产物: {} 个\n\n双击结果行可查看对应文件夹。".format(
                 len(results), total_videos))
 
+    def _on_stopped(self, results):
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        total_videos = sum(len(r["outputs"]) for r in results)
+        if results:
+            self.progress_bar.setValue(100)
+            self.pct_label.setText("已停止")
+        self.status_lbl.setText("已停止（保留 {} 个视频的 {} 个产物）".format(len(results), total_videos))
+        QMessageBox.information(self, "已停止",
+            "裂变已停止。\n\n已完成源视频: {} 个\n已保留产物: {} 个\n\n未完成的已丢弃。".format(
+                len(results), total_videos))
+
     def _on_error(self, msg):
         self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
         self.status_lbl.setText("处理失败")
         QMessageBox.critical(self, "错误", msg)

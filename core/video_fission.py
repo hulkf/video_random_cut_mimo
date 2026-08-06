@@ -6,6 +6,10 @@ import subprocess
 from core.video_resizer import collect_videos, probe_video
 
 
+class FissionStopped(Exception):
+    """用户中断裂变时抛出。"""
+
+
 class VideoFission:
     """视频裂变（去重搬运）：一个视频 → N 个不同指纹的副本。
 
@@ -19,6 +23,10 @@ class VideoFission:
       所有产物的分辨率、宽高比与原视频严格一致（此为硬性约束，不可改动）：
       - 偶数尺寸源视频：scale 放大 ~1% 后再 crop 精确裁回原宽高
       - 奇数尺寸源视频：跳过缩放重采样，只做调色+噪点，尺寸天然不变
+
+    中断支持：
+      调用 request_stop() 后，正在运行的 ffmpeg 子进程会被终止，
+      已完成的产物保留，partial_results 记录中断前完成的视频。
     """
 
     INTENSITY_FACTOR = {"mild": 1.0, "medium": 2.0, "strong": 3.5}
@@ -29,6 +37,25 @@ class VideoFission:
         self.preset = self.options.get("preset", "ultrafast")
         self.crf = int(self.options.get("crf", 20))
         self.ifactor = self.INTENSITY_FACTOR.get(self.intensity, 1.0)
+        # 中断控制
+        self._stop_requested = False
+        self._proc = None          # 当前 ffmpeg 子进程（可 kill）
+        self.partial_results = []  # 中断前已完成的视频列表
+
+    # ── 中断控制 ─────────────────────────────────────────────
+    def request_stop(self):
+        """请求中断：设置标志 + 终止正在运行的 ffmpeg。"""
+        self._stop_requested = True
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    def _check_stop(self):
+        if self._stop_requested:
+            raise FissionStopped("用户中断")
+
 
     def _build_filter(self, video_path, rng):
         """构建一份随机滤镜链。每次调用参数都不同。
@@ -91,9 +118,33 @@ class VideoFission:
             "-y", output_path,
         ]
 
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-        if result.returncode != 0 or not os.path.exists(output_path):
-            raise RuntimeError("裂变失败: " + (result.stderr or "")[-500:])
+        # 用 Popen 管理子进程，便于中断时 terminate
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            encoding="utf-8", errors="ignore",
+        )
+        self._proc = proc
+        try:
+            try:
+                _out, err = proc.communicate(timeout=3600)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _out, err = proc.communicate()
+                raise RuntimeError("裂变超时: " + (err or "")[-500:])
+        finally:
+            self._proc = None
+
+        # 用户中断：删除半成品文件并抛出 FissionStopped
+        if self._stop_requested:
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            raise FissionStopped("用户中断")
+
+        if proc.returncode != 0 or not os.path.exists(output_path):
+            raise RuntimeError("裂变失败: " + (err or "")[-500:])
 
         # 默认硬编码：随机化产物时间戳（创建/修改/访问）
         self._set_random_file_times(output_path, rng)
@@ -204,6 +255,9 @@ class VideoFission:
         base_seed = self.options.get("seed")
 
         for index, ((video_path, source_root, count), rel_base) in enumerate(zip(videos, names)):
+            # 中断检查：每个视频开始前
+            self._check_stop()
+
             # rel 用于进度回调展示（相对其来源根目录）
             rel = os.path.relpath(video_path, source_root)
 
@@ -220,6 +274,9 @@ class VideoFission:
 
             outputs = []
             for i in range(count):
+                # 中断检查：每份产物前（细粒度，尽快响应停止）
+                self._check_stop()
+
                 # 每份用不同的种子，保证参数互不相同
                 seed = None if base_seed is None else (base_seed + i)
                 out_name = "{}_{:03d}.mp4".format(rel_base, i + 1)
@@ -238,6 +295,7 @@ class VideoFission:
                 "outputs": outputs,
                 "subfolder": subfolder,
             })
+            self.partial_results = list(results)  # 记录已完成，供中断后返回
 
             if callback:
                 callback(index + 1, total, rel)
