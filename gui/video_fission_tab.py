@@ -216,6 +216,21 @@ class VideoFissionTab(QWidget):
 
         self.setLayout(main)
 
+        # ===== Tab 内部双保险：无论全局主题 QSS 怎么变，4 个 QLineEdit 一定有清晰边框和背景 =====
+        self.setStyleSheet("""
+            QLineEdit {
+                min-height: 30px;
+                padding: 4px 8px;
+                border: 1px solid #5a5a5a;
+                border-radius: 4px;
+                background-color: #1e1e1e;
+            }
+            QLineEdit:focus {
+                border: 1px solid #4d8fff;
+                background-color: #252525;
+            }
+        """)
+
     # ── 配置 ──────────────────────────────────────────────────
     def load_config(self):
         paths = get_config("video_fission", "input_folders", "")

@@ -16,19 +16,19 @@ QPushButton[text*="浏览"] {
 
 /* ===== 输入框：清晰边框 + 背景（修复 placeholder 视觉堆叠） ===== */
 QLineEdit {
-    min-height: 30px;
-    padding: 4px 8px;
-    border: 1px solid #5a5a5a;
-    border-radius: 4px;
-    background-color: #1e1e1e;
-    selection-background-color: #4d8fff;
+    min-height: 30px !important;
+    padding: 4px 8px !important;
+    border: 1px solid #5a5a5a !important;
+    border-radius: 4px !important;
+    background-color: #1e1e1e !important;
+    selection-background-color: #4d8fff !important;
 }
 QLineEdit:hover {
-    border-color: #7a7a7a;
+    border-color: #7a7a7a !important;
 }
 QLineEdit:focus {
-    border: 1px solid #4d8fff;
-    background-color: #252525;
+    border: 1px solid #4d8fff !important;
+    background-color: #252525 !important;
 }
 
 /* ===== 下拉框/数字框高度修复 ===== */
