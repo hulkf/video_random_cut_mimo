@@ -64,6 +64,26 @@ def extract_direct_video_id(url):
     return None
 
 
+def _extract_target_from_short_page(html):
+    """
+    从短链落地页 HTML 中提取目标商品 URL。
+    覆盖三种格式:
+      1. itemIds=123456          (跳转参数式)
+      2. var url = 'https://item.taobao.com/item.htm?id=123456...'  (直写目标地址式)
+      3. 任意 ?id=1234567890     (兜底，要求至少10位数字，避免误匹配短参数)
+    """
+    m = re.search(r'itemIds=(\d+)', html)
+    if m:
+        return f"https://detail.tmall.com/item.htm?id={m.group(1)}"
+    m = re.search(r'(item\.taobao\.com|detail\.tmall\.com|detail\.taobao\.com)[^\'"\s]*?[?&]id=(\d{10,})', html)
+    if m:
+        return f"https://{m.group(1)}/item.htm?id={m.group(2)}"
+    m = re.search(r'[?&]id=(\d{10,})', html)
+    if m:
+        return f"https://detail.tmall.com/item.htm?id={m.group(1)}"
+    return None
+
+
 def resolve_short_url(url):
     if any(k in url for k in ['e.tb.cn', 'tb.cn', 'm.tb.cn', 't.cn']):
         try:
@@ -72,9 +92,9 @@ def resolve_short_url(url):
                              headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
             final_url = resp.url
             if any(k in final_url for k in ['tb.cn', 'e.tb.cn']):
-                m = re.search(r'itemIds=(\d+)', resp.text)
-                if m:
-                    final_url = f"https://detail.tmall.com/item.htm?id={m.group(1)}"
+                target = _extract_target_from_short_page(resp.text)
+                if target:
+                    final_url = target
             return final_url
         except ImportError:
             try:
@@ -85,9 +105,9 @@ def resolve_short_url(url):
                 final_url = resp.url
                 if 'tb.cn' in final_url:
                     content = resp.read().decode('utf-8', errors='ignore')
-                    m = re.search(r'itemIds=(\d+)', content)
-                    if m:
-                        final_url = f"https://detail.tmall.com/item.htm?id={m.group(1)}"
+                    target = _extract_target_from_short_page(content)
+                    if target:
+                        final_url = target
                 return final_url
             except Exception:
                 return url
@@ -171,11 +191,11 @@ def download_file(url, filepath, progress_callback=None, referer=None, retries=3
 _thread_state = threading.local()
 
 
-def _new_browser_context(storage_state_path=None):
+def _new_browser_context(storage_state_path=None, headless=True):
     """创建新的 playwright 浏览器上下文"""
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
-    browser = p.chromium.launch(headless=True, args=[
+    browser = p.chromium.launch(headless=headless, args=[
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
     ])
@@ -207,31 +227,36 @@ def _close_ctx(ctx):
         pass
 
 
-def get_shared_browser(storage_state_path=None):
+def get_shared_browser(storage_state_path=None, headless=True):
     """
     获取当前线程复用的浏览器上下文。
     一批下载只启动一次浏览器，显著降低风控命中率并提升速度。
+    注意: headless 参数仅在首次创建时生效；已有复用实例时直接返回。
     """
     ctx = getattr(_thread_state, 'tb_ctx', None)
     if ctx:
         try:
             if ctx['browser'].is_connected() and not ctx['page'].is_closed():
-                return ctx
+                if ctx.get('headless') == headless:
+                    return ctx
+                # 需要切换有头/无头模式 → 重建
+                _close_ctx(ctx)
+                _thread_state.tb_ctx = None
         except Exception:
-            pass
-        _close_ctx(ctx)
-        _thread_state.tb_ctx = None
-    ctx = _new_browser_context(storage_state_path)
+            _close_ctx(ctx)
+            _thread_state.tb_ctx = None
+    ctx = _new_browser_context(storage_state_path, headless=headless)
+    ctx['headless'] = headless
     _thread_state.tb_ctx = ctx
     return ctx
 
 
-def reset_shared_browser(storage_state_path=None):
+def reset_shared_browser(storage_state_path=None, headless=True):
     """强制重建浏览器（提取失败后重试用）"""
     old = getattr(_thread_state, 'tb_ctx', None)
     _close_ctx(old)
     _thread_state.tb_ctx = None
-    return get_shared_browser(storage_state_path)
+    return get_shared_browser(storage_state_path, headless=headless)
 
 
 def close_shared_browser():
@@ -659,7 +684,7 @@ def _trigger_main_video(page, log_callback=None, network_video_ids=None, network
 
             # 方式1: hover模拟鼠标移动到元素上
             element.hover(timeout=5000)
-            time.sleep(2)
+            time.sleep(1)
 
             if _check_video_triggered(page, network_video_ids, network_video_urls):
                 triggered = True
@@ -668,7 +693,7 @@ def _trigger_main_video(page, log_callback=None, network_video_ids=None, network
 
             # 方式2: 点击元素
             element.click(timeout=3000)
-            time.sleep(2)
+            time.sleep(1)
 
             if _check_video_triggered(page, network_video_ids, network_video_urls):
                 triggered = True
@@ -678,75 +703,8 @@ def _trigger_main_video(page, log_callback=None, network_video_ids=None, network
         except Exception:
             continue
 
-    # 方式3: 通过尺寸定位主图区域并hover
-    if not triggered:
-        try:
-            log("尝试通过尺寸定位主图区域...")
-            main_pic_info = page.evaluate("""() => {
-                const imgs = document.querySelectorAll('img, [class*="pic"], [class*="Pic"]');
-                let best = null;
-                let maxArea = 0;
-                for (const el of imgs) {
-                    const rect = el.getBoundingClientRect();
-                    const area = rect.width * rect.height;
-                    if (area > maxArea && rect.width > 200 && rect.height > 200 && rect.left < 600) {
-                        maxArea = area;
-                        best = { x: rect.x + rect.width/2, y: rect.y + rect.height/2,
-                                 w: rect.width, h: rect.height };
-                    }
-                }
-                return best;
-            }""")
-
-            if main_pic_info:
-                log(f"定位到主图区域 (位置:{int(main_pic_info['x'])},{int(main_pic_info['y'])})，模拟鼠标移动...")
-                page.mouse.move(main_pic_info['x'], main_pic_info['y'])
-                time.sleep(2)
-                page.mouse.move(main_pic_info['x'] + 10, main_pic_info['y'] + 10)
-                time.sleep(1)
-
-                if _check_video_triggered(page, network_video_ids, network_video_urls):
-                    triggered = True
-                    log("鼠标移动到主图区域成功触发视频加载！")
-
-                if not triggered:
-                    page.mouse.click(main_pic_info['x'], main_pic_info['y'])
-                    time.sleep(2)
-                    if _check_video_triggered(page, network_video_ids, network_video_urls):
-                        triggered = True
-                        log("点击主图区域成功触发视频加载！")
-        except Exception as e:
-            log(f"主图区域定位失败: {e}")
-
-    # 方式4: 遍历缩略图列表逐一尝试
-    if not triggered:
-        try:
-            log("尝试遍历缩略图列表...")
-            thumbs = page.evaluate("""() => {
-                const all = document.querySelectorAll('img, li, div');
-                const results = [];
-                for (const el of all) {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width > 30 && rect.width < 120 && rect.height > 30 && rect.height < 120) {
-                        const cls = el.className || '';
-                        const id = el.id || '';
-                        if (cls.match(/thumb|Thumb|pic|Pic|item|Item/i) || id.match(/thumb|Thumb/i)) {
-                            results.push({ x: rect.x + rect.width/2, y: rect.y + rect.height/2 });
-                        }
-                    }
-                }
-                return results.slice(0, 8);
-            }""")
-
-            for i, thumb in enumerate(thumbs):
-                page.mouse.move(thumb['x'], thumb['y'])
-                time.sleep(1)
-                if _check_video_triggered(page, network_video_ids, network_video_urls):
-                    triggered = True
-                    log(f"遍历缩略图第{i+1}个时触发视频加载！")
-                    break
-        except Exception:
-            pass
+    # 注: 曾有的"按尺寸定位主图区域"和"遍历缩略图列表"两种兜底方式在实测中从未成功过
+    # （主图视频是否存在由页面 SSR 数据决定，不依赖鼠标触发），已移除以缩短单条耗时。
 
     return triggered
 
@@ -791,9 +749,11 @@ def _hook_network_capture(ctx):
     ctx['net_hooked'] = True
 
 
-def _extract_video_once(item_id, log, fresh=False):
+def _extract_video_once(item_id, log, fresh=False, page_url=None, headless=True,
+                        wait_for_human=False):
     """单次提取尝试。fresh=True 时强制重建浏览器。返回 (video_info, session_expired)"""
-    ctx = reset_shared_browser(AUTH_FILE) if fresh else get_shared_browser(AUTH_FILE)
+    ctx = (reset_shared_browser(AUTH_FILE, headless=headless) if fresh
+           else get_shared_browser(AUTH_FILE, headless=headless))
     _hook_network_capture(ctx)
     page = ctx['page']
 
@@ -806,7 +766,7 @@ def _extract_video_once(item_id, log, fresh=False):
     video_info = None
     session_expired = False
 
-    tmall_url = f"https://detail.tmall.com/item.htm?id={item_id}"
+    tmall_url = page_url or f"https://detail.tmall.com/item.htm?id={item_id}"
     log(f"加载商品页: {tmall_url}")
     try:
         page.goto(tmall_url, wait_until='domcontentloaded', timeout=20000)
@@ -820,7 +780,17 @@ def _extract_video_once(item_id, log, fresh=False):
             page.evaluate('''() => {
                 document.querySelectorAll('.baxia-dialog, .baxia-dialog-mask, [class*="baxia"]').forEach(d => d.remove());
             }''')
-            time.sleep(5)
+
+            # 等待 SSR 数据 (__ICE_APP_CONTEXT__) 就绪，最多 10 秒
+            for _ in range(10):
+                has_ctx = page.evaluate('''() => {
+                    const ctx = window.__ICE_APP_CONTEXT__;
+                    return !!(ctx && ctx.loaderData && ctx.loaderData.home &&
+                              ctx.loaderData.home.data && ctx.loaderData.home.data.res);
+                }''')
+                if has_ctx:
+                    break
+                time.sleep(1)
 
             # 关键: 模拟鼠标移动到第一张主图，触发懒加载的主图视频
             _trigger_main_video(page, log_callback=log,
@@ -876,39 +846,114 @@ def _extract_video_once(item_id, log, fresh=False):
                 if video_info:
                     log("未找到主图视频，提取到买家评价视频作为替代")
 
+            # 降级页识别: 没拿到主图视频时，检查页面数据完整性
+            # （被识别为爬虫时淘宝返回降级页: 无视频/主图不全/无评论）
+            if not video_info or video_info.get('type') == 'review':
+                try:
+                    completeness = page.evaluate('''() => {
+                        const ctx = window.__ICE_APP_CONTEXT__;
+                        if (!ctx || !ctx.loaderData || !ctx.loaderData.home) return {noCtx: true};
+                        const res = ctx.loaderData.home.data && ctx.loaderData.home.data.res;
+                        if (!res) return {noRes: true};
+                        const vo = res.componentsVO || {};
+                        return {
+                            imageCount: (res.item && res.item.images) ? res.item.images.length : 0,
+                            hasRate: !!vo.rateVO,
+                            voCount: Object.keys(vo).length,
+                        };
+                    }''')
+                    if (completeness.get('noCtx') or completeness.get('noRes')
+                            or completeness.get('imageCount', 0) < 5
+                            or not completeness.get('hasRate')):
+                        log(f"⚠ 页面数据不完整（主图{completeness.get('imageCount', '?')}张/"
+                            f"评论{'有' if completeness.get('hasRate') else '无'}），"
+                            f"疑似被反爬降级，视频字段被服务端剥离")
+                except Exception:
+                    pass
+
     except Exception as e:
         log(f"页面加载失败: {e}")
 
-    if not video_info and not session_expired:
+    # 有头模式 + 未拿到主图视频 → 等待人工完成滑块验证（最多90秒）
+    # 降级页/滑块页由真人在弹出的窗口里完成后，页面会自动跳回商品页且数据恢复完整
+    need_main = not video_info or video_info.get('type') == 'review'
+    if wait_for_human and need_main and not session_expired:
+        log("=" * 40)
+        log("如果弹出的浏览器窗口中出现滑块/验证码，请手动完成验证")
+        log("工具会等待 90 秒，完成后自动继续提取...")
+        log("=" * 40)
+        for waited in range(0, 90, 3):
+            time.sleep(3)
+            try:
+                # 验证完成后页面通常会跳回商品页，检查上下文中是否出现视频
+                found = page.evaluate('''() => {
+                    const ctx = window.__ICE_APP_CONTEXT__;
+                    if (!ctx || !ctx.loaderData || !ctx.loaderData.home) return false;
+                    const res = ctx.loaderData.home.data && ctx.loaderData.home.data.res;
+                    if (!res) return false;
+                    if (res.item && res.item.videos && res.item.videos.length) return true;
+                    const h = res.componentsVO && res.componentsVO.headImageVO;
+                    if (h && h.videos && h.videos.length) return true;
+                    return false;
+                }''')
+                if found:
+                    log(f"检测到验证已通过（等待{waited+3}秒），重新提取主图视频...")
+                    video_info = (_extract_video_from_context(page)
+                                  or _extract_video_from_loader(page, item_id)
+                                  or _extract_video_from_all_vo(page))
+                    if video_info:
+                        video_info['type'] = 'main'
+                        log("人工验证后成功拿到主图视频！")
+                    break
+            except Exception:
+                # 页面可能正在跳转，继续等
+                pass
+        else:
+            log("等待超时，未检测到验证完成")
+
+    # PC 页没找到视频，或只找到评价视频 → 再试移动版页面找主图视频（评价视频留作兜底）
+    need_h5 = (not session_expired) and (not video_info or video_info.get('type') == 'review')
+    if need_h5:
+        backup_review = video_info if video_info and video_info.get('type') == 'review' else None
         h5_url = f"https://h5.m.taobao.com/awp/core/detail.htm?id={item_id}"
         log("尝试移动版页面...")
         try:
-            page.goto(h5_url, wait_until='domcontentloaded', timeout=20000)
-            time.sleep(8)
+            page.goto(h5_url, wait_until='domcontentloaded', timeout=15000)
+            time.sleep(5)
 
+            h5_info = None
             if network_video_ids:
-                video_info = {'videoId': network_video_ids[-1], 'itemId': item_id, 'type': 'main'}
+                h5_info = {'videoId': network_video_ids[-1], 'itemId': item_id, 'type': 'main'}
                 if network_video_urls:
-                    video_info['url'] = network_video_urls[-1]
+                    h5_info['url'] = network_video_urls[-1]
                 log("从移动版网络请求中提取到视频")
 
-            if not video_info:
-                video_info = _extract_video_from_html(page)
-                if video_info:
+            if not h5_info:
+                h5_info = _extract_video_from_html(page)
+                if h5_info:
                     log("从移动版页面HTML中提取到视频")
 
-            if not video_info:
-                video_info = _extract_video_from_video_tags(page)
-                if video_info:
+            if not h5_info:
+                h5_info = _extract_video_from_video_tags(page)
+                if h5_info:
                     log("从移动版video标签中提取到视频")
+
+            # 移动版找到的若是主图视频则采用；评价视频则保留原兜底
+            if h5_info and h5_info.get('type') == 'main':
+                video_info = h5_info
+            elif not video_info:
+                video_info = h5_info
 
         except Exception as e:
             log(f"移动版页面加载失败: {e}")
 
+        if not video_info and backup_review:
+            video_info = backup_review
+
     return video_info, session_expired
 
 
-def extract_video_info(item_id, log_callback=None):
+def extract_video_info(item_id, log_callback=None, page_url=None):
     """提取视频信息，优先主图视频，fallback到评价视频。失败自动重建浏览器重试一次"""
     if not HAS_PLAYWRIGHT:
         return None, "未安装 Playwright"
@@ -923,15 +968,33 @@ def extract_video_info(item_id, log_callback=None):
 
     log("验证登录状态...")
 
-    video_info, session_expired = _extract_video_once(item_id, log, fresh=False)
+    video_info, session_expired = _extract_video_once(item_id, log, fresh=False, page_url=page_url)
 
-    # 第一次失败且不是登录问题 → 重建浏览器再试一次（排除浏览器状态卡死）
-    if not video_info and not session_expired:
-        log("首次提取失败，重建浏览器重试一次...")
+    # 没找到视频、或只找到评价视频 → 重试。
+    # 淘宝会对疑似爬虫返回「降级页」（无视频/主图不全/无评论），此时无头浏览器拿到的
+    # SSR 数据里根本没有视频字段。重试换成【有头浏览器】（会短暂弹出窗口），
+    # 有头模式的指纹更接近真人，实测可通过大部分降级判定。
+    need_retry = (not session_expired) and (not video_info or video_info.get('type') == 'review')
+    if need_retry:
+        log("未拿到主图视频，可能触发了反爬降级页，启用有头浏览器重试（会短暂弹出窗口）...")
         try:
-            video_info, session_expired = _extract_video_once(item_id, log, fresh=True)
+            retry_info, session_expired = _extract_video_once(
+                item_id, log, fresh=True, page_url=page_url, headless=False,
+                wait_for_human=True)
+            # 重试拿到主图视频则替换；否则保留原来的（含评价视频兜底）
+            if retry_info and retry_info.get('type') == 'main':
+                video_info = retry_info
+                log("有头模式成功拿到主图视频！")
+            elif not video_info:
+                video_info = retry_info
         except Exception as e:
-            log(f"重试时浏览器异常: {e}")
+            log(f"有头重试异常: {e}")
+        finally:
+            # 恢复无头共享实例，避免后续条目沿用有头窗口
+            try:
+                reset_shared_browser(AUTH_FILE, headless=True)
+            except Exception:
+                pass
 
     if session_expired:
         return None, "登录会话已过期，请重新登录"
@@ -1118,8 +1181,14 @@ def _download_taobao_product(url, output_dir, log_callback=None, progress_callba
     else:
         return False, "无法解析商品ID"
 
+    # 淘宝集市店商品用 item.taobao.com 打开（天猫 URL 对集市商品会跳错误页）
+    if 'taobao.com' in final_url and 'tmall' not in final_url:
+        page_url = f"https://item.taobao.com/item.htm?id={item_id}"
+    else:
+        page_url = f"https://detail.tmall.com/item.htm?id={item_id}"
+
     log("提取视频信息...")
-    video_info, err = extract_video_info(item_id, log_callback=log)
+    video_info, err = extract_video_info(item_id, log_callback=log, page_url=page_url)
     if err:
         return False, err
 
