@@ -1038,10 +1038,9 @@ def _extract_douyin_video_from_api(page):
 def _extract_douyin_video_from_tag(page):
     """
     从抖音页面的 video 标签中提取视频URL。
-    兼容三种视频源:
-      1. douyinvod.com CDN 直链 (如 v11-weba.douyinvod.com/...)
-      2. www.douyin.com/aweme/v1/play/?... 签名播放接口
-      3. aweme.snssdk.com 视频CDN
+    优先返回完整视频接口 (www.douyin.com/aweme/v1/play)，其次是 douyinvod CDN 直链。
+    注意: 页面加载初期 video 标签 src 是 2~3 秒的预览片段(douyinvod 直链)，
+    完整视频地址(aweme/v1/play)会在数秒后出现，调用方应轮询等待。
     """
     try:
         result = page.evaluate('''() => {
@@ -1055,10 +1054,14 @@ def _extract_douyin_video_from_tag(page):
                 const s = sv.src || sv.getAttribute('src') || '';
                 if (s) urls.push(s);
             });
+            // 1. 完整视频接口优先
             for (const u of urls) {
-                if (u.includes('douyinvod.com') || u.includes('aweme/v1/play')
-                        || u.includes('aweme.snssdk.com') || u.includes('zjcdn.com')
-                        || u.endsWith('.mp4')) {
+                if (u.includes('aweme/v1/play')) return u;
+            }
+            // 2. 其次 CDN 直链 (可能是预览片段)
+            for (const u of urls) {
+                if (u.includes('douyinvod.com') || u.includes('aweme.snssdk.com')
+                        || u.includes('zjcdn.com') || u.endsWith('.mp4')) {
                     return u;
                 }
             }
@@ -1136,17 +1139,26 @@ def extract_douyin_video(url, log_callback=None):
         try:
             page.goto(url, wait_until='domcontentloaded', timeout=30000)
 
-            # 等待 video 标签出现（普通视频页）或网络捕获到视频（商品页），最多 8 秒
-            tag_url = None
-            for _ in range(8):
+            # 等待完整视频 (aweme/v1/play) 出现: 页面加载初期是 2~3 秒预览片段(douyinvod)，
+            # 数秒后 src 切换为完整视频接口。最多等 16 秒，期间同时检查网络捕获。
+            full_url = None
+            preview_url = None
+            for _ in range(16):
+                # 网络捕获到完整视频接口则直接用
+                for u in captured_urls:
+                    if 'aweme/v1/play' in u:
+                        full_url = u
+                        break
+                if full_url:
+                    break
                 tag_url = _extract_douyin_video_from_tag(page)
                 if tag_url:
-                    break
-                if captured_urls:
-                    # 网络已捕获到视频（商品页场景），再等 2 秒确认 video 标签不会出现
-                    time.sleep(2)
-                    tag_url = _extract_douyin_video_from_tag(page)
-                    break
+                    if 'aweme/v1/play' in tag_url:
+                        full_url = tag_url
+                        break
+                    if not preview_url:
+                        preview_url = tag_url
+                        log("检测到预览视频，等待完整视频加载...")
                 time.sleep(1)
 
             # 判断落地页类型，决定 Referer
@@ -1155,17 +1167,27 @@ def extract_douyin_video(url, log_callback=None):
                                             'fenbi.jinritemai.com', 'jinritemai.com']):
                 referer = 'https://haohuo.jinritemai.com/'
 
-            # 方法1: video 标签直链（普通视频页最可靠）
-            if tag_url:
-                video_urls.append(tag_url)
-                log("从video标签中提取到视频URL")
+            # 组装候选地址: 完整视频优先，预览/捕获地址兜底
+            candidates = []
+            if full_url:
+                candidates.append(full_url)
+                log("提取到完整视频URL")
+            elif preview_url:
+                candidates.append(preview_url)
+                log("提取到视频URL")
+            if not candidates and captured_urls:
+                candidates = list(captured_urls)
+                log(f"从网络请求中提取到 {len(candidates)} 个视频URL")
+            # 补充其他捕获地址作为备选（完整视频失败时可换源）
+            if full_url:
+                for u in captured_urls:
+                    if u not in candidates:
+                        candidates.append(u)
+                        if len(candidates) >= 4:
+                            break
+            video_urls = candidates[:4]
 
-            # 方法2: 网络请求捕获
-            if not video_urls and captured_urls:
-                video_urls = list(captured_urls)
-                log(f"从网络请求中提取到 {len(video_urls)} 个视频URL")
-
-            # 方法3: 点击/滚动触发后再次提取（懒加载场景）
+            # 兜底: 点击/滚动触发后再次提取（懒加载场景）
             if not video_urls:
                 log("尝试触发视频加载...")
                 try:
@@ -1185,7 +1207,7 @@ def extract_douyin_video(url, log_callback=None):
                 except Exception:
                     pass
 
-            # 方法4: 从页面HTML中搜索 douyinvod CDN 地址
+            # 兜底: 从页面HTML中搜索 douyinvod CDN 地址
             if not video_urls:
                 html = page.content()
                 m = re.search(r'(https?://[^"\s\\]+douyinvod\.com[^"\s\\]+)', html)
@@ -1329,6 +1351,9 @@ def _download_douyin(url, output_dir, log_callback=None, progress_callback=None)
 
     log(f"开始下载...")
     last_err = None
+    # 抖音页面加载初期捕获到的 douyinvod 直链可能是 2~3 秒预览片段(约 200KB)，
+    # 完整视频(aweme/v1/play)通常 > 1MB。低于阈值判定为预览/异常文件，换下一候选。
+    min_size = 300 * 1024
     for i, video_url in enumerate(video_urls):
         if i > 0:
             log(f"换用第 {i+1} 个候选地址重试...")
@@ -1336,6 +1361,14 @@ def _download_douyin(url, output_dir, log_callback=None, progress_callback=None)
                                        referer=referer)
         if success:
             size = os.path.getsize(filepath)
+            if size < min_size:
+                log(f"文件过小({format_size(size)})，疑似预览片段，尝试其他地址...")
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
+                last_err = f"文件过小({format_size(size)})，疑似预览片段"
+                continue
             log(f"下载完成! 大小: {format_size(size)}")
             return True, filepath
         last_err = d_err
