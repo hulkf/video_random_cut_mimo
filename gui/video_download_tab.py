@@ -1,5 +1,7 @@
 import os
 import re
+import time
+from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -8,6 +10,7 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QHeaderView
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor
 from gui.config import get_config, set_config
 
 
@@ -122,6 +125,8 @@ class VideoDownloadTab(QWidget):
         super().__init__()
         self.worker = None
         self.login_worker = None
+        self._link_rows = {}   # index -> 表格行号
+        self._start_ts = None  # 本次下载开始时间
         self._init_ui()
         self._load_config()
 
@@ -197,14 +202,56 @@ class VideoDownloadTab(QWidget):
         prog_layout.addWidget(self.lbl_status)
         layout.addWidget(prog_group)
 
-        # === 日志 ===
-        log_group = QGroupBox("日志")
+        # === 下载结果表格 ===
+        result_group = QGroupBox("下载结果")
+        result_layout = QVBoxLayout(result_group)
+        self.table_result = QTableWidget(0, 5)
+        self.table_result.setHorizontalHeaderLabels(["序号", "链接", "类型", "状态", "详情"])
+        self.table_result.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_result.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table_result.setAlternatingRowColors(True)
+        self.table_result.verticalHeader().setVisible(False)
+        header = self.table_result.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        # 暗色表格样式（!important 防 qt-material 主题覆盖）
+        self.table_result.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e !important;
+                alternate-background-color: #262626 !important;
+                color: #e0e0e0 !important;
+                gridline-color: #3a3a3a !important;
+                border: 1px solid #3a3a3a !important;
+                border-radius: 6px !important;
+                font-size: 12px !important;
+                selection-background-color: #185FA5 !important;
+                selection-color: #ffffff !important;
+            }
+            QTableWidget::item { padding: 4px 6px !important; }
+            QHeaderView::section {
+                background-color: #2d2d2d !important;
+                color: #c8c8c8 !important;
+                border: none !important;
+                border-bottom: 1px solid #3a3a3a !important;
+                border-right: 1px solid #333333 !important;
+                padding: 6px 8px !important;
+                font-weight: bold !important;
+            }
+        """)
+        result_layout.addWidget(self.table_result)
+        layout.addWidget(result_group, 1)
+
+        # === 详细日志 ===
+        log_group = QGroupBox("详细日志")
         log_layout = QVBoxLayout(log_group)
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
-        self.txt_log.setMinimumHeight(150)
+        self.txt_log.setMinimumHeight(80)
         log_layout.addWidget(self.txt_log)
-        layout.addWidget(log_group, 1)
+        layout.addWidget(log_group)
 
         # === 支持链接类型说明（底部） ===
         help_group = QGroupBox("支持链接类型")
@@ -318,6 +365,21 @@ class VideoDownloadTab(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("准备中...")
 
+        # === 结果表格: 清除旧数据，重建本次下载记录 ===
+        self.table_result.setRowCount(0)
+        self._link_rows = {}
+        self._start_ts = time.time()
+        start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._add_summary_row(
+            f"本次下载概要：共 {len(links)} 个链接 · 输出目录: {output_dir} · 开始时间 {start_time}"
+        )
+        # 每个链接预建一行，等待下载
+        type_names = self._detect_link_types(links)
+        for i, link in enumerate(links):
+            row = self._new_link_row(i, link, type_names[i])
+            self._link_rows[i] = row
+        self.table_result.scrollToTop()
+
         self.worker = DownloadWorker(links, output_dir)
         self.worker.log.connect(self._log)
         self.worker.progress.connect(self._on_progress)
@@ -337,10 +399,29 @@ class VideoDownloadTab(QWidget):
             self.progress_bar.setValue(overall)
             self.progress_bar.setFormat(f"[{current}/{total}] {percent}%")
             self.lbl_status.setText(f"正在下载第 {current + 1}/{total} 个视频...")
+        # 更新当前链接行的下载中状态
+        row = self._link_rows.get(current)
+        if row is not None:
+            self._set_status_cell(row, f"下载中 {percent}%", color="#E8C15A")
 
     def _on_item_done(self, index, success, message):
-        status = "成功" if success else "失败"
-        self._log(f"  -> 第{index+1}个: {status}")
+        row = self._link_rows.get(index)
+        if row is None:
+            return
+        if success:
+            self._set_status_cell(row, "成功", color="#4ADE80")
+            detail = os.path.basename(message) if message else ""
+            item = QTableWidgetItem(detail)
+            item.setToolTip(message or "")
+            item.setForeground(QColor("#9CA3AF"))
+            self.table_result.setItem(row, 4, item)
+        else:
+            self._set_status_cell(row, "失败", color="#F87171")
+            item = QTableWidgetItem(message or "")
+            item.setToolTip(message or "")
+            item.setForeground(QColor("#F87171"))
+            self.table_result.setItem(row, 4, item)
+        self._log(f"  -> 第{index+1}个: {'成功' if success else '失败'}")
 
     def _on_all_done(self, success_count, fail_count):
         self.btn_download.setEnabled(True)
@@ -348,7 +429,81 @@ class VideoDownloadTab(QWidget):
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat(f"完成: {success_count}成功, {fail_count}失败")
         self.lbl_status.setText(f"下载完成: 成功 {success_count}, 失败 {fail_count}")
+        # 剩余等待中的行标记为已停止
+        for idx, row in self._link_rows.items():
+            cur = self.table_result.item(row, 3)
+            if cur and cur.text() in ("等待中", "下载中 0%"):
+                self._set_status_cell(row, "已停止", color="#9CA3AF")
+        # 表格最后一行: 本次下载总结
+        elapsed = time.time() - self._start_ts if self._start_ts else 0
+        stop_note = "（手动停止）" if fail_count == 0 and success_count < len(self._link_rows) else ""
+        summary_color = "#4ADE80" if fail_count == 0 and success_count > 0 else ("#F87171" if fail_count > 0 else "#9CA3AF")
+        self._add_summary_row(
+            f"下载总结：成功 {success_count} · 失败 {fail_count} · 用时 {elapsed:.1f} 秒{stop_note}",
+            color=summary_color
+        )
+        self.table_result.scrollToBottom()
         self._log(f"===== 全部完成: 成功 {success_count}, 失败 {fail_count} =====")
 
     def _log(self, msg):
         self.txt_log.appendPlainText(msg)
+
+    # === 结果表格辅助方法 ===
+
+    def _add_summary_row(self, text, color="#7DD3FC"):
+        """在表格末尾插入一行跨 5 列的概要/总结行"""
+        row = self.table_result.rowCount()
+        self.table_result.insertRow(row)
+        item = QTableWidgetItem(text)
+        item.setForeground(QColor(color))
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setTextAlignment(Qt.AlignCenter)
+        self.table_result.setItem(row, 0, item)
+        self.table_result.setSpan(row, 0, 1, 5)
+
+    def _detect_link_types(self, links):
+        """批量识别链接类型，返回显示名称列表"""
+        names = []
+        try:
+            from core.taobao_downloader import (
+                detect_link_type, LINK_TYPE_TAOBAO_DIRECT,
+                LINK_TYPE_TAOBAO_PRODUCT, LINK_TYPE_DOUYIN,
+            )
+            mapping = {
+                LINK_TYPE_TAOBAO_DIRECT: "淘宝直链",
+                LINK_TYPE_TAOBAO_PRODUCT: "淘宝商品",
+                LINK_TYPE_DOUYIN: "抖音",
+            }
+        except ImportError:
+            mapping = {}
+            detect_link_type = lambda u: "unknown"
+        for u in links:
+            t = detect_link_type(u)
+            names.append(mapping.get(t, "未知"))
+        return names
+
+    def _new_link_row(self, index, link, type_name):
+        """新建一个链接行，返回行号"""
+        row = self.table_result.rowCount()
+        self.table_result.insertRow(row)
+        item_no = QTableWidgetItem(str(index + 1))
+        item_no.setTextAlignment(Qt.AlignCenter)
+        self.table_result.setItem(row, 0, item_no)
+        item_link = QTableWidgetItem(link)
+        item_link.setToolTip(link)
+        self.table_result.setItem(row, 1, item_link)
+        item_type = QTableWidgetItem(type_name)
+        item_type.setTextAlignment(Qt.AlignCenter)
+        self.table_result.setItem(row, 2, item_type)
+        self._set_status_cell(row, "等待中", color="#9CA3AF")
+        self.table_result.setItem(row, 4, QTableWidgetItem(""))
+        return row
+
+    def _set_status_cell(self, row, text, color):
+        """设置状态列，带颜色"""
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignCenter)
+        item.setForeground(QColor(color))
+        self.table_result.setItem(row, 3, item)
