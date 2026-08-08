@@ -37,7 +37,7 @@ class DownloadWorker(QThread):
     """视频下载后台线程"""
     log = pyqtSignal(str)
     progress = pyqtSignal(int, int, int)  # current, total, percent
-    item_done = pyqtSignal(int, bool, str)  # index, success, message
+    item_done = pyqtSignal(int, bool, str, str)  # index, success, message, video_url
     all_done = pyqtSignal(int, int)  # success_count, fail_count
 
     def __init__(self, links, output_dir):
@@ -78,19 +78,26 @@ class DownloadWorker(QThread):
             def progress_cb(pct, downloaded, total_bytes):
                 self.progress.emit(i, total, pct)
 
+            self._video_url = ""
+
+            def info_cb(key, value):
+                if key == "video_url":
+                    self._video_url = value
+
             success, result = download_video(
                 url, self.output_dir,
                 log_callback=log_cb,
-                progress_callback=progress_cb
+                progress_callback=progress_cb,
+                info_callback=info_cb
             )
 
             if success:
                 success_count += 1
-                self.item_done.emit(i, True, result)
+                self.item_done.emit(i, True, result, self._video_url)
                 self.log.emit(f"  [OK] 下载完成: {os.path.basename(result)}")
             else:
                 fail_count += 1
-                self.item_done.emit(i, False, result)
+                self.item_done.emit(i, False, result, self._video_url)
                 self.log.emit(f"  [ERR] {result}")
 
             self.progress.emit(i + 1, total, 100)
@@ -205,18 +212,20 @@ class VideoDownloadTab(QWidget):
         # === 下载结果表格 ===
         result_group = QGroupBox("下载结果")
         result_layout = QVBoxLayout(result_group)
-        self.table_result = QTableWidget(0, 5)
-        self.table_result.setHorizontalHeaderLabels(["序号", "链接", "类型", "状态", "详情"])
+        self.table_result = QTableWidget(0, 6)
+        self.table_result.setHorizontalHeaderLabels(["序号", "链接", "类型", "状态", "真实视频链接", "详情"])
         self.table_result.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_result.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_result.setAlternatingRowColors(True)
         self.table_result.verticalHeader().setVisible(False)
         header = self.table_result.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.resizeSection(1, 200)
         # 暗色表格样式（!important 防 qt-material 主题覆盖）
         self.table_result.setStyleSheet("""
             QTableWidget {
@@ -404,23 +413,33 @@ class VideoDownloadTab(QWidget):
         if row is not None:
             self._set_status_cell(row, f"下载中 {percent}%", color="#E8C15A")
 
-    def _on_item_done(self, index, success, message):
+    def _on_item_done(self, index, success, message, video_url=""):
         row = self._link_rows.get(index)
         if row is None:
             return
+        # 真实视频链接列
+        if video_url:
+            item_url = QTableWidgetItem(video_url)
+            item_url.setToolTip(video_url)
+            item_url.setForeground(QColor("#85B7EB"))
+        else:
+            item_url = QTableWidgetItem("-")
+            item_url.setForeground(QColor("#9CA3AF"))
+        self.table_result.setItem(row, 4, item_url)
+        # 详情列
         if success:
             self._set_status_cell(row, "成功", color="#4ADE80")
             detail = os.path.basename(message) if message else ""
             item = QTableWidgetItem(detail)
             item.setToolTip(message or "")
             item.setForeground(QColor("#9CA3AF"))
-            self.table_result.setItem(row, 4, item)
+            self.table_result.setItem(row, 5, item)
         else:
             self._set_status_cell(row, "失败", color="#F87171")
             item = QTableWidgetItem(message or "")
             item.setToolTip(message or "")
             item.setForeground(QColor("#F87171"))
-            self.table_result.setItem(row, 4, item)
+            self.table_result.setItem(row, 5, item)
         self._log(f"  -> 第{index+1}个: {'成功' if success else '失败'}")
 
     def _on_all_done(self, success_count, fail_count):
@@ -434,6 +453,10 @@ class VideoDownloadTab(QWidget):
             cur = self.table_result.item(row, 3)
             if cur and cur.text() in ("等待中", "下载中 0%"):
                 self._set_status_cell(row, "已停止", color="#9CA3AF")
+                it = self.table_result.item(row, 4)
+                if it:
+                    it.setText("-")
+                    it.setToolTip("")
         # 表格最后一行: 本次下载总结
         elapsed = time.time() - self._start_ts if self._start_ts else 0
         stop_note = "（手动停止）" if fail_count == 0 and success_count < len(self._link_rows) else ""
@@ -451,7 +474,7 @@ class VideoDownloadTab(QWidget):
     # === 结果表格辅助方法 ===
 
     def _add_summary_row(self, text, color="#7DD3FC"):
-        """在表格末尾插入一行跨 5 列的概要/总结行"""
+        """在表格末尾插入一行跨 6 列的概要/总结行"""
         row = self.table_result.rowCount()
         self.table_result.insertRow(row)
         item = QTableWidgetItem(text)
@@ -461,7 +484,7 @@ class VideoDownloadTab(QWidget):
         item.setFont(font)
         item.setTextAlignment(Qt.AlignCenter)
         self.table_result.setItem(row, 0, item)
-        self.table_result.setSpan(row, 0, 1, 5)
+        self.table_result.setSpan(row, 0, 1, 6)
 
     def _detect_link_types(self, links):
         """批量识别链接类型，返回显示名称列表"""
@@ -498,7 +521,11 @@ class VideoDownloadTab(QWidget):
         item_type.setTextAlignment(Qt.AlignCenter)
         self.table_result.setItem(row, 2, item_type)
         self._set_status_cell(row, "等待中", color="#9CA3AF")
-        self.table_result.setItem(row, 4, QTableWidgetItem(""))
+        # 真实视频链接列（等待解析完成）
+        item_url = QTableWidgetItem("解析中...")
+        item_url.setForeground(QColor("#9CA3AF"))
+        self.table_result.setItem(row, 4, item_url)
+        self.table_result.setItem(row, 5, QTableWidgetItem(""))
         return row
 
     def _set_status_cell(self, row, text, color):

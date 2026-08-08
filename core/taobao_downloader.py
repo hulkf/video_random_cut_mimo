@@ -1140,26 +1140,58 @@ def extract_douyin_video(url, log_callback=None):
             page.goto(url, wait_until='domcontentloaded', timeout=30000)
 
             # 等待完整视频 (aweme/v1/play) 出现: 页面加载初期是 2~3 秒预览片段(douyinvod)，
-            # 数秒后 src 切换为完整视频接口。最多等 16 秒，期间同时检查网络捕获。
+            # 数秒后 src 切换为完整视频接口。用 wait_for_function 页面内轮询（不阻塞 Python）。
             full_url = None
             preview_url = None
-            for _ in range(16):
-                # 网络捕获到完整视频接口则直接用
+
+            def _js_src_has(keyword):
+                return (
+                    "() => {"
+                    "const v = document.querySelector('video');"
+                    "const s = v ? (v.src || v.currentSrc || '') : '';"
+                    f"return s.includes('{keyword}');"
+                    "}"
+                )
+
+            # 阶段A: 最多等 15 秒，等待 video 标签出现任意视频地址（预览或完整）。
+            # 抖音页面加载时间不稳定（6~15秒不等），超时后走网络捕获/触发兜底。
+            try:
+                page.wait_for_function(
+                    "() => {"
+                    "const v = document.querySelector('video');"
+                    "const s = v ? (v.src || v.currentSrc || '') : '';"
+                    "return s.includes('aweme/v1/play') || s.includes('douyinvod.com');"
+                    "}",
+                    timeout=15000)
+                tag_url = _extract_douyin_video_from_tag(page)
+                if tag_url and 'aweme/v1/play' in tag_url:
+                    full_url = tag_url
+                    log("提取到完整视频URL")
+                elif tag_url:
+                    preview_url = tag_url
+                    log("检测到预览视频，等待完整视频加载...")
+            except Exception:
+                pass
+
+            # 商品页/兜底: video 标签没有时，用网络捕获到的视频地址
+            if not full_url and not preview_url:
                 for u in captured_urls:
                     if 'aweme/v1/play' in u:
                         full_url = u
                         break
-                if full_url:
-                    break
-                tag_url = _extract_douyin_video_from_tag(page)
-                if tag_url:
-                    if 'aweme/v1/play' in tag_url:
+                if not full_url and captured_urls:
+                    preview_url = captured_urls[0]
+
+            # 阶段B: 已有预览地址时，再等最多 8 秒切换为完整地址
+            if preview_url and not full_url:
+                try:
+                    page.wait_for_function(_js_src_has('aweme/v1/play'), timeout=8000)
+                    tag_url = _extract_douyin_video_from_tag(page)
+                    if tag_url and 'aweme/v1/play' in tag_url:
                         full_url = tag_url
-                        break
-                    if not preview_url:
-                        preview_url = tag_url
-                        log("检测到预览视频，等待完整视频加载...")
-                time.sleep(1)
+                        log("提取到完整视频URL")
+                except Exception:
+                    pass
 
             # 判断落地页类型，决定 Referer
             final_url = page.url.lower()
@@ -1227,7 +1259,7 @@ def extract_douyin_video(url, log_callback=None):
 
 # === 下载入口函数 ===
 
-def _download_direct_taobao(url, output_dir, log_callback=None, progress_callback=None):
+def _download_direct_taobao(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
     """处理淘宝视频直链: 直接提取contentId并下载"""
     def log(msg):
         if log_callback:
@@ -1241,6 +1273,8 @@ def _download_direct_taobao(url, output_dir, log_callback=None, progress_callbac
     log(f"contentId: {video_id}")
 
     download_url = GENERIC_URL.replace('{vid}', video_id)
+    if info_callback:
+        info_callback("video_url", download_url)
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, f"taobao_video_{video_id}.mp4")
 
@@ -1254,7 +1288,7 @@ def _download_direct_taobao(url, output_dir, log_callback=None, progress_callbac
         return False, f"下载失败: {err}"
 
 
-def _download_taobao_product(url, output_dir, log_callback=None, progress_callback=None):
+def _download_taobao_product(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
     """处理淘宝/天猫商品链接: 解析页面提取videoId后下载"""
     def log(msg):
         if log_callback:
@@ -1295,6 +1329,8 @@ def _download_taobao_product(url, output_dir, log_callback=None, progress_callba
     generic_url = GENERIC_URL.replace('{vid}', video_id)
     if generic_url not in candidate_urls:
         candidate_urls.append(generic_url)
+    if info_callback and candidate_urls:
+        info_callback("video_url", candidate_urls[0])
     os.makedirs(output_dir, exist_ok=True)
 
     # 评价视频用不同文件名前缀
@@ -1318,7 +1354,7 @@ def _download_taobao_product(url, output_dir, log_callback=None, progress_callba
     return False, f"下载失败: {last_err}"
 
 
-def _download_douyin(url, output_dir, log_callback=None, progress_callback=None):
+def _download_douyin(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
     """处理抖音链接（商品页 + 普通视频页通用）: 解析页面提取视频URL后下载"""
     def log(msg):
         if log_callback:
@@ -1337,6 +1373,8 @@ def _download_douyin(url, output_dir, log_callback=None, progress_callback=None)
     seen = set()
     video_urls = [u for u in video_urls if not (u in seen or seen.add(u))]
     log(f"共获取 {len(video_urls)} 个候选地址")
+    if info_callback and video_urls:
+        info_callback("video_url", video_urls[0])
 
     os.makedirs(output_dir, exist_ok=True)
     # 普通视频页用视频ID命名，商品页无ID则用时间戳
@@ -1376,10 +1414,11 @@ def _download_douyin(url, output_dir, log_callback=None, progress_callback=None)
     return False, f"下载失败: {last_err}"
 
 
-def download_video(url, output_dir, log_callback=None, progress_callback=None):
+def download_video(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
     """
     综合视频下载入口
     自动识别链接类型并选择对应下载方式
+    info_callback: 可选，解析到真实视频直链时回调 info_callback("video_url", url)
     """
     def log(msg):
         if log_callback:
@@ -1388,11 +1427,11 @@ def download_video(url, output_dir, log_callback=None, progress_callback=None):
     link_type = detect_link_type(url)
 
     if link_type == LINK_TYPE_TAOBAO_DIRECT:
-        return _download_direct_taobao(url, output_dir, log_callback, progress_callback)
+        return _download_direct_taobao(url, output_dir, log_callback, progress_callback, info_callback)
     elif link_type == LINK_TYPE_TAOBAO_PRODUCT:
-        return _download_taobao_product(url, output_dir, log_callback, progress_callback)
+        return _download_taobao_product(url, output_dir, log_callback, progress_callback, info_callback)
     elif link_type == LINK_TYPE_DOUYIN:
-        return _download_douyin(url, output_dir, log_callback, progress_callback)
+        return _download_douyin(url, output_dir, log_callback, progress_callback, info_callback)
     else:
         log(f"未知链接类型: {url[:80]}")
         return False, "不支持的链接类型，目前支持淘宝/天猫商品链接、淘宝视频直链和抖音商品链接"
