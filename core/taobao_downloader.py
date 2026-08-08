@@ -5,7 +5,9 @@
 支持链接类型:
   1. 淘宝/天猫商品链接 (短链/完整链接) → 解析页面提取videoId
   2. 淘宝视频直链 (cloud.video.taobao.com) → 直接提取contentId下载
-  3. 抖音商品链接 (v.douyin.com 短链 / haohuo.jinritemai.com) → 解析API提取视频URL
+  3. 抖音链接 (商品页 + 普通视频页) → 解析页面提取视频URL
+     - 商品页: v.douyin.com 短链 / haohuo.jinritemai.com 等
+     - 普通视频页: www.douyin.com/video/{id} / v.douyin.com 短链
 """
 
 import os
@@ -1034,14 +1036,30 @@ def _extract_douyin_video_from_api(page):
 
 
 def _extract_douyin_video_from_tag(page):
-    """从抖音页面的 video 标签中提取视频URL"""
+    """
+    从抖音页面的 video 标签中提取视频URL。
+    兼容三种视频源:
+      1. douyinvod.com CDN 直链 (如 v11-weba.douyinvod.com/...)
+      2. www.douyin.com/aweme/v1/play/?... 签名播放接口
+      3. aweme.snssdk.com 视频CDN
+    """
     try:
         result = page.evaluate('''() => {
-            const videos = document.querySelectorAll('video');
-            for (const v of videos) {
-                const src = v.src || v.currentSrc || v.getAttribute('src') || '';
-                if (src && src.includes('douyinvod.com')) {
-                    return src;
+            const urls = [];
+            const v = document.querySelector('video');
+            if (v) {
+                const s = v.src || v.currentSrc || v.getAttribute('src') || '';
+                if (s) urls.push(s);
+            }
+            document.querySelectorAll('video source').forEach(sv => {
+                const s = sv.src || sv.getAttribute('src') || '';
+                if (s) urls.push(s);
+            });
+            for (const u of urls) {
+                if (u.includes('douyinvod.com') || u.includes('aweme/v1/play')
+                        || u.includes('aweme.snssdk.com') || u.includes('zjcdn.com')
+                        || u.endsWith('.mp4')) {
+                    return u;
                 }
             }
             return null;
@@ -1052,28 +1070,42 @@ def _extract_douyin_video_from_tag(page):
 
 
 def extract_douyin_video(url, log_callback=None):
-    """提取抖音商品视频URL"""
+    """
+    提取抖音视频URL（兼容商品页与普通视频页）。
+    商品页: haohuo.jinritemai.com / buyin / 抖音商城，靠拦截 promotion/pack API
+    普通视频页: www.douyin.com/video/{id} 或 v.douyin.com 短链跳转，靠 video 标签直链 / 网络捕获
+    返回 (url_list, err, referer)。url_list 为候选直链列表（可逐个尝试），失败时 err 非空。
+    """
     if not HAS_PLAYWRIGHT:
-        return None, "未安装 Playwright"
+        return [], "未安装 Playwright", None
 
     def log(msg):
         if log_callback:
             log_callback(msg)
 
-    video_url = None
+    video_urls = []
+    referer = 'https://www.douyin.com/'
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=[
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+        ])
         context = browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080},
+            locale='zh-CN',
         )
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         page = context.new_page()
         page.set_default_timeout(30000)
 
         captured_urls = []
+
         def on_response(response):
             try:
                 rurl = response.url
+                # 1. 商品页 API (promotion/pack): 解析 head_figure 中的视频
                 if 'promotion/pack' in rurl and 'h5' in rurl:
                     body = response.text()
                     data = json.loads(body)
@@ -1087,45 +1119,78 @@ def extract_douyin_video(url, log_callback=None):
                                 vurl = content.get('url', '')
                                 if vurl:
                                     captured_urls.append(vurl)
-                                    break
-            except:
+                                    return
+                # 2. 视频直链 CDN / 签名播放接口 (普通视频页)
+                is_video_resp = (
+                    ('douyinvod.com' in rurl or 'aweme.snssdk.com' in rurl or 'zjcdn.com' in rurl)
+                    and ('.mp4' in rurl or 'mime_type=video' in rurl or 'play' in rurl)
+                ) or ('www.douyin.com/aweme/v1/play' in rurl)
+                if is_video_resp:
+                    captured_urls.append(rurl)
+            except Exception:
                 pass
 
         page.on('response', on_response)
 
-        log(f"加载抖音商品页: {url[:80]}")
+        log(f"加载抖音页面: {url[:80]}")
         try:
-            page.goto(url, wait_until='networkidle', timeout=30000)
-            time.sleep(3)
+            page.goto(url, wait_until='domcontentloaded', timeout=30000)
 
-            # 方法1: 从API响应中提取
-            if captured_urls:
-                video_url = captured_urls[0]
-                log("从API响应中提取到视频URL")
+            # 等待 video 标签出现（普通视频页）或网络捕获到视频（商品页），最多 8 秒
+            tag_url = None
+            for _ in range(8):
+                tag_url = _extract_douyin_video_from_tag(page)
+                if tag_url:
+                    break
+                if captured_urls:
+                    # 网络已捕获到视频（商品页场景），再等 2 秒确认 video 标签不会出现
+                    time.sleep(2)
+                    tag_url = _extract_douyin_video_from_tag(page)
+                    break
+                time.sleep(1)
 
-            # 方法2: 点击视频元素后从 video 标签提取
-            if not video_url:
+            # 判断落地页类型，决定 Referer
+            final_url = page.url.lower()
+            if any(k in final_url for k in ['haohuo.jinritemai.com', 'buyin.jinritemai.com',
+                                            'fenbi.jinritemai.com', 'jinritemai.com']):
+                referer = 'https://haohuo.jinritemai.com/'
+
+            # 方法1: video 标签直链（普通视频页最可靠）
+            if tag_url:
+                video_urls.append(tag_url)
+                log("从video标签中提取到视频URL")
+
+            # 方法2: 网络请求捕获
+            if not video_urls and captured_urls:
+                video_urls = list(captured_urls)
+                log(f"从网络请求中提取到 {len(video_urls)} 个视频URL")
+
+            # 方法3: 点击/滚动触发后再次提取（懒加载场景）
+            if not video_urls:
                 log("尝试触发视频加载...")
                 try:
                     page.evaluate('''() => {
                         const el = document.querySelector('[class*="video"]') || document.querySelector('video');
                         if (el) el.click();
+                        window.scrollTo(0, document.body.scrollHeight * 0.5);
                     }''')
                     time.sleep(3)
-
                     tag_url = _extract_douyin_video_from_tag(page)
                     if tag_url:
-                        video_url = tag_url
-                        log("从video标签中提取到视频URL")
-                except:
+                        video_urls.append(tag_url)
+                        log("触发后从video标签中提取到视频URL")
+                    if not video_urls and captured_urls:
+                        video_urls = list(captured_urls)
+                        log("触发后从网络请求中提取到视频URL")
+                except Exception:
                     pass
 
-            # 方法3: 从页面HTML中搜索
-            if not video_url:
+            # 方法4: 从页面HTML中搜索 douyinvod CDN 地址
+            if not video_urls:
                 html = page.content()
                 m = re.search(r'(https?://[^"\s\\]+douyinvod\.com[^"\s\\]+)', html)
                 if m:
-                    video_url = m.group(1).replace('\\/', '/')
+                    video_urls.append(m.group(1).replace('\\/', '/'))
                     log("从页面HTML中提取到视频URL")
 
         except Exception as e:
@@ -1133,9 +1198,9 @@ def extract_douyin_video(url, log_callback=None):
 
         browser.close()
 
-    if not video_url:
-        return None, "未找到视频，该商品可能没有视频"
-    return video_url, None
+    if not video_urls:
+        return [], "未找到视频（该视频可能已删除、私密或需要登录抖音才能观看）", referer
+    return video_urls, None, referer
 
 
 # === 下载入口函数 ===
@@ -1232,32 +1297,50 @@ def _download_taobao_product(url, output_dir, log_callback=None, progress_callba
 
 
 def _download_douyin(url, output_dir, log_callback=None, progress_callback=None):
-    """处理抖音商品链接: 解析页面提取视频URL后下载"""
+    """处理抖音链接（商品页 + 普通视频页通用）: 解析页面提取视频URL后下载"""
     def log(msg):
         if log_callback:
             log_callback(msg)
 
-    log(f"链接类型: 抖音商品")
+    log(f"链接类型: 抖音")
 
     log("提取视频信息...")
-    video_url, err = extract_douyin_video(url, log_callback=log)
+    video_urls, err, referer = extract_douyin_video(url, log_callback=log)
     if err:
         return False, err
+    if not video_urls:
+        return False, "未提取到视频URL"
 
-    log(f"视频URL: {video_url[:80]}...")
+    # 去重
+    seen = set()
+    video_urls = [u for u in video_urls if not (u in seen or seen.add(u))]
+    log(f"共获取 {len(video_urls)} 个候选地址")
 
     os.makedirs(output_dir, exist_ok=True)
-    filepath = os.path.join(output_dir, f"douyin_video_{int(time.time())}.mp4")
+    # 普通视频页用视频ID命名，商品页无ID则用时间戳
+    video_id = None
+    m = re.search(r'/video/(\d+)', url)
+    if m:
+        video_id = m.group(1)
+    if video_id:
+        filepath = os.path.join(output_dir, f"douyin_video_{video_id}.mp4")
+    else:
+        filepath = os.path.join(output_dir, f"douyin_video_{int(time.time())}.mp4")
 
     log(f"开始下载...")
-    success, err = download_file(video_url, filepath, progress_callback=progress_callback,
-                           referer='https://haohuo.jinritemai.com/')
-    if success:
-        size = os.path.getsize(filepath)
-        log(f"下载完成! 大小: {format_size(size)}")
-        return True, filepath
-    else:
-        return False, f"下载失败: {err}"
+    last_err = None
+    for i, video_url in enumerate(video_urls):
+        if i > 0:
+            log(f"换用第 {i+1} 个候选地址重试...")
+        success, d_err = download_file(video_url, filepath, progress_callback=progress_callback,
+                                       referer=referer)
+        if success:
+            size = os.path.getsize(filepath)
+            log(f"下载完成! 大小: {format_size(size)}")
+            return True, filepath
+        last_err = d_err
+        log(f"该地址下载失败: {d_err}")
+    return False, f"下载失败: {last_err}"
 
 
 def download_video(url, output_dir, log_callback=None, progress_callback=None):

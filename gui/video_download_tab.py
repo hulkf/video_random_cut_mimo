@@ -165,6 +165,7 @@ class VideoDownloadTab(QWidget):
             "2. 淘宝/天猫完整链接: https://detail.tmall.com/item.htm?id=123456\n"
             "3. 淘宝视频直链: https://cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/1234567890.mp4\n"
             "4. 抖音商品链接: https://v.douyin.com/xxxxx/\n"
+            "5. 抖音视频链接: https://www.douyin.com/video/7634032388893858545\n"
             "\n"
             "可直接粘贴如下格式文本，会自动识别链接:\n"
             "【淘宝】https://e.tb.cn/h.xxx 点击链接直接打开\n"
@@ -211,7 +212,8 @@ class VideoDownloadTab(QWidget):
         help_text = QLabel(
             "  1. 淘宝/天猫商品链接（短链接和完整链接）— 需登录淘宝\n"
             "  2. 淘宝视频直链: cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/{contentId}.mp4 — 无需登录\n"
-            "  3. 抖音商品链接: v.douyin.com 短链 / haohuo.jinritemai.com 链接 — 无需登录"
+            "  3. 抖音商品链接: v.douyin.com 短链 / haohuo.jinritemai.com 链接 — 无需登录\n"
+            "  4. 抖音视频链接: www.douyin.com/video/{id} — 无需登录"
         )
         help_text.setStyleSheet("color: #999; font-size: 12px;")
         help_layout.addWidget(help_text)
