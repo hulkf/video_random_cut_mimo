@@ -80,12 +80,20 @@ class VideoConcatenatorEngine:
         return self.cover_mode if self.cover_mode in ("front", "back", "both") else "front"
 
     def _extract_cover_frame(self, video_path, output_path, duration):
+        # ffmpeg 8.x image2 muxer 在 -ss 接近 duration（浮点边界）时会拒绝；留 0.5s 余量
         timestamp = 0
         if duration > 0.5:
-            timestamp = random.uniform(0.1, max(0.1, duration - 0.1))
+            timestamp = random.uniform(0.1, max(0.1, duration - 0.5))
         cmd = [
             "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", video_path,
-            "-frames:v", "1", "-q:v", "2", output_path
+            "-frames:v", "1",
+            # ffmpeg 8.x image2 muxer 单文件名必须显式 -update 1，否则可能 throw
+            # "At least one output file must be specified"（用户报错根因）
+            "-update", "1",
+            # ffmpeg 8.x 默认 strict_std_compliance 提高，mjpeg 拒绝 TV-range YUV；
+            # 视频源 h264 标记为 yuv420p(tv, bt709) 时需 -strict unofficial
+            "-strict", "unofficial",
+            "-q:v", "2", output_path
         ]
         result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
         if result.returncode != 0 or not os.path.exists(output_path):
