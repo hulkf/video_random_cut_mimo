@@ -1,0 +1,85 @@
+classDiagram
+    class MainWindow {
+        +tabs: WrapTabWidget
+        +__init__(app)
+        +closeEvent(event)
+    }
+    class tab_registry {
+        +TABS: list[tuple[str, str, Callable]]
+        +stop_tab_threads(tab) void
+    }
+    class encoder {
+        +DEFAULT_CRF: int
+        +get_encoder(crf, preset) tuple
+        +get_default_workers() int
+        +fallback_to_software() void
+        +set_hardware_enabled(enabled) void
+        +is_session_limit(stderr) bool
+        -_probe_encoders_output() str
+        -_test_hardware(codec) bool
+    }
+    class ffmpeg_runner {
+        +CREATE_NO_WINDOW: int
+        +run_ffmpeg(cmd, timeout, on_progress, output_path, track, error_message) FFmpegResult
+        +run_ffmpeg_with_fallback(build_cmd, crf, preset, **kwargs) FFmpegResult
+        +track_proc(proc) void
+        +untrack_proc(proc) void
+        +terminate_all() int
+    }
+    class FFmpegCommand {
+        +__init__(executable)
+        +add(*args) FFmpegCommand
+        +input(path) FFmpegCommand
+        +encoder(codec, preset, quality_args) FFmpegCommand
+        +output(path, overwrite) FFmpegCommand
+        +build() list
+    }
+    class FFmpegError {
+        +cmd: list
+        +returncode: int
+        +stderr: str
+    }
+    class FFmpegResult {
+        +returncode: int
+        +stdout: str
+        +stderr: str
+        +output_path: str
+    }
+    class media_utils {
+        +VIDEO_EXTS: tuple
+        +collect_videos(path, exts) list
+        +probe_video(video_path, timeout) dict
+        +get_video_duration(video_path) float
+    }
+    class path_utils {
+        +strip_quotes(path) str
+        +normalize_path(path) str
+        +unique_output_path(output_path) str
+        +build_output_path(output_dir, rel_base, suffix, ext, dedupe) str
+    }
+    class VideoResizer {
+        +target_ratio: str
+        +resize_video(video_path, output_path) str
+        +resize_folder(input_folder, output_folder, callback) list
+        +build_filter(video_path) tuple
+    }
+    class VideoFission {
+        +partial_results: list
+        +request_stop() void
+        +fission_one(video_path, output_path, seed) str
+        +fission_folder(input_sources, output_folder, ...) list
+    }
+
+    MainWindow --> tab_registry : TABS / stop_tab_threads
+    tab_registry --> encoder : get_encoder
+    VideoResizer --> media_utils : probe_video/collect_videos
+    VideoResizer --> encoder : get_encoder
+    VideoResizer --> ffmpeg_runner : run_ffmpeg_with_fallback
+    VideoResizer --> path_utils : build_output_path
+    VideoFission --> media_utils : probe_video/collect_videos
+    VideoFission --> encoder : get_encoder/fallback_to_software
+    VideoFission --> ffmpeg_runner : run_ffmpeg/terminate_all
+    VideoFission --> path_utils : strip_quotes
+    ffmpeg_runner ..> encoder : run_ffmpeg_with_fallback(单向)
+    ffmpeg_runner --> FFmpegResult
+    ffmpeg_runner --> FFmpegError

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>video_random_cut_mimo 架构评审报告 · 2026-08-19</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2430; --border:#2d3748;
+    --text:#e6edf3; --muted:#8b949e; --blue:#4d8fff; --green:#4ade80;
+    --orange:#fbbf24; --red:#ff6b6b; --purple:#a78bfa;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--text);font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;line-height:1.7;padding:32px 16px 60px;}
+  .wrap{max-width:960px;margin:0 auto;}
+  header.hero{background:linear-gradient(135deg,#101b30 0%,#161b22 60%);border:1px solid var(--border);border-radius:16px;padding:36px 40px;margin-bottom:28px;}
+  .hero .tag{display:inline-block;font-size:12px;color:var(--blue);border:1px solid var(--blue);border-radius:20px;padding:2px 12px;margin-bottom:12px;letter-spacing:1px;}
+  h1{font-size:26px;margin-bottom:8px;}
+  .hero .sub{color:var(--muted);font-size:14px;}
+  .stats{display:flex;gap:14px;margin-top:22px;flex-wrap:wrap;}
+  .stat{flex:1;min-width:140px;background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center;}
+  .stat b{display:block;font-size:26px;color:var(--blue);}
+  .stat span{font-size:12px;color:var(--muted);}
+  h2{font-size:20px;margin:36px 0 14px;padding-left:12px;border-left:4px solid var(--blue);}
+  h3{font-size:16px;margin:20px 0 10px;color:var(--blue);}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:16px;}
+  .card.diag{border-left:4px solid var(--orange);}
+  .card.diag.red{border-left-color:var(--red);}
+  .card.good{border-left:4px solid var(--green);}
+  p{margin-bottom:10px;font-size:14.5px;}
+  .muted{color:var(--muted);}
+  .small{font-size:12.5px;color:var(--muted);}
+  .badge{display:inline-block;font-size:11px;border-radius:4px;padding:1px 8px;margin-right:6px;vertical-align:1px;}
+  .b-red{background:rgba(255,107,107,.15);color:var(--red);}
+  .b-orange{background:rgba(251,191,36,.15);color:var(--orange);}
+  .b-green{background:rgba(74,222,128,.15);color:var(--green);}
+  .b-blue{background:rgba(77,143,255,.15);color:var(--blue);}
+  .b-purple{background:rgba(167,139,250,.15);color:var(--purple);}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0 6px;}
+  th{background:var(--panel2);color:var(--blue);text-align:left;padding:10px 12px;border:1px solid var(--border);font-weight:600;white-space:nowrap;}
+  td{padding:10px 12px;border:1px solid var(--border);vertical-align:top;}
+  tr:nth-child(even) td{background:rgba(255,255,255,.02);}
+  code{background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:1px 7px;font-family:Consolas,monospace;font-size:12.5px;color:var(--purple);}
+  ul,ol{padding-left:22px;font-size:14.5px;margin:8px 0;}
+  li{margin-bottom:7px;}
+  .phase{display:flex;gap:14px;margin-bottom:14px;align-items:flex-start;}
+  .phase-num{flex:0 0 56px;height:56px;border-radius:12px;background:var(--panel2);border:1px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;color:var(--muted);}
+  .phase-num b{font-size:18px;color:var(--blue);}
+  .phase-body{flex:1;}
+  .phase-body h4{font-size:15px;margin-bottom:6px;}
+  .pill{display:inline-block;background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:2px 12px;font-size:12px;color:var(--muted);margin:2px 4px 2px 0;}
+  .speed{font-size:12px;color:var(--green);white-space:nowrap;}
+  .warn{font-size:12px;color:var(--orange);white-space:nowrap;}
+  .no{color:var(--red);}
+  .ok{color:var(--green);}
+  svg{width:100%;height:auto;display:block;}
+  .fig-cap{text-align:center;color:var(--muted);font-size:12.5px;margin:8px 0 4px;}
+  .footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px;text-align:center;}
+  .kpi{display:inline-block;font-size:12px;padding:2px 10px;border-radius:6px;margin-right:6px;}
+  .kpi.hi{background:rgba(74,222,128,.12);color:var(--green);border:1px solid rgba(74,222,128,.4);}
+  .kpi.mid{background:rgba(251,191,36,.12);color:var(--orange);border:1px solid rgba(251,191,36,.4);}
+  .kpi.lo{background:rgba(139,148,158,.12);color:var(--muted);border:1px solid rgba(139,148,158,.4);}
+  @media(max-width:700px){header.hero{padding:24px 20px;} .stats{flex-direction:column;} th,td{white-space:normal;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <span class="tag">架构评审报告 · ARCHITECTURE REVIEW</span>
+  <h1>video_random_cut_mimo 架构优化建议</h1>
+  <div class="sub">PyQt5 视频混剪工具 · 评审人：软件团队架构师 高见远 · 2026-08-19 · 基于对全部 16 个标签页 + 23 个业务模块的代码通读</div>
+  <div class="stats">
+    <div class="stat"><b>16</b><span>个标签页功能模块</span></div>
+    <div class="stat"><b>19</b><span>处重复的视频格式列表</span></div>
+    <div class="stat"><b>17</b><span>个手写线程类（每个页各写一遍）</span></div>
+    <div class="stat"><b>4+</b><span>份各自为政的 ffprobe 探测实现</span></div>
+  </div>
+</header>
+
+<h2>一、结论先行（TL;DR）</h2>
+<div class="card good">
+  <p>项目功能齐全，但属于典型的<b>"功能先行、无公共层"</b>架构——16 个标签页各自从零搭 UI、各自写线程、各自调 ffmpeg。你反馈的三个问题根因非常集中：</p>
+  <ul>
+    <li><b>前端复用不足</b> → 没有公共 UI 基类，每个页面重复实现"路径选择 / 进度条 / 日志 / 线程"，主题样式坑（如输入框无边框）被复制修了三层。</li>
+    <li><b>输入输出规则冗余</b> → 视频格式列表重复 19 处、ffprobe 探测 4 份、9:16 规格处理 3 份还不一致，改一个规则要改十几个文件。</li>
+    <li><b>处理速度慢</b> → 22 核 CPU + NVENC 显卡的机器，只有「视频裂变」一个模块用了硬件编码和并发，其余全部在跑单线程软件编码，还有大量无意义的重复编码。</li>
+  </ul>
+  <p class="small">核心建议：抽一层「公共组件 + 公共后端」，新页面从 ~500 行降到 ~150 行；把裂变模块已验证的硬件编码方案推广到全局，多数模块可提速 2~6 倍。预计分 3 个阶段、5~6 周内平稳落地，每步独立提交，不搞推倒重来。</p>
+</div>
+
+<h2>二、现状诊断：三大问题的根因</h2>
+
+<div class="card diag">
+  <h3>问题 1：前端模块复用不足 <span class="badge b-red">根因：无公共 UI 基类</span></h3>
+  <ul>
+    <li><b>17 个线程类散落各处</b>：每个标签页都手写一个 <code>xxxWorker(QThread)</code>，信号签名几乎一样（进度/完成/报错），但每个页面重写一遍，出问题要逐页修。</li>
+    <li><b>输入框样式坑修了三层</b>：qt-material 主题下输入框没边框的问题，全局样式修了一遍、裂变页又加了一层、下载页再内联一段样式（18 处 <code>!important</code>）——新页面每次都要重新踩一遍这个坑。</li>
+    <li><b>"路径选择 + 浏览按钮 + 保存配置"整段重复</b>：至少 4 个页面逐字重复这一段代码；路径去引号的工具函数也有两份，其余页面各写各的。</li>
+    <li><b>进度条 + 状态文字组件</b>：16 个页面全部重复出现，写法细节各异。</li>
+  </ul>
+</div>
+
+<div class="card diag red">
+  <h3>问题 2：输入输出规则冗余 <span class="badge b-red">根因：规则散落、无单点维护</span></h3>
+  <ul>
+    <li><b>视频格式列表重复 19 处</b>：改一个支持的格式要改 19 个文件，漏一个就出现"这个页面能选、那个页面选不了"。</li>
+    <li><b>媒体探测实现 4 份</b>：同一个"读视频宽高/时长/码流"的功能有 4 个不同版本，行为还不完全一致；视频时长工具甚至有两份。</li>
+    <li><b>9:16 / 1080×1920 规格处理 3 份且互相不一致</b>：模糊填充背景（把横屏视频垫成竖屏）有 3 套实现，参数、画质行为各不相同。</li>
+    <li><b>千川硬性校验项手工重复</b>：输出视频必须 <code>SAR=1:1</code>（否则千川报"尺寸不符合规范"，历史上出过 2943:2944 的事故）——这条铁律在 6 个地方手工写，漏一处就翻车。</li>
+    <li><b>输出命名规则全部内联</b>：每个模块自己定一套命名，五花八门；路径/空值校验在每个页面的"开始"按钮里手写一遍弹窗。</li>
+  </ul>
+</div>
+
+<div class="card diag red">
+  <h3>问题 3：视频处理速度慢 <span class="badge b-red">根因：四层瓶颈叠加</span></h3>
+  <table>
+    <tr><th style="width:110px">瓶颈层</th><th>现状</th><th style="width:130px">影响</th></tr>
+    <tr><td><b>① 编码器</b></td><td>只有「视频裂变」做了 NVENC 硬件编码自动探测（实测比软件快 <b>6.3 倍</b>），其余所有模块硬编码 <code>libx264</code> 软件编码——22 核 + 独显的机器在跑单线程软件压片</td><td class="speed">▲ 单文件 2~6×</td></tr>
+    <tr><td><b>② 串行执行</b></td><td>批量处理全部一个接一个排队跑（循环串行），只有裂变用了并发；整批 100 个视频 = 100 倍串行时间</td><td class="speed">▲ 批量 4~8×</td></tr>
+    <tr><td><b>③ 无效重编码</b></td><td>拼接模块：比例不对的先"模糊垫底"重编码一次，拼的时候又重编码一次 = <b>同一段视频压两遍</b>；音频也全部重新编码（本可直接复制）</td><td class="speed">▲ 5~30%</td></tr>
+    <tr><td><b>④ 无进度/无缓存</b></td><td>全项目没有 ffmpeg 进度解析（长视频 UI 一直显示 0%）；没有缓存：输出文件存在也照样重跑全量重做；批量时每个文件反复探测元数据</td><td class="speed">▲ 体验 + 10~30%</td></tr>
+  </table>
+</div>
+
+<h2>三、公共模块抽象方案（核心建议）</h2>
+<p>目标架构一句话：<b>"页面只负责布局和交互，公共组件提供统一零件，后端公共层统一干活"</b>。所有新页面直接拼装公共零件，不再从零写。</p>
+
+<figure>
+<svg viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" font-family="Microsoft YaHei,sans-serif">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101b30"/><stop offset="1" stop-color="#1c2430"/>
+    </linearGradient>
+  </defs>
+  <!-- 左侧：现状 -->
+  <rect x="10" y="10" width="400" height="500" rx="14" fill="#161b22" stroke="#2d3748"/>
+  <text x="210" y="40" text-anchor="middle" fill="#ff6b6b" font-size="16" font-weight="bold">现状：各自为政</text>
+  <text x="210" y="62" text-anchor="middle" fill="#8b949e" font-size="12">16 个页面，每个都自带一整套</text>
+  <!-- 页面块 -->
+  <g font-size="11" fill="#e6edf3">
+    <rect x="30" y="80" width="160" height="34" rx="8" fill="#1c2430" stroke="#2d3748"/><text x="110" y="101" text-anchor="middle">页面 A（路径行+进度+线程）</text>
+    <rect x="220" y="80" width="160" height="34" rx="8" fill="#1c2430" stroke="#2d3748"/><text x="300" y="101" text-anchor="middle">页面 B（同样的路径行…）</text>
+    <rect x="30" y="128" width="160" height="34" rx="8" fill="#1c2430" stroke="#2d3748"/><text x="110" y="149" text-anchor="middle">页面 C（同样的进度条…）</text>
+    <rect x="220" y="128" width="160" height="34" rx="8" fill="#1c2430" stroke="#2d3748"/><text x="300" y="149" text-anchor="middle">页面 D（同样的线程类…）</text>
+    <rect x="30" y="176" width="160" height="34" rx="8" fill="#1c2430" stroke="#2d3748"/><text x="110" y="197" text-anchor="middle">页面 E / F / G …</text>
+    <rect x="220" y="176" width="160" height="34" rx="8" fill="#1c2430" stroke="#2d3748"/><text x="300" y="197" text-anchor="middle">…共 16 个页面</text>
+  </g>
+  <!-- 各自重复的横线 -->
+  <g stroke="#ff6b6b" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6">
+    <line x1="70" y1="214" x2="70" y2="330"/><line x1="140" y1="214" x2="140" y2="330"/>
+    <line x1="260" y1="214" x2="260" y2="330"/><line x1="330" y1="214" x2="330" y2="330"/>
+    <line x1="200" y1="214" x2="200" y2="330"/><line x1="110" y1="214" x2="110" y2="330"/>
+  </g>
+  <text x="210" y="352" text-anchor="middle" fill="#ff6b6b" font-size="11">每页各写一份：路径/校验/线程/进度/ffmpeg</text>
+  <rect x="30" y="370" width="340" height="52" rx="10" fill="#2a1016" stroke="#ff6b6b" opacity="0.8"/>
+  <text x="200" y="393" text-anchor="middle" fill="#ff8f8f" font-size="12">规则散落：格式×19 · ffprobe×4 · 9:16×3</text>
+  <text x="200" y="411" text-anchor="middle" fill="#ff8f8f" font-size="12">×3 · 线程类×17 → 改一处 = 改 N 处</text>
+  <rect x="30" y="440" width="340" height="40" rx="10" fill="#1c2430" stroke="#2d3748"/>
+  <text x="200" y="462" text-anchor="middle" fill="#e6edf3" font-size="12">ffmpeg（libx264 软件编码，串行）</text>
+
+  <!-- 箭头 -->
+  <line x1="415" y1="260" x2="480" y2="260" stroke="#4d8fff" stroke-width="3" marker-end="url(#ar)"/>
+  <defs><marker id="ar" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#4d8fff"/></marker></defs>
+  <text x="447" y="248" text-anchor="middle" fill="#4d8fff" font-size="12" font-weight="bold">优化后</text>
+
+  <!-- 右侧：目标 -->
+  <rect x="490" y="10" width="400" height="500" rx="14" fill="#161b22" stroke="#2d3748"/>
+  <text x="690" y="40" text-anchor="middle" fill="#4ade80" font-size="16" font-weight="bold">目标：公共层统一</text>
+  <text x="690" y="62" text-anchor="middle" fill="#8b949e" font-size="12">页面只拼装公共零件</text>
+  <g font-size="11" fill="#e6edf3">
+    <rect x="510" y="80" width="90" height="30" rx="7" fill="#1c2430" stroke="#2d3748"/><text x="555" y="99" text-anchor="middle">页面 A</text>
+    <rect x="612" y="80" width="90" height="30" rx="7" fill="#1c2430" stroke="#2d3748"/><text x="657" y="99" text-anchor="middle">页面 B</text>
+    <rect x="714" y="80" width="90" height="30" rx="7" fill="#1c2430" stroke="#2d3748"/><text x="759" y="99" text-anchor="middle">页面 C …</text>
+  </g>
+  <g stroke="#4ade80" stroke-width="1.5">
+    <line x1="555" y1="110" x2="555" y2="170"/><line x1="657" y1="110" x2="657" y2="170"/><line x1="759" y1="110" x2="759" y2="170"/>
+  </g>
+  <rect x="505" y="172" width="370" height="118" rx="12" fill="#10231a" stroke="#4ade80" opacity="0.9"/>
+  <text x="690" y="196" text-anchor="middle" fill="#4ade80" font-size="13" font-weight="bold">前端公共组件（gui/common/）</text>
+  <g font-size="11" fill="#c8f7dd">
+    <text x="690" y="218" text-anchor="middle">BaseTab 页面基类（生命周期/线程托管）</text>
+    <text x="690" y="238" text-anchor="middle">路径选择 · 进度面板 · 日志 · 结果表格 · 通用线程</text>
+    <text x="690" y="258" text-anchor="middle">输入输出校验器（统一弹窗文案）</text>
+  </g>
+  <g stroke="#4ade80" stroke-width="1.5">
+    <line x1="555" y1="290" x2="555" y2="330"/><line x1="657" y1="290" x2="657" y2="330"/><line x1="759" y1="290" x2="759" y2="330"/>
+  </g>
+  <rect x="505" y="332" width="370" height="96" rx="12" fill="#10202e" stroke="#4d8fff" opacity="0.9"/>
+  <text x="690" y="356" text-anchor="middle" fill="#7db4ff" font-size="13" font-weight="bold">后端公共层（utils/ + core/）</text>
+  <g font-size="11" fill="#d6e6ff">
+    <text x="690" y="378" text-anchor="middle">统一 ffmpeg 执行器（硬件编码+进度+中断）</text>
+    <text x="690" y="398" text-anchor="middle">媒体探测（带缓存）· 规格校验 · 编码策略</text>
+    <text x="690" y="418" text-anchor="middle">格式列表 · 路径工具（单点维护）</text>
+  </g>
+  <g stroke="#4d8fff" stroke-width="1.5">
+    <line x1="555" y1="428" x2="555" y2="460"/><line x1="657" y1="428" x2="657" y2="460"/><line x1="759" y1="428" x2="759" y2="460"/>
+  </g>
+  <rect x="505" y="462" width="370" height="34" rx="10" fill="#1c2430" stroke="#2d3748"/>
+  <text x="690" y="483" text-anchor="middle" fill="#e6edf3" font-size="12">ffmpeg（NVENC 硬件编码 + 并发）</text>
+</svg>
+<figcaption>图 1：现状「各自为政」 vs 目标「公共层统一」——新页面只需拼装公共零件</figcaption>
+</figure>
+
+<h3>前端公共组件（解决问题 1、2 的 UI 部分）</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:150px">组件</th><th>干什么用的（大白话）</th><th style="width:130px">收益</th></tr>
+    <tr><td><code>BaseTab 基类</code></td><td>所有页面的"公共骨架"：统一开始/停止按钮状态、统一管理后台线程的开启和关闭（现在关窗口要 15 个页面各写一遍清理代码）、统一异常处理</td><td>新页面样板代码 -30%+</td></tr>
+    <tr><td><code>路径选择控件</code></td><td>"选文件夹/选文件"这一行，一个零件搞定，自动去引号、自动记住上次配置；<b>输入框边框修复只在这里写一份</b>，全项目生效</td><td>消灭"三保险"重复</td></tr>
+    <tr><td><code>进度面板 / 日志 / 结果表格</code></td><td>进度条+百分比+状态行、滚动日志、结果列表（暗色样式只写一份），16 个页面直接拼装</td><td>交互体验统一</td></tr>
+    <tr><td><code>通用线程 BaseWorker</code></td><td>一个标准线程模板，统一"进度/完成/报错/停止"四个信号协议，17 个手写线程类收敛成薄薄一层子类</td><td>线程逻辑只调一处</td></tr>
+  </table>
+</div>
+
+<h3>后端公共层（解决问题 2、3 的核心）</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:150px">模块</th><th>干什么用的（大白话）</th><th style="width:130px">收益</th></tr>
+    <tr><td><code>统一 ffmpeg 执行器</code></td><td>所有页面调 ffmpeg 只走这一个入口：自动隐藏黑窗、能报真实进度百分比、支持停止/中断、超时自动清理；编码参数由"编码策略"统一注入</td><td>一处实现全项目受益</td></tr>
+    <tr><td><code>媒体探测 + 缓存</code></td><td>读视频宽高/时长/码流只此一份，批量处理时同一文件只探测一次（结果缓存），收敛现有 4 份实现</td><td>批量省 10~30% 时间</td></tr>
+    <tr><td><code>编码策略 EncoderPolicy</code></td><td>把「视频裂变」已验证的 NVENC 硬件编码探测逻辑（0.3 秒试压、被占用自动回退）提出来全局共用——<b>这是提速最大的一招</b></td><td>除裂变外全部模块自动 2~6×</td></tr>
+    <tr><td><code>输出规格校验器</code></td><td>千川规格（9:16 / 1080×1920 / SAR=1 / 偶数尺寸 / H.264）单点定义；三份模糊填充实现合并成一份；统一输出命名</td><td>规则单点维护，杜绝 SAR 事故复发</td></tr>
+    <tr><td><code>格式列表 / 路径工具 / 文件收集</code></td><td>视频格式清单只写一处（现在 19 处）、路径去引号/防重名统一、批量扫文件统一——改格式只改一个文件</td><td>改规则只改一处</td></tr>
+  </table>
+  <p class="small">预期整体效果：新加一个标签页从约 500 行代码降到约 150 行；输入输出规则全项目只维护一处；新页面不再踩旧坑。</p>
+</div>
+
+<h2>四、性能优化清单（按性价比排序）</h2>
+<div class="card">
+  <table>
+    <tr><th style="width:34px">#</th><th>优化项</th><th>预期提速</th><th style="width:110px">改动成本</th><th style="width:110px">风险</th></tr>
+    <tr><td><b>1</b></td><td><b>硬件编码全局接入</b>（把裂变的 NVENC 探测逻辑推广到所有模块，替换 libx264 硬编码）</td><td class="speed">单文件 2~6×</td><td class="warn">低</td><td class="warn">中（需回退+并发限制）</td></tr>
+    <tr><td><b>2</b></td><td><b>音频直接复制</b>（源音频能复制就不重新编码，现在几乎全部重压）</td><td class="speed">5~15%</td><td>极低</td><td>低</td></tr>
+    <tr><td><b>3</b></td><td><b>批量任务并发</b>（把"一个个排队跑"改成"多个一起跑"，裂变已有成熟模式）</td><td class="speed">批量 4~8×</td><td class="warn">中</td><td class="warn">中</td></tr>
+    <tr><td><b>4</b></td><td><b>媒体探测缓存</b>（同文件只探测一次）</td><td class="speed">批量 10~30%</td><td>低</td><td>低</td></tr>
+    <tr><td><b>5</b></td><td><b>消除双重编码</b>（拼接场景：同一段视频不再压两遍；纯裁剪用流复制）</td><td class="speed">拼接 3~10×</td><td class="warn">中</td><td class="warn">中</td></tr>
+    <tr><td><b>6</b></td><td><b>单文件真实进度</b>（UI 显示百分比，不再"卡在 0%"）</td><td>体验提升</td><td>低</td><td>低</td></tr>
+    <tr><td><b>7</b></td><td><b>断点续跑</b>（输出已存在且参数没变就跳过，重跑接近秒过）</td><td>重跑秒过</td><td class="warn">中</td><td>低</td></tr>
+  </table>
+  <p class="small">建议执行顺序：先做 <span class="kpi hi">1+2+4</span>（低风险高收益，约 1 周全局生效），再做 <span class="kpi mid">3</span> 并发，最后 <span class="kpi lo">5/6/7</span>。</p>
+</div>
+
+<h2>五、分阶段落地路线图</h2>
+
+<div class="phase">
+  <div class="phase-num"><b>1</b>阶段</div>
+  <div class="phase-body">
+    <h4>公共层落地（只新增、不改旧代码）<span class="pill">约 1~2 周</span><span class="pill">每步独立提交</span></h4>
+    <ol>
+      <li>一次性新增全部公共文件（ffmpeg 执行器 / 探测 / 编码策略 / 规格校验 / 格式列表 / 前端组件）——<b>只新增不碰旧代码</b>，一个提交；</li>
+      <li>挑 1 个简单页面（建议「视频尺寸」）接入新组件做试点，一个提交；</li>
+      <li>试点回归通过（输出可播放、分辨率/比例正确、SAR=1）再接第 2 个（建议「视频优化」）。</li>
+    </ol>
+    <p class="small">风险最低的阶段：新代码不生效就不影响现有功能；试点验证行为一致后再推广。</p>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="phase-num"><b>2</b>阶段</div>
+  <div class="phase-body">
+    <h4>标签页分批迁移（按"低频→高频"）<span class="pill">约 2~3 周</span><span class="pill">每页一个提交</span></h4>
+    <ol>
+      <li>切片 / 截图 / 文字识别 / 人像检测；</li>
+      <li>音频混剪 / 视频混剪 / 拼接 / 去关键词 / 语音克隆 / 开拍云端；</li>
+      <li>裂变 / 视频优化 / 视频下载 / 字幕（复杂页面放最后，单独压测）；</li>
+      <li>最后简化主窗口的关闭清理逻辑（统一走 BaseTab 生命周期）。</li>
+    </ol>
+    <p class="small">每个页面迁移完跑一遍冒烟清单：路径输入、开始/停止、进度、结果表、配置持久化、主题显示。中途任何页面有问题只影响它自己，不影响已迁移页面。</p>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="phase-num"><b>3</b>阶段</div>
+  <div class="phase-body">
+    <h4>性能专项（先建基准、后优化）<span class="pill">约 1~2 周</span><span class="pill">每步对比耗时</span></h4>
+    <ol>
+      <li>先写基准脚本：同一批素材记录各模块当前耗时，存档（以后每次优化都有对照）；</li>
+      <li>按清单顺序：硬件编码 → 音频复制 → 并发 → 探测缓存 → 进度解析 → 去双编码，每步独立提交并对比耗时；</li>
+      <li>验收：尺寸调整/拼接/切片/去关键词/字幕较基线提速 ≥2 倍，全部功能冒烟通过。</li>
+    </ol>
+    <p class="small">NVENC 并发会话有限制，保留"自动/手动"开关和回退逻辑（裂变已验证过）。</p>
+  </div>
+</div>
+
+<h2>六、明确不做 / 后置事项</h2>
+<div class="card">
+  <h3 class="no">不建议做（低性价比，避免踩坑）</h3>
+  <ul>
+    <li class="no"><b>全量 UI 框架重写</b>（换 QtQuick/QML 或其他框架）：收益低、风险高，与现有 16 个页面兼容成本巨大。</li>
+    <li class="no"><b>引入 moviepy 替代 ffmpeg</b>：现有全部代码基于 ffmpeg 命令行，换引擎风险大收益低；建议从依赖清单里移除未使用的 moviepy。</li>
+    <li class="no"><b>QSV 优先</b>：本机实测 Intel QSV 反而比软件编码慢，保留 NVENC 优先即可，不用折腾。</li>
+    <li class="no"><b>任务持久化 / 云端调度</b>：单机桌面工具用线程池足够，「开拍云端」已是独立场景，不要强行统一。</li>
+  </ul>
+  <h3 class="ok">可进待办池（不紧急）</h3>
+  <ul>
+    <li class="ok">配置读写优化：现在每次保存配置都全量写整个文件，可改为按段写入 + 原子替换 + 备份。</li>
+    <li class="ok">模型加载缓存：人像检测 / 文字识别 / 字幕的 AI 模型会话可跨任务复用，省重复加载时间。</li>
+    <li class="ok"><code>gui/mix_tab.py</code>（222 行，未注册进主窗口）确认为废弃后删除或迁移。</li>
+  </ul>
+</div>
+
+<div class="footer">
+  本报告由软件开发团队（主理人齐活林 · 架构师高见远）产出 · 基于对 16 个标签页 + 23 个业务模块的代码通读 · 2026-08-19
+</div>
+
+</div>
+</body>
+</html>

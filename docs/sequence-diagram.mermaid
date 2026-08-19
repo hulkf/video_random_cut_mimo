@@ -1,0 +1,74 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant MW as MainWindow
+    participant TR as tab_registry
+    participant T as VideoDownloadTab
+    participant W1 as worker(QThread)
+    participant W2 as login_worker(QThread)
+
+    Note over U,MW: ① P0 关窗清理（closeEvent）
+    U->>MW: 关闭窗口
+    MW->>TR: closeEvent → 遍历 TABS
+    MW->>TR: stop_tab_threads(video_download_tab)
+    TR->>T: vars(tab) 扫描 QThread 属性
+    TR->>W1: worker.isRunning()? → stop()
+    TR->>W1: wait(1500)
+    TR->>W2: login_worker.isRunning()? → stop()
+    TR->>W2: wait(1500) / terminate() 兜底
+    MW->>MW: event.accept()，进程退出
+
+    sequenceDiagram
+    autonumber
+    participant M as video_resizer
+    participant E as core.encoder
+    participant F as ffmpeg
+
+    Note over M,F: ② encoder 首次探测 + 缓存
+    M->>E: get_encoder(crf=23)
+    E->>E: is_nvenc_available() → 缓存 None
+    E->>F: ffmpeg -encoders
+    F-->>E: 含 h264_nvenc
+    E->>F: ffmpeg testsrc 0.3s 试编码
+    F-->>E: returncode=0
+    E->>E: _state[nvenc_available]=True（缓存）
+    E-->>M: ("h264_nvenc", "p1", ["-cq","23"])
+    M->>E: get_default_workers() → 3（裂变用）
+
+    sequenceDiagram
+    autonumber
+    participant W as VideoResizeWorker
+    participant R as VideoResizer
+    participant MU as media_utils
+    participant E2 as encoder
+    participant RUN as ffmpeg_runner
+    participant F2 as ffmpeg
+
+    Note over W,F2: ③ resize_video 改造后执行 + 硬件回退
+    W->>R: resize_video(path, out)
+    R->>MU: probe_video(path) → dict(width,height,...)
+    R->>E2: get_encoder(crf=23) → (codec,preset,quality_args)
+    R->>RUN: run_ffmpeg_with_fallback(build_cmd, crf=23)
+    RUN->>F2: Popen(cmd, CREATE_NO_WINDOW)
+    F2-->>RUN: communicate()
+    alt 硬件失败(FFmpegError & codec != libx264)
+        RUN->>E2: fallback_to_software()（全局回退）
+        RUN->>F2: 重试 libx264 一次
+    else 成功
+        RUN-->>R: FFmpegResult(returncode=0)
+    end
+    R-->>W: output_path
+
+    sequenceDiagram
+    autonumber
+    participant WF as VideoFissionWorker
+    participant VF as VideoFission
+    participant RUN2 as ffmpeg_runner
+    participant F3 as ffmpeg
+
+    Note over WF,F3: ④ 裂变中断编排（request_stop）
+    WF->>VF: request_stop()
+    VF->>RUN2: terminate_all()
+    RUN2->>F3: 对所有被追踪进程 terminate()
+    F3-->>RUN2: 各 ffmpeg 退出
+    VF->>VF: partial_results 保留已完成项
