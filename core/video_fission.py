@@ -2,10 +2,12 @@ import concurrent.futures
 import datetime
 import os
 import random
-import subprocess
 import threading
 
-from core.video_resizer import collect_videos, probe_video
+from core.encoder import fallback_to_software, get_default_workers, get_encoder
+from core.ffmpeg_runner import run_ffmpeg, terminate_all
+from utils.media_utils import collect_videos, probe_video
+from utils.path_utils import strip_quotes
 
 
 class FissionStopped(Exception):
@@ -14,14 +16,6 @@ class FissionStopped(Exception):
 
 class HardwareLimitError(Exception):
     """硬件编码会话受限（如 NVENC 同时编码数量超限），用于触发回退。"""
-
-
-def _is_session_limit(err):
-    """判断 ffmpeg 报错是否为硬件编码会话受限（NVENC 最多同时 N 个 session）。"""
-    e = (err or "").lower()
-    return any(k in e for k in (
-        "opencodingsession", "session", "concurrent", "too many",
-        "failed to create", "insufficient device memory", "cuda error"))
 
 
 class VideoFission:
@@ -58,88 +52,26 @@ class VideoFission:
         self.ifactor = self.INTENSITY_FACTOR.get(self.intensity, 1.0)
         # 中断控制
         self._stop_requested = False
-        self._procs = []             # 所有正在运行的 ffmpeg 子进程（并发下可全部 kill）
-        self._procs_lock = threading.Lock()
         self.partial_results = []    # 中断前已完成的视频列表
-        # 编码器（延迟探测）
-        self._encoder = None         # (codec, preset, quality_args)
 
-    # ── 编码器探测与并发策略 ─────────────────────────────────
-    def _probe_encoder(self):
-        """探测可用硬件编码器。仅用 NVENC（实测最快）；不可用直接回退软件。
-
-        说明：本环境实测 QSV 编码慢于软件 libx264（约0.5x~0.3x），故不采用。
-        NVENC 会被其他进程占用的 GPU 会话影响，因此做一次 0.3s 试编码实测。
-        """
-        try:
-            r = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-encoders"],
-                capture_output=True, text=True, errors="ignore", timeout=30,
-            )
-            enc = (r.stdout or "") + (r.stderr or "")
-        except Exception:
-            enc = ""
-        if "h264_nvenc" in enc and self._test_hardware("h264_nvenc"):
-            return ("h264_nvenc", "p1", ["-cq", str(self.crf)])
-        return ("libx264", self.preset, ["-crf", str(self.crf)])
-
-    def _test_hardware(self, codec):
-        """用 0.3s 测试视频实测硬件编码器能否正常打开。"""
-        try:
-            r = subprocess.run(
-                ["ffmpeg", "-f", "lavfi", "-i",
-                 "testsrc=duration=0.3:size=128x128:rate=10",
-                 "-c:v", codec, "-f", "null", "-"],
-                capture_output=True, timeout=20,
-            )
-            return r.returncode == 0
-        except Exception:
-            return False
-
+    # ── 编码器探测与并发策略（委托公共模块 core.encoder，模块级缓存 + 全局回退）──
     def encoder(self):
-        """获取编码器配置（带缓存）。"""
-        if self._encoder is None:
-            self._encoder = self._probe_encoder()
-        return self._encoder
+        """获取编码器配置（带模块级缓存）。"""
+        return get_encoder(crf=self.crf, preset=self.preset)
 
     def default_workers(self):
-        """按编码器选择默认并发数：
-        NVENC 消费级卡同时会话有限（通常3~5）；软件编码吃满 CPU。
-        """
-        codec = self.encoder()[0]
-        if codec == "h264_nvenc":
-            return 3
-        return min(os.cpu_count() or 4, 8)
-
-    def fallback_to_software(self):
-        """硬件编码会话受限时回退软件编码。"""
-        self._encoder = ("libx264", self.preset, ["-crf", str(self.crf)])
+        """按编码器选择默认并发数（NVENC=3 / 软件=min(核数,8)）。"""
+        return get_default_workers()
 
     # ── 中断控制 ─────────────────────────────────────────────
     def request_stop(self):
-        """请求中断：设置标志 + 终止所有正在运行的 ffmpeg。"""
+        """请求中断：设置标志 + 终止所有正在运行的 ffmpeg（全局进程表）。"""
         self._stop_requested = True
-        with self._procs_lock:
-            procs = list(self._procs)
-        for p in procs:
-            if p.poll() is None:
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
+        terminate_all()
 
     def _check_stop(self):
         if self._stop_requested:
             raise FissionStopped("用户中断")
-
-    def _track_proc(self, proc):
-        with self._procs_lock:
-            self._procs.append(proc)
-
-    def _untrack_proc(self, proc):
-        with self._procs_lock:
-            if proc in self._procs:
-                self._procs.remove(proc)
 
 
     def _build_filter(self, video_path, rng):
@@ -149,7 +81,8 @@ class VideoFission:
           - 默认：严格等于源视频 width×height（分辨率铁保证）
           - force_1080x1920 开启：统一输出 1080×1920（9:16 竖屏，居中裁切不变形）
         """
-        width, height = probe_video(video_path)
+        info = probe_video(video_path)
+        width, height = info["width"], info["height"]
         filters = []
 
         # 1) 调色：色相微偏 + 饱和度/亮度/对比度轻微浮动
@@ -219,23 +152,27 @@ class VideoFission:
             "-y", output_path,
         ]
 
-        # 用 Popen 管理子进程，便于中断时 terminate
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            encoding="utf-8", errors="ignore",
-        )
-        self._track_proc(proc)
+        # 统一执行器：CREATE_NO_WINDOW + 全局进程追踪（中断时可 terminate_all）+ 失败删半成品
         try:
-            try:
-                _out, err = proc.communicate(timeout=3600)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                _out, err = proc.communicate()
-                raise RuntimeError("裂变超时: " + (err or "")[-500:])
-        finally:
-            self._untrack_proc(proc)
+            run_ffmpeg(cmd, track=True, timeout=3600,
+                       output_path=output_path, error_message="裂变失败")
+        except RuntimeError as e:
+            # 用户中断：删除半成品文件并抛出 FissionStopped
+            if self._stop_requested:
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                raise FissionStopped("用户中断") from None
+            # 硬件编码失败（NVENC/QSV 可能被其他进程占用 GPU 会话、驱动限制等）
+            # → 全局回退软件编码重试一次；软件也失败则不会再回退（codec 已是 libx264）
+            if codec != "libx264":
+                fallback_to_software()
+                return self.fission_one(video_path, output_path, seed=seed)
+            raise
 
-        # 用户中断：删除半成品文件并抛出 FissionStopped
+        # 成功但中断标志置位（竞态：编码完成后才请求停止）→ 同样删除半成品并抛中断
         if self._stop_requested:
             if os.path.exists(output_path):
                 try:
@@ -243,21 +180,6 @@ class VideoFission:
                 except Exception:
                     pass
             raise FissionStopped("用户中断")
-
-        # 硬件编码失败（NVENC/QSV 可能被其他进程占用 GPU 会话、驱动限制等）
-        # → 自动回退软件编码重试一次；软件也失败则不会再回退（codec 已是 libx264）
-        if proc.returncode != 0 and codec != "libx264":
-            self.fallback_to_software()
-            return self.fission_one(video_path, output_path, seed=seed)
-
-        if proc.returncode != 0 or not os.path.exists(output_path):
-            # 失败：删除可能残留的半成品文件
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                except Exception:
-                    pass
-            raise RuntimeError("裂变失败: " + (err or "")[-500:])
 
         # 默认硬编码：随机化产物时间戳（创建/修改/访问）
         self._set_random_file_times(output_path, rng)
@@ -336,7 +258,7 @@ class VideoFission:
         # 收集所有输入源（文件夹递归 / 单个文件），并记录各自的根目录与裂变数量
         videos = []  # (video_path, source_root, count)
         for p, cnt in input_sources or []:
-            p = (p or "").strip().strip('"').strip("'")
+            p = strip_quotes(p or "")
             cnt = max(1, int(cnt or 1))
             if not p:
                 continue

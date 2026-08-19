@@ -11,6 +11,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 
 from core.video_fission import VideoFission, FissionStopped
 from gui.config import get_config, set_config
+from utils.path_utils import strip_quotes
 
 
 class VideoFissionWorker(QThread):
@@ -52,14 +53,6 @@ class VideoFissionWorker(QThread):
 
     def _cb(self, current, total, rel):
         self.progress.emit(current, total, rel)
-
-
-def strip_quotes(path):
-    """剥离路径首尾的单/双引号，兼容从别处复制的带引号路径。"""
-    p = (path or "").strip()
-    if len(p) >= 2 and p[0] == p[-1] and p[0] in ('"', "'"):
-        return p[1:-1].strip()
-    return p
 
 
 class _WrappingRow(QWidget):
