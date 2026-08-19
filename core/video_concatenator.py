@@ -3,44 +3,30 @@ import random
 import tempfile
 import shutil
 import subprocess
-import json
+
+from core.encoder import get_encoder
+from utils.media_utils import collect_videos, probe_video
+from utils.path_utils import normalize_path
 from utils.video_utils import (
     get_video_duration, image_to_video
 )
 
 
-def normalize_input_path(path):
-    path = (path or "").strip()
-    if len(path) >= 2 and path[0] == path[-1] and path[0] in ("'", '"'):
-        path = path[1:-1].strip()
-    return path
-
-
 class VideoConcatenatorEngine:
     def __init__(self, config):
         self.config = config
-        self.folder_a = normalize_input_path(config["folder_a"])
-        self.folder_b = normalize_input_path(config["folder_b"])
-        self.output_folder = normalize_input_path(config["output_folder"])
+        self.folder_a = normalize_path(config["folder_a"])
+        self.folder_b = normalize_path(config["folder_b"])
+        self.output_folder = normalize_path(config["output_folder"])
         self.cover_enabled = config.get("cover_enabled", False)
         self.cover_source = config.get("cover_source", "folder")
-        self.cover_folder = normalize_input_path(config.get("cover_folder", ""))
+        self.cover_folder = normalize_path(config.get("cover_folder", ""))
         self.cover_duration_min = config.get("cover_duration_min", 0.5)
         self.cover_duration_max = config.get("cover_duration_max", 1.0)
         self.cover_mode = config.get("cover_mode", "front")  # front, back, both
 
     def get_videos(self, folder):
-        folder = normalize_input_path(folder)
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
-        if os.path.isfile(folder):
-            return [folder] if folder.lower().endswith(video_exts) else []
-
-        videos = []
-        for root, dirs, files in os.walk(folder):
-            for f in sorted(files):
-                if f.lower().endswith(video_exts):
-                    videos.append(os.path.join(root, f))
-        return videos
+        return collect_videos(normalize_path(folder))
 
     def get_cover_images(self):
         if not self.cover_enabled or not self.cover_folder:
@@ -54,22 +40,8 @@ class VideoConcatenatorEngine:
         return images
 
     def _probe_video(self, path):
-        """获取视频信息"""
-        cmd = [
-            "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate",
-            "-of", "json", path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-        data = json.loads(result.stdout)
-        stream = data["streams"][0]
-        fps_str = stream.get("r_frame_rate", "30/1")
-        num, den = fps_str.split("/")
-        return {
-            "width": stream["width"],
-            "height": stream["height"],
-            "fps": float(num) / float(den)
-        }
+        """获取视频信息（委托 utils.media_utils.probe_video）。"""
+        return probe_video(path)
 
     def _cover_mode_name(self):
         modes = {0: "front", 1: "back", 2: "both"}
@@ -203,10 +175,11 @@ class VideoConcatenatorEngine:
 
             filter_str = ";".join(filter_parts)
 
+            codec, enc_preset, quality_args = get_encoder(crf=23)
             cmd.extend([
                 "-filter_complex", filter_str,
                 "-map", "[outv]", "-map", "[outa]",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-c:v", codec, "-preset", enc_preset, *quality_args,
                 "-c:a", "aac", "-b:a", "128k",
                 "-shortest",
                 "-y", output_path
@@ -226,10 +199,11 @@ class VideoConcatenatorEngine:
         normalized_paths = []
         for i, p in enumerate(input_paths):
             norm_path = os.path.join(os.path.dirname(output_path), f"norm_{i}.mp4")
+            codec, enc_preset, quality_args = get_encoder(crf=23)
             cmd = [
                 "ffmpeg", "-i", p,
                 "-vf", f"scale={ref_w}:{ref_h},fps={ref_fps},setsar=1",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-c:v", codec, "-preset", enc_preset, *quality_args,
                 "-pix_fmt", "yuv420p",
                 "-an", "-y", norm_path
             ]
@@ -246,9 +220,10 @@ class VideoConcatenatorEngine:
             for p in normalized_paths:
                 f.write(f"file '{p}'\n")
 
+        codec, enc_preset, quality_args = get_encoder(crf=23)
         cmd = [
             "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list,
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-pix_fmt", "yuv420p",
             "-an", "-y", output_path
         ]
