@@ -4,18 +4,7 @@ import os
 import tempfile
 import shutil
 
-
-def get_video_duration(video_path):
-    """Get video duration in seconds using ffprobe."""
-    cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", video_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-    if result.returncode != 0 or not result.stdout:
-        raise RuntimeError(f"ffprobe failed: {result.stderr}")
-    data = json.loads(result.stdout)
-    return float(data["format"]["duration"])
+from utils.media_utils import get_video_duration
 
 
 def extract_frames(video_path, output_dir, frame_interval=1.0):
