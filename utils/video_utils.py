@@ -4,7 +4,8 @@ import os
 import tempfile
 import shutil
 
-from utils.media_utils import get_video_duration
+from core.encoder import get_encoder
+from utils.media_utils import get_video_duration, probe_video
 
 
 def extract_frames(video_path, output_dir, frame_interval=1.0):
@@ -24,10 +25,12 @@ def extract_frames(video_path, output_dir, frame_interval=1.0):
 
 def cut_video(video_path, start_time, duration, output_path):
     """Cut a segment from video with accurate seeking."""
+    codec, enc_preset, quality_args = get_encoder(crf=23)
     cmd = [
         "ffmpeg", "-i", video_path,
         "-ss", str(start_time), "-t", str(duration),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-vf", "setsar=1",
+        "-c:v", codec, "-preset", enc_preset, *quality_args,
         "-c:a", "aac", "-b:a", "128k",
         "-y", output_path
     ]
@@ -39,12 +42,14 @@ def cut_video(video_path, start_time, duration, output_path):
 
 def cut_video_fast(video_path, start_time, duration, output_path):
     """Cut a segment using input-side seeking for faster batch slicing."""
+    codec, enc_preset, quality_args = get_encoder(crf=23)
     cmd = [
         "ffmpeg",
         "-ss", str(start_time),
         "-i", video_path,
         "-t", str(duration),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-vf", "setsar=1",
+        "-c:v", codec, "-preset", enc_preset, *quality_args,
         "-c:a", "aac", "-b:a", "128k",
         "-avoid_negative_ts", "make_zero",
         "-y", output_path
@@ -57,10 +62,12 @@ def cut_video_fast(video_path, start_time, duration, output_path):
 
 def cut_video_no_audio(video_path, start_time, duration, output_path):
     """Cut a video-only segment for filler clips."""
+    codec, enc_preset, quality_args = get_encoder(crf=23)
     cmd = [
         "ffmpeg", "-i", video_path,
         "-ss", str(start_time), "-t", str(duration),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-vf", "setsar=1",
+        "-c:v", codec, "-preset", enc_preset, *quality_args,
         "-an",
         "-y", output_path
     ]
@@ -83,27 +90,13 @@ def extract_audio(video_path, output_path):
 
 
 def _probe_video_profile(path):
-    """快速获取视频编码关键参数，用于格式一致性判断。
-    
+    """快速获取视频编码关键参数（委托 utils.media_utils.probe_video）。
+
     Returns:
-        dict with keys: codec_name, width, height, pix_fmt, r_frame_rate(float)
+        dict with keys: codec_name, width, height, pix_fmt, r_frame_rate(float), ...
+    失败抛 RuntimeError（concat_videos 调用处已有 try/except 兜底兼容）。
     """
-    cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name,width,height,pix_fmt,r_frame_rate",
-        "-of", "json", path
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                                errors="ignore", timeout=10)
-        data = json.loads(result.stdout)
-        stream = data["streams"][0]
-        fps_str = stream.get("r_frame_rate", "30/1")
-        num, den = fps_str.split("/")
-        stream["r_frame_rate"] = float(num) / float(den)
-        return stream
-    except (subprocess.TimeoutExpired, Exception):
-        return {"codec_name": "h264", "width": 1080, "height": 1920, "pix_fmt": "yuv420p", "r_frame_rate": 30.0}
+    return probe_video(path)
 
 
 def _blur_pad_video(input_path, output_path, target_w, target_h):
@@ -116,10 +109,11 @@ def _blur_pad_video(input_path, output_path, target_w, target_h):
     if abs(src_ratio - target_ratio) < 0.01:
         if src_w == target_w and src_h == target_h:
             return input_path
+        codec, enc_preset, quality_args = get_encoder(crf=23)
         cmd = [
             "ffmpeg", "-i", input_path,
             "-vf", f"scale={target_w}:{target_h},setsar=1",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-an", "-y", output_path
         ]
         subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=120)
@@ -138,10 +132,11 @@ def _blur_pad_video(input_path, output_path, target_w, target_h):
         f"[blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2,setsar=1"
     )
 
+    codec, enc_preset, quality_args = get_encoder(crf=23)
     cmd = [
         "ffmpeg", "-i", input_path,
         "-filter_complex", vf,
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:v", codec, "-preset", enc_preset, *quality_args,
         "-an", "-y", output_path
     ]
     result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
@@ -178,13 +173,14 @@ def image_to_video(image_path, duration, output_path, target_w=1080, target_h=19
     
     src_ratio = w / h
     target_ratio = target_w / target_h
+    codec, enc_preset, quality_args = get_encoder(crf=23)
     
     if abs(src_ratio - target_ratio) < 0.01 and w == target_w and h == target_h:
         cmd = [
             "ffmpeg", "-loop", "1", "-i", image_path,
             "-t", str(duration),
             "-vf", f"scale={target_w}:{target_h},setsar=1",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-pix_fmt", "yuv420p",
             "-an",
             "-y", output_path
@@ -207,7 +203,7 @@ def image_to_video(image_path, duration, output_path, target_w=1080, target_h=19
             "ffmpeg", "-loop", "1", "-i", image_path,
             "-t", str(duration),
             "-filter_complex", vf,
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-pix_fmt", "yuv420p",
             "-an",
             "-y", output_path
@@ -279,10 +275,11 @@ def concat_videos(input_paths, output_path):
         filters.append(f"{concat_in}concat=n={len(processed_paths)}:v=1:a=0[outv]")
 
         filter_str = ";".join(filters)
+        codec, enc_preset, quality_args = get_encoder(crf=23)
         cmd.extend([
             "-filter_complex", filter_str,
             "-map", "[outv]",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-an", "-y", output_path
         ])
 
