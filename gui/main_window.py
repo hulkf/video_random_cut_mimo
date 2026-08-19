@@ -1,21 +1,7 @@
 from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame
-from PyQt5.QtCore import Qt, pyqtSignal, QThread
-from gui.slice_tab import SliceTab
-from gui.text_recognition_tab import TextRecognitionTab
-from gui.audio_mix_tab import AudioMixTab
-from gui.video_mix_tab import VideoMixTab
-from gui.video_concat_tab import VideoConcatTab
-from gui.video_resize_tab import VideoResizeTab
-from gui.video_enhance_tab import VideoEnhanceTab
-from gui.keyword_remove_tab import KeywordRemoveTab
-from gui.face_detection_tab import FaceDetectionTab
-from gui.screenshot_tab import ScreenshotTab
-from gui.subtitle_tab import SubtitleTab
-from gui.settings_tab import SettingsTab
-from gui.kaipai_cloud_tab import KaipaiCloudTab
-from gui.voice_clone_tab import VoiceCloneTab
-from gui.video_fission_tab import VideoFissionTab
-from gui.video_download_tab import VideoDownloadTab
+from PyQt5.QtCore import Qt, pyqtSignal
+
+from gui.tab_registry import TABS, stop_tab_threads
 
 
 class WrapTabWidget(QWidget):
@@ -115,67 +101,16 @@ class MainWindow(QMainWindow):
         self.tabs = WrapTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self.slice_tab = SliceTab()
-        self.screenshot_tab = ScreenshotTab()
-        self.text_recognition_tab = TextRecognitionTab()
-        self.face_detection_tab = FaceDetectionTab()
-        self.audio_mix_tab = AudioMixTab()
-        self.video_mix_tab = VideoMixTab()
-        self.video_concat_tab = VideoConcatTab()
-        self.video_resize_tab = VideoResizeTab()
-        self.video_enhance_tab = VideoEnhanceTab()
-        self.keyword_remove_tab = KeywordRemoveTab()
-        self.subtitle_tab = SubtitleTab()
-        self.kaipai_cloud_tab = KaipaiCloudTab()
-        self.settings_tab = SettingsTab(app)
-        self.voice_clone_tab = VoiceCloneTab()
-        self.video_fission_tab = VideoFissionTab()
-        self.video_download_tab = VideoDownloadTab()
-
-        self.tabs.addTab(self.slice_tab, "视频切片")
-        self.tabs.addTab(self.screenshot_tab, "视频截图")
-        self.tabs.addTab(self.text_recognition_tab, "文字识别")
-        self.tabs.addTab(self.face_detection_tab, "人脸识别")
-        self.tabs.addTab(self.audio_mix_tab, "音频混剪")
-        self.tabs.addTab(self.video_mix_tab, "视频混剪")
-        self.tabs.addTab(self.video_concat_tab, "视频拼接")
-        self.tabs.addTab(self.video_resize_tab, "视频尺寸")
-        self.tabs.addTab(self.video_enhance_tab, "视频优化")
-        self.tabs.addTab(self.keyword_remove_tab, "去关键词")
-        self.tabs.addTab(self.subtitle_tab, "视频字幕")
-        self.tabs.addTab(self.kaipai_cloud_tab, "开拍云端")
-        self.tabs.addTab(self.video_fission_tab, "视频裂变")
-        self.tabs.addTab(self.voice_clone_tab, "音色复刻")
-        self.tabs.addTab(self.video_download_tab, "视频下载")
-        self.tabs.addTab(self.settings_tab, "设置")
+        # ── 注册表驱动：实例化 + addTab（顺序 = TABS 顺序，即原 addTab 顺序）──
+        for attr, title, factory in TABS:
+            tab = factory(app)
+            setattr(self, attr, tab)
+            self.tabs.addTab(tab, title)
 
     def closeEvent(self, event):
-        """关闭窗口时停止所有后台线程，确保进程（及启动它的终端）能随之退出"""
-        tabs = [
-            self.slice_tab, self.screenshot_tab, self.text_recognition_tab,
-            self.face_detection_tab, self.audio_mix_tab, self.video_mix_tab,
-            self.video_concat_tab, self.video_resize_tab, self.video_enhance_tab,
-            self.keyword_remove_tab,
-            self.subtitle_tab, self.kaipai_cloud_tab, self.video_fission_tab,
-            self.voice_clone_tab,
-            self.video_download_tab,
-        ]
-        for tab in tabs:
-            worker = getattr(tab, "worker", None)
-            if not isinstance(worker, QThread):
-                continue
-            if not worker.isRunning():
-                continue
-            # 优先通知优雅停止（部分 worker 实现了 stop()）
-            if hasattr(worker, "stop"):
-                try:
-                    worker.stop()
-                except Exception:
-                    pass
-            # 给一点时间在安全点退出
-            worker.wait(1500)
-            # 仍在运行则强制终止，避免进程挂起导致终端不关闭
-            if worker.isRunning():
-                worker.terminate()
-                worker.wait(1500)
+        """关闭窗口时停止所有后台线程，确保进程（及启动它的终端）能随之退出。"""
+        for attr, _title, _factory in TABS:
+            tab = getattr(self, attr, None)
+            if tab is not None:
+                stop_tab_threads(tab)
         event.accept()

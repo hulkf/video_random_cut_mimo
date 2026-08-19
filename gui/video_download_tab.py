@@ -116,10 +116,24 @@ class LoginWorker(QThread):
     log = pyqtSignal(str)
     done = pyqtSignal(bool, str)
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stop = False
+
+    def stop(self):
+        """优雅停止：置标志位。网络阻塞无法及时中断时，closeEvent 的 wait→terminate 兜底生效。"""
+        self._stop = True
+
     def run(self):
         try:
             from core.taobao_downloader import login_and_save
+            if self._stop:
+                self.done.emit(False, "已停止")
+                return
             success, msg = login_and_save(progress_callback=self.log.emit)
+            if self._stop:
+                self.done.emit(False, "已停止")
+                return
             self.done.emit(success, msg)
         except Exception as e:
             self.done.emit(False, str(e))
