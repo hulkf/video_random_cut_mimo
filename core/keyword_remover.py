@@ -3,25 +3,17 @@ import re
 import shutil
 import subprocess
 
+from core.encoder import get_encoder
+from utils.media_utils import VIDEO_EXTS, collect_videos
 from utils.video_utils import get_video_duration
 
 
-VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".flv")
 MATCH_MODE_SEGMENT = "segment"
 MATCH_MODE_ESTIMATE = "estimate"
 MATCH_IGNORE_CHARS = "\\s,\\uFF0C.\\u3002!\\uFF01?\\uFF1F;\\uFF1B:\\uFF1A\\u3001\\\"'\\u201C\\u201D\\u2018\\u2019\\uFF08\\uFF09()\\u3010\\u3011\\[\\]{}<>\\u300A\\u300B\\u2581"
 CLAUSE_BREAK_CHARS = set(",\uFF0C.\u3002!\uFF01?\uFF1F;\uFF1B:\uFF1A\u3001\n\r\t ")
 ESTIMATE_MIN_DURATION = 0.6
 MAX_ESTIMATE_UNIT_CHARS = 10
-
-
-def collect_videos(folder_path):
-    videos = []
-    for root, dirs, files in os.walk(folder_path):
-        for file_name in files:
-            if file_name.lower().endswith(VIDEO_EXTS):
-                videos.append(os.path.join(root, file_name))
-    return sorted(videos)
 
 
 def parse_keywords(text):
@@ -335,11 +327,12 @@ class KeywordRemover:
             )
             map_args = ["-map", "[outv]"]
 
+        codec, enc_preset, quality_args = get_encoder(crf=23)
         cmd = [
             "ffmpeg", "-i", video_path,
             "-filter_complex", ";".join(filter_parts),
             *map_args,
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",
             "-y", output_path

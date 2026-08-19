@@ -5,8 +5,9 @@ from PyQt5.QtWidgets import (
     QScrollArea
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from core.video_concatenator import VideoConcatenatorEngine, normalize_input_path
+from core.video_concatenator import VideoConcatenatorEngine
 from gui.config import get_config, set_config
+from utils.path_utils import normalize_path as normalize_input_path
 
 
 class VideoConcatWorker(QThread):
