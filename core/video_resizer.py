@@ -1,9 +1,7 @@
-import json
 import os
-import subprocess
 
-
-VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+from utils.media_utils import VIDEO_EXTS, collect_videos, probe_video
+from utils.path_utils import build_output_path
 
 SIZE_PRESETS = {
     "9:16": (1080, 1920),
@@ -16,41 +14,12 @@ BLUR_BG_SCALE = 0.25
 DEFAULT_BLUR_STRENGTH = 6
 
 
-def collect_videos(folder_path):
-    videos = []
-    for root, dirs, files in os.walk(folder_path):
-        for file_name in files:
-            if file_name.lower().endswith(VIDEO_EXTS):
-                videos.append(os.path.join(root, file_name))
-    return sorted(videos)
-
-
-def probe_video(video_path):
-    cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "json", video_path
-    ]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore"
-    )
-    if result.returncode != 0 or not result.stdout:
-        raise RuntimeError(f"ffprobe failed: {result.stderr}")
-
-    data = json.loads(result.stdout)
-    streams = data.get("streams", [])
-    if not streams:
-        raise RuntimeError(f"No video stream found: {video_path}")
-
-    return int(streams[0]["width"]), int(streams[0]["height"])
-
-
 def matches_target_size(video_path, target_ratio):
     if target_ratio == PIPELINE_9X16_TO_3X4_TO_9X16:
         return False
     target_width, target_height = SIZE_PRESETS[target_ratio]
-    width, height = probe_video(video_path)
-    return width == target_width and height == target_height
+    info = probe_video(video_path)
+    return info["width"] == target_width and info["height"] == target_height
 
 
 class VideoResizer:
@@ -89,7 +58,8 @@ class VideoResizer:
         if self.target_ratio == PIPELINE_9X16_TO_3X4_TO_9X16:
             return "complex", self.build_pipeline_filter()
 
-        src_width, src_height = probe_video(video_path)
+        src_info = probe_video(video_path)
+        src_width, src_height = src_info["width"], src_info["height"]
         src_ratio = src_width / src_height
         target_ratio = self.target_width / self.target_height
         blur_width = max(2, int(self.target_width * BLUR_BG_SCALE))
@@ -115,24 +85,31 @@ class VideoResizer:
         )
 
     def resize_video(self, video_path, output_path):
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        from core.encoder import get_encoder
+        from core.ffmpeg_runner import run_ffmpeg_with_fallback
+
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         filter_type, filter_value = self.build_filter(video_path)
-        cmd = ["ffmpeg", "-i", video_path]
-        if filter_type == "complex":
-            cmd.extend(["-filter_complex", filter_value, "-map", "[v]", "-map", "0:a?"])
-        else:
-            cmd.extend(["-vf", filter_value])
-        cmd.extend([
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            "-y", output_path
-        ])
-        result = subprocess.run(
-            cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600
-        )
-        if result.returncode != 0 or not os.path.exists(output_path):
-            raise RuntimeError(f"resize failed: {result.stderr}")
+
+        def build_cmd(enc_params):
+            codec, enc_preset, quality_args = enc_params
+            cmd = ["ffmpeg", "-i", video_path]
+            if filter_type == "complex":
+                cmd.extend(["-filter_complex", filter_value, "-map", "[v]", "-map", "0:a?"])
+            else:
+                cmd.extend(["-vf", filter_value])
+            cmd.extend([
+                "-c:v", codec, "-preset", enc_preset,
+                *quality_args,
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-y", output_path,
+            ])
+            return cmd
+
+        # crf=23 保持现状（不因迁移改变质量档）；硬件失败自动回退软件重试一次（R5/R6）
+        run_ffmpeg_with_fallback(build_cmd, crf=23, timeout=3600,
+                                 output_path=output_path, error_message="resize failed")
         return output_path
 
     def resize_folder(self, input_folder, output_folder, callback=None):
@@ -143,7 +120,9 @@ class VideoResizer:
         for index, video_path in enumerate(videos):
             rel_path = os.path.relpath(video_path, input_folder)
             rel_base, _ = os.path.splitext(rel_path)
-            output_path = os.path.join(output_folder, f"{rel_base}_{self.target_ratio.replace(':', 'x')}.mp4")
+            # 防重名：已存在同名输出不再覆盖而是生成 _2/_3...（行为增强）
+            output_path = build_output_path(
+                output_folder, rel_base, self.target_ratio.replace(':', 'x'), dedupe=True)
 
             if callback:
                 callback(index, total, rel_path)
