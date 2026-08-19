@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from core.encoder import get_encoder
 from gui.config import get_config, set_config
 
 
@@ -137,10 +138,11 @@ class SubtitleWorker(QThread):
             f"{position_style}'"
         )
 
+        codec, enc_preset, quality_args = get_encoder(crf=23)
         cmd = [
             "ffmpeg", "-i", video_path,
             "-vf", subtitle_filter,
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", codec, "-preset", enc_preset, *quality_args,
             "-c:a", "copy",
             "-y", output_path
         ]
