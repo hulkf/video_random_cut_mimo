@@ -73,6 +73,7 @@ class BaseTab(QWidget):
 
     def on_worker_error(self, message: str) -> None:
         self.set_busy(False)
+        self.worker = None  # error 路径同样清理，避免 is_busy 误判（start_worker 兜底 lambda 只挂 finished）
         QMessageBox.critical(self, "错误", message)
 
     # ── 配置骨架（子类覆盖实现持久化）──

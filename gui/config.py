@@ -89,11 +89,19 @@ def _coerce_bool(value, default) -> object:
 
 
 def get_config(section: str, key: str, default=""):
-    """读取普通配置。default 为 bool 时返回 bool（兼容历史 "True"/"False" 字符串）。"""
+    """读取普通配置。default 为 bool 时返回 bool（兼容历史 "True"/"False" 字符串）。
+
+    注意：list/dict 叶子值返回**浅拷贝**，调用方原地修改不会污染内存缓存
+    （也不会落盘）；如需持久化请用 set_config 重新写入。
+    """
     config = load_config()
     value = config.get(section, {}).get(key, default)
     if isinstance(default, bool):
         return _coerce_bool(value, default)
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
     return value
 
 

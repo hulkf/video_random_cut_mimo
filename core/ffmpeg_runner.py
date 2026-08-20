@@ -125,15 +125,21 @@ def _remove_output(output_path: Optional[str]) -> None:
 
 
 def _read_progress_stdout(proc: subprocess.Popen,
-                          on_progress: Callable[[dict], None]) -> tuple:
+                          on_progress: Callable[[dict], None],
+                          timeout: Optional[float] = None) -> tuple:
     """实时读取 stdout 进度行（-progress pipe:1 输出 key=value 行）并回调。
 
     stderr 在独立线程中读取，避免管道缓冲写满导致子进程阻塞。
+
+    timeout 非空时启动看门狗线程：超时后 kill 子进程（readline 返回 EOF 退出循环），
+    修复进度模式不走 communicate(timeout=) 导致 ffmpeg 卡死无法超时的问题（存量缺陷）。
+
     Returns:
-        (stdout_data, stderr_data) 两个字符串；stderr 由后台线程收集，
-        超时/失败时供 FFmpegError.stderr 使用（修复进度模式下 stderr 丢失缺陷）。
+        (stdout_data, stderr_data, timed_out)；
+        stderr 由后台线程收集，超时/失败时供 FFmpegError.stderr 使用（修复进度模式下 stderr 丢失缺陷）。
     """
     stderr_chunks: List[str] = []
+    timed_out: List[bool] = [False]
 
     def _read_stderr() -> None:
         try:
@@ -147,6 +153,22 @@ def _read_progress_stdout(proc: subprocess.Popen,
 
     reader = threading.Thread(target=_read_stderr, daemon=True)
     reader.start()
+
+    def _watchdog() -> None:
+        """超时看门狗：超时后 kill，让主读取循环退出。"""
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out[0] = True
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    watchdog = None
+    if timeout is not None:
+        watchdog = threading.Thread(target=_watchdog, daemon=True)
+        watchdog.start()
 
     stdout_parts: List[str] = []
     try:
@@ -166,7 +188,9 @@ def _read_progress_stdout(proc: subprocess.Popen,
                     pass
     finally:
         reader.join(timeout=5)
-    return "".join(stdout_parts), "".join(stderr_chunks)
+        if watchdog is not None:
+            watchdog.join(timeout=5)
+    return "".join(stdout_parts), "".join(stderr_chunks), timed_out[0]
 
 
 def run_ffmpeg(
@@ -204,7 +228,18 @@ def run_ffmpeg(
         track_proc(proc)
     try:
         if on_progress is not None and "-progress" in cmd and "pipe:1" in cmd:
-            stdout_data, stderr_data = _read_progress_stdout(proc, on_progress)
+            stdout_data, stderr_data, timed_out = _read_progress_stdout(
+                proc, on_progress, timeout=timeout,
+            )
+            if timed_out:
+                # 进度模式看门狗超时：kill 已由 _read_progress_stdout 完成，
+                # 这里删半成品并抛 timed_out=True（与 communicate 超时语义一致）
+                _remove_output(output_path)
+                raise FFmpegError(
+                    "{}: 超时（{}s）".format(error_message, timeout),
+                    cmd=cmd, returncode=None, stderr=(stderr_data or "")[-500:],
+                    timed_out=True,
+                ) from None
             # 进度模式下 stderr 由 _read_progress_stdout 线程收集并一并返回；
             # 超时/失败时 FFmpegError.stderr 有内容（修复原 stderr 丢失缺陷）
         else:

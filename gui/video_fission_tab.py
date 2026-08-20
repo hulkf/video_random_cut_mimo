@@ -19,8 +19,10 @@ from gui.common.path_row import LINEEDIT_QSS
 
 class VideoFissionWorker(BaseWorker):
     # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
-    video_done = pyqtSignal(dict)   # 单个视频完成（额外专用信号）
-    stopped = pyqtSignal(list)      # 中断时携带部分结果（额外专用信号）
+    # 注意：中断结果信号不能叫 stopped —— 与 BaseWorker.stopped() 方法同名会被
+    # PyQt5 信号遮蔽，导致 self.stopped() 拿到 pyqtBoundSignal 调用即崩（QA BUG-1）。
+    video_done = pyqtSignal(dict)        # 单个视频完成（额外专用信号）
+    partial_results = pyqtSignal(list)   # 中断时携带部分结果（额外专用信号）
 
     def __init__(self, options, input_sources, output_folder, separate_folder, max_workers=0):
         super().__init__()
@@ -43,7 +45,7 @@ class VideoFissionWorker(BaseWorker):
             )
             self.finished.emit(results)
         except FissionStopped:
-            self.stopped.emit(list(self._engine.partial_results))
+            self.partial_results.emit(list(self._engine.partial_results))
         except Exception as e:
             self.error.emit(str(e))
 
@@ -472,7 +474,7 @@ class VideoFissionTab(BaseTab):
             options, input_sources, output_dir, self.separate_cb.isChecked(),
             max_workers=self.workers_spin.value())
         worker.video_done.connect(self._on_video_done)
-        worker.stopped.connect(self._on_stopped)
+        worker.partial_results.connect(self._on_stopped)
         if not self.start_worker(worker):
             return
 

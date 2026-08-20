@@ -1,6 +1,5 @@
 import os
 import csv
-import subprocess
 import cv2
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed

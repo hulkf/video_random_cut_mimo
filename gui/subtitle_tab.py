@@ -12,7 +12,9 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QCheckBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from core.ffmpeg_runner import run_ffmpeg, run_ffmpeg_with_fallback, FFmpegError
+from core.ffmpeg_runner import (
+    run_ffmpeg, run_ffmpeg_with_fallback, FFmpegError, CREATE_NO_WINDOW,
+)
 from gui.config import get_config, set_config
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
@@ -260,7 +262,8 @@ class SubtitleWorker(BaseWorker):
                 cmd.append(model_dir)
 
             proc = subprocess.run(cmd, capture_output=True, timeout=7200,
-                                  encoding="utf-8", errors="replace")
+                                  encoding="utf-8", errors="replace",
+                                  creationflags=CREATE_NO_WINDOW)
 
             # 4. \u89e3\u6790\u7ed3\u679c
             stdout = proc.stdout.strip()

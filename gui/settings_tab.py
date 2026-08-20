@@ -1,5 +1,4 @@
 import os
-import subprocess
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QComboBox, QGroupBox, QSpinBox, QLineEdit,
