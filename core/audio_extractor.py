@@ -1,5 +1,5 @@
 import os
-from utils.video_utils import get_video_duration, extract_audio
+from core.video_utils import get_video_duration, extract_audio
 
 
 class AudioExtractor:

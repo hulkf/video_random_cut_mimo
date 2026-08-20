@@ -1,6 +1,6 @@
 import sys
 sys.path.insert(0, '.')
-from utils.video_utils import get_video_duration
+from core.video_utils import get_video_duration
 from gui.config import load_config
 import os
 

@@ -2,14 +2,15 @@ import os
 import json
 import random
 from core.text_detector import TextDetector
-from utils.video_utils import (
+from core.video_utils import (
     get_video_duration, extract_frames, cut_video_fast
 )
+from utils.media_utils import VIDEO_EXTS
 
 
 def organize_by_filename(output_dir):
     """将输出目录中的文件按文件名前缀整理到独立文件夹"""
-    video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+    video_exts = VIDEO_EXTS
     moved_count = 0
     
     for item in os.listdir(output_dir):
@@ -33,7 +34,7 @@ def organize_by_filename(output_dir):
 
 def flatten_to_root(output_dir):
     """将子文件夹中的视频文件提取到根目录并删除空文件夹"""
-    video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+    video_exts = VIDEO_EXTS
     moved_count = 0
     removed_dirs = []
     
@@ -118,7 +119,7 @@ class VideoSlicer:
             on_video_done: 每完成一个视频的回调，参数为该视频的切片结果列表
             separate_folders: 是否按原始视频分文件夹存放
         """
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
         all_results = []
         
         video_files = [f for f in os.listdir(folder_path) if f.lower().endswith(video_exts)]

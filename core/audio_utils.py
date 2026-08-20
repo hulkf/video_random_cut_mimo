@@ -36,8 +36,21 @@ def separate_vocals(audio, sample_rate=16000):
         "--two-stems", "vocals",
         input_wav
     ]
-    result = subprocess.run(cmd, capture_output=True, timeout=600)
-    if result.returncode != 0:
+    from core.ffmpeg_runner import track_proc, untrack_proc
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags,
+    )
+    track_proc(proc)  # 注册到全局进程表，统一中断可终止（P2.3）
+    try:
+        proc.communicate(timeout=600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return audio
+    finally:
+        untrack_proc(proc)
+    if proc.returncode != 0:
         return audio
 
     vocals_dir = os.path.join(tmp_dir, "htdemucs", "input")

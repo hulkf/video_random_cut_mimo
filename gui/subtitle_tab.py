@@ -19,11 +19,8 @@ from gui.config import get_config, set_config
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
-
-
-FIREMODELS_DIR = r"D:\Models\FireRed"
-FUNASR_DIR = r"D:\Models\FunASR\paraformer-large-zh-en-timestamp-onnx-offline"
-SENSEVOICE_DIR = r"D:\Models\SenseVoiceSmall"
+from utils.media_utils import VIDEO_EXTS
+from core.model_dirs import FIREMODELS_DIR, FUNASR_DIR, SENSEVOICE_DIR
 
 
 class SubtitleWorker(BaseWorker):
@@ -54,7 +51,7 @@ class SubtitleWorker(BaseWorker):
 
     def run(self):
         try:
-            video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+            video_exts = VIDEO_EXTS
             video_files = []
             for root, dirs, files in os.walk(self.folder_path):
                 for f in files:

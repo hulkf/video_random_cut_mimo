@@ -152,6 +152,25 @@ class CosyVoiceService:
             raise RuntimeError(result.get("error", "CosyVoice 合成失败"))
         return result
 
+    def stop(self):
+        """停止 CosyVoice 服务进程（若存在），避免任务结束后残留孤儿进程。"""
+        proc = self.process
+        self.process = None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
 
 class VoiceClonePipeline:
     def __init__(self, service, asr_type, asr_model_dir, text_source="auto"):

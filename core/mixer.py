@@ -5,7 +5,7 @@ import tempfile
 from core.audio_extractor import AudioExtractor
 from core.ffmpeg_runner import run_ffmpeg, FFmpegError
 from utils.media_utils import VIDEO_EXTS
-from utils.video_utils import (
+from core.video_utils import (
     get_video_duration, concat_videos, add_audio,
     extract_audio, add_audio_with_silence, image_to_video
 )

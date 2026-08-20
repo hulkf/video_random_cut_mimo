@@ -14,7 +14,7 @@ from core.keyword_remover import (
     MATCH_MODE_ESTIMATE, MATCH_MODE_SEGMENT
 )
 from gui.config import get_config, set_config
-from gui.subtitle_tab import FIREMODELS_DIR, FUNASR_DIR, SENSEVOICE_DIR
+from core.model_dirs import FIREMODELS_DIR, FUNASR_DIR, SENSEVOICE_DIR
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
@@ -90,7 +90,7 @@ class KeywordRemoveWorker(BaseWorker):
                     "ranges": [],
                 }
 
-            import utils.video_utils as vu
+            import core.video_utils as vu
             duration = vu.get_video_duration(video_path)
             delete_ranges = remover.find_delete_ranges(segments, duration)
             self.write_report(report_path, rel_path, segments, delete_ranges)

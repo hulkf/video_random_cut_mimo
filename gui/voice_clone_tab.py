@@ -32,6 +32,7 @@ class VoiceCloneWorker(BaseWorker):
         self.preview_text = preview_text
 
     def run(self):
+        service = None
         try:
             service = CosyVoiceService(
                 self.settings["conda_exe"], "cosyvoice3",
@@ -70,6 +71,12 @@ class VoiceCloneWorker(BaseWorker):
             self.finished.emit(results)
         except Exception as exc:
             self.error.emit(str(exc))
+        finally:
+            if service is not None:
+                try:
+                    service.stop()
+                except Exception:
+                    pass
 
 
 class VoiceCloneTab(BaseTab):

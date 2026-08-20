@@ -4,7 +4,7 @@ import shutil
 
 from core.ffmpeg_runner import run_ffmpeg_with_fallback
 from utils.media_utils import VIDEO_EXTS, collect_videos, probe_video
-from utils.video_utils import get_video_duration
+from core.video_utils import get_video_duration
 
 
 MATCH_MODE_SEGMENT = "segment"

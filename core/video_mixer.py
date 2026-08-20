@@ -2,10 +2,11 @@ import os
 import random
 import tempfile
 import shutil
-from utils.video_utils import (
+from core.video_utils import (
     get_video_duration, cut_video, cut_video_no_audio,
     concat_videos, add_audio, add_audio_with_silence, image_to_video
 )
+from utils.media_utils import VIDEO_EXTS
 
 
 
@@ -34,7 +35,7 @@ class VideoMixerEngine:
         self._cover_images_cache = None
     
     def get_base_videos(self, video_folder):
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
         videos = []
         for root, dirs, files in os.walk(video_folder):
             for f in files:
@@ -43,7 +44,7 @@ class VideoMixerEngine:
         return videos
     
     def get_clip_videos(self):
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
         clips = []
         for root, dirs, files in os.walk(self.clips_folder):
             for f in files:

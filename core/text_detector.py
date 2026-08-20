@@ -1,4 +1,3 @@
-from paddleocr import PaddleOCR
 import os
 import glob as glob_module
 
@@ -10,6 +9,7 @@ _ocr_instance = None
 
 def _init_worker():
     global _ocr_instance
+    from paddleocr import PaddleOCR
     _ocr_instance = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
 
 
@@ -93,6 +93,7 @@ def detect_single_video(args):
 
 class TextDetector:
     def __init__(self):
+        from paddleocr import PaddleOCR
         self.ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
 
     def _get_image_size(self, image_path):

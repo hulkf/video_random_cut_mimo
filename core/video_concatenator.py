@@ -8,7 +8,7 @@ from core.ffmpeg_runner import (
 )
 from utils.media_utils import collect_videos, probe_video
 from utils.path_utils import normalize_path
-from utils.video_utils import (
+from core.video_utils import (
     get_video_duration, image_to_video
 )
 
