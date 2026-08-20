@@ -1,25 +1,26 @@
 import os
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QLineEdit, QFileDialog, QProgressBar,
-    QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QRadioButton, QButtonGroup, QSlider
+    QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QFileDialog, QMessageBox, QGroupBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QRadioButton, QButtonGroup, QSlider
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 
 from core.video_resizer import (
     VideoResizer, collect_videos, matches_target_size,
     DEFAULT_BLUR_STRENGTH, PIPELINE_9X16_TO_3X4_TO_9X16, SIZE_PRESETS
 )
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
+from gui.common.progress_panel import ProgressPanel
 from gui.config import get_config, set_config
 
 
-class VideoResizeWorker(QThread):
-    progress = pyqtSignal(int, int, str)
+class VideoResizeWorker(BaseWorker):
+    """视频尺寸处理线程（P2 试点：继承 BaseWorker，信号协议统一）。"""
     video_done = pyqtSignal(dict)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
 
     def __init__(self, input_folder, output_folder, target_ratio, process_mode, blur_strength):
         super().__init__()
@@ -29,44 +30,41 @@ class VideoResizeWorker(QThread):
         self.process_mode = process_mode
         self.blur_strength = blur_strength
 
-    def run(self):
-        try:
-            videos = collect_videos(self.input_folder)
-            if len(videos) == 0:
-                raise ValueError("输入文件夹中没有找到视频文件")
+    def work(self):
+        videos = collect_videos(self.input_folder)
+        if len(videos) == 0:
+            raise ValueError("输入文件夹中没有找到视频文件")
 
-            engine = VideoResizer(self.target_ratio, self.blur_strength)
-            if self.process_mode == "mismatched":
-                videos = [
-                    video_path for video_path in videos
-                    if not matches_target_size(video_path, self.target_ratio)
-                ]
+        engine = VideoResizer(self.target_ratio, self.blur_strength)
+        if self.process_mode == "mismatched":
+            videos = [
+                video_path for video_path in videos
+                if not matches_target_size(video_path, self.target_ratio)
+            ]
 
-            total = len(videos)
-            results = []
+        total = len(videos)
+        results = []
 
-            if total == 0:
-                self.finished.emit(results)
-                return
+        if total == 0:
+            self.emit_finished(results)
+            return
 
-            for index, video_path in enumerate(videos):
-                rel_path = engine_target_rel_path(video_path, self.input_folder, self.target_ratio)
-                output_path = os.path.join(self.output_folder, rel_path)
+        for index, video_path in enumerate(videos):
+            rel_path = engine_target_rel_path(video_path, self.input_folder, self.target_ratio)
+            output_path = os.path.join(self.output_folder, rel_path)
 
-                self.progress.emit(index, total, rel_path)
-                result_path = engine.resize_video(video_path, output_path)
-                result = {
-                    "input": video_path,
-                    "output": result_path,
-                    "ratio": self.target_ratio,
-                }
-                results.append(result)
-                self.video_done.emit(result)
-                self.progress.emit(index + 1, total, rel_path)
+            self.emit_progress(index, total, rel_path)
+            result_path = engine.resize_video(video_path, output_path)
+            result = {
+                "input": video_path,
+                "output": result_path,
+                "ratio": self.target_ratio,
+            }
+            results.append(result)
+            self.video_done.emit(result)
+            self.emit_progress(index + 1, total, rel_path)
 
-            self.finished.emit(results)
-        except Exception as e:
-            self.error.emit(str(e))
+        self.emit_finished(results)
 
 
 def engine_target_rel_path(video_path, input_folder, target_ratio):
@@ -77,10 +75,9 @@ def engine_target_rel_path(video_path, input_folder, target_ratio):
     return f"{rel_base}_{target_ratio.replace(':', 'x')}.mp4"
 
 
-class VideoResizeTab(QWidget):
+class VideoResizeTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.init_ui()
         self.load_config()
 
@@ -92,30 +89,13 @@ class VideoResizeTab(QWidget):
         input_group = QGroupBox("输入设置")
         input_layout = QVBoxLayout()
         input_layout.setSpacing(8)
-
-        folder_row = QHBoxLayout()
-        folder_row.setSpacing(8)
-        self.input_folder = QLineEdit()
-        self.input_folder.setMinimumHeight(30)
-        self.input_folder.setPlaceholderText("选择需要处理的视频文件夹...")
-        input_btn = QPushButton("浏览")
-        input_btn.setFixedWidth(80)
-        input_btn.clicked.connect(self.browse_input)
-        folder_row.addWidget(self.input_folder, 1)
-        folder_row.addWidget(input_btn)
-        input_layout.addLayout(folder_row)
-
-        output_row = QHBoxLayout()
-        output_row.setSpacing(8)
-        self.output_folder = QLineEdit()
-        self.output_folder.setMinimumHeight(30)
-        self.output_folder.setPlaceholderText("选择输出文件夹...")
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output)
-        output_row.addWidget(self.output_folder, 1)
-        output_row.addWidget(output_btn)
-        input_layout.addLayout(output_row)
+        # P2：路径行用公共 PathRow 控件（内置输入框样式修复 + 浏览 + 自动保存配置）
+        self.input_folder = PathRow("选择需要处理的视频文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
+        input_layout.addWidget(self.input_folder)
+        self.output_folder = PathRow("选择输出文件夹...", mode=MODE_FOLDER,
+                                     on_change=lambda p: self.save_config())
+        input_layout.addWidget(self.output_folder)
         input_group.setLayout(input_layout)
 
         size_group = QGroupBox("尺寸设置")
@@ -175,19 +155,11 @@ class VideoResizeTab(QWidget):
         self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self.start_resize)
 
-        progress_group = QGroupBox("处理进度")
-        progress_layout = QVBoxLayout()
-        progress_row = QHBoxLayout()
-        progress_row.addWidget(QLabel("进度:"))
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        progress_row.addWidget(self.progress_bar)
-        self.progress_label = QLabel("0%")
-        progress_row.addWidget(self.progress_label)
-        progress_layout.addLayout(progress_row)
-        self.status_label = QLabel("就绪")
-        progress_layout.addWidget(self.status_label)
-        progress_group.setLayout(progress_layout)
+        # P2：进度区用公共 ProgressPanel
+        self.progress_panel = ProgressPanel("处理进度")
+        self.progress_bar = self.progress_panel.bar
+        self.progress_label = self.progress_panel.percent_label
+        self.status_label = self.progress_panel.status_label
 
         self.result_table = QTableWidget()
         self.result_table.setColumnCount(3)
@@ -210,11 +182,12 @@ class VideoResizeTab(QWidget):
         layout.addWidget(blur_group)
         layout.addWidget(mode_group)
         layout.addWidget(self.start_btn)
-        layout.addWidget(progress_group)
+        layout.addWidget(self.progress_panel)
         layout.addWidget(self.result_table, 1)
         layout.addWidget(hint)
         self.setLayout(layout)
 
+    # ── 配置持久化 ───────────────────────────────────────────
     def load_config(self):
         self.input_folder.setText(get_config("video_resize", "input_folder", ""))
         self.output_folder.setText(get_config("video_resize", "output_folder", ""))
@@ -233,6 +206,7 @@ class VideoResizeTab(QWidget):
         set_config("video_resize", "blur_strength", str(self.blur_slider.value()))
         set_config("video_resize", "process_mode", self.current_process_mode())
 
+    # ── 交互逻辑 ─────────────────────────────────────────────
     def on_ratio_changed(self, ratio):
         if ratio == PIPELINE_9X16_TO_3X4_TO_9X16:
             width, height = SIZE_PRESETS["9:16"]
@@ -259,18 +233,7 @@ class VideoResizeTab(QWidget):
                 return mode
         return "all"
 
-    def browse_input(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
-        if folder:
-            self.input_folder.setText(folder)
-            self.save_config()
-
-    def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
-        if folder:
-            self.output_folder.setText(folder)
-            self.save_config()
-
+    # ── 任务启动（P2：统一走 BaseTab.start_worker）──
     def start_resize(self):
         input_folder = self.input_folder.text()
         output_folder = self.output_folder.text()
@@ -282,29 +245,22 @@ class VideoResizeTab(QWidget):
             QMessageBox.warning(self, "警告", "请选择输入和输出文件夹")
             return
 
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
-
         self.save_config()
         self.result_table.setRowCount(0)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("0%")
-        self.status_label.setText("准备处理...")
-        self.start_btn.setEnabled(False)
+        self.progress_panel.reset("准备处理...")
 
-        self.worker = VideoResizeWorker(input_folder, output_folder, ratio, process_mode, blur_strength)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.video_done.connect(self.on_video_done)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker = VideoResizeWorker(input_folder, output_folder, ratio, process_mode, blur_strength)
+        worker.video_done.connect(self.on_video_done)
+        if not self.start_worker(worker):
+            self.progress_panel.reset()
+            return
 
-    def on_progress(self, current, total, rel_path):
-        percent = int((current / total) * 100) if total else 0
-        self.progress_bar.setValue(percent)
-        self.progress_label.setText(f"{percent}%")
-        self.status_label.setText(f"处理 {current}/{total}: {rel_path}")
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+
+    # ── 回调 ─────────────────────────────────────────────────
+    def on_worker_progress(self, current, total, message):
+        self.progress_panel.set_progress(current, total, f"处理 {current}/{total}: {message}")
 
     def on_video_done(self, result):
         row = self.result_table.rowCount()
@@ -313,14 +269,12 @@ class VideoResizeTab(QWidget):
         self.result_table.setItem(row, 1, QTableWidgetItem(result["output"]))
         self.result_table.setItem(row, 2, QTableWidgetItem(result["ratio"]))
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
-        self.progress_bar.setValue(100)
-        self.progress_label.setText("100%")
-        self.status_label.setText(f"处理完成，共 {len(results)} 个视频")
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
+        self.progress_panel.set_progress(100, 100)
+        self.progress_panel.set_status(f"处理完成，共 {len(results)} 个视频")
         QMessageBox.information(self, "完成", f"视频尺寸处理完成，共 {len(results)} 个视频")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.status_label.setText("处理失败")
-        QMessageBox.critical(self, "错误", msg)
+    def on_worker_error(self, message):
+        super().on_worker_error(message)
+        self.progress_panel.set_status("处理失败")
