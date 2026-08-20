@@ -22,3 +22,17 @@ downloads/
 models/
 Users/
 v/
+
+# 敏感/本地文件（密钥、日志、抓取测试产物）
+taobao_auth.json
+*.log
+
+# 淘宝/天猫抓取测试产物（一次性）
+h5api_test.txt
+tb_item.html
+tb_short.html
+tb_ssr.html
+tmall_item.html
+
+# 构建/报告产物（架构评审生成，不入库）
+arch-optimization-report/
