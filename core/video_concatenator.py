@@ -170,15 +170,24 @@ class VideoConcatenatorEngine:
             # 编码参数统一走 run_ffmpeg_with_fallback（硬件失败自动回退软件）
             def _build_concat_cmd(params):
                 _codec, _enc_preset, _quality_args = params
-                return [
-                    "ffmpeg",
+                _cmd = ["ffmpeg"]
+                # 必须按 filter_complex 中 [N:v]/[N:a] 引用的顺序添加 -i 输入：
+                #   有封面：cover_video(0) + video_a(1) + video_b(2)
+                #   无封面：video_a(0) + video_b(1)
+                # P0/P1 重构（4608376）时漏写，导致 ffmpeg 报
+                # "Error binding filtergraph inputs/outputs: Invalid argument"。
+                if cover_video:
+                    _cmd.extend(["-i", cover_video])
+                _cmd.extend(["-i", video_a, "-i", video_b])
+                _cmd.extend([
                     "-filter_complex", filter_str,
                     "-map", "[outv]", "-map", "[outa]",
                     "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
                     "-c:a", "aac", "-b:a", "128k",
                     "-shortest",
                     "-y", output_path
-                ]
+                ])
+                return _cmd
 
             run_ffmpeg_with_fallback(
                 _build_concat_cmd, crf=23,
