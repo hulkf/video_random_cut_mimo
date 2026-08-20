@@ -265,38 +265,3 @@ def run_ffmpeg_with_fallback(
             fallback_to_software()
             return run_ffmpeg(build_cmd(get_encoder(crf=crf, preset=preset)), **run_kwargs)
         raise
-
-
-class FFmpegCommand:
-    """轻量命令构建器（可选；工程师也可直接用 list + run_ffmpeg）。"""
-
-    def __init__(self, executable: str = "ffmpeg"):
-        self._cmd: List[str] = [executable]
-
-    def add(self, *args) -> "FFmpegCommand":
-        self._cmd.extend(str(a) for a in args)
-        return self
-
-    def input(self, path: str) -> "FFmpegCommand":
-        """-i path"""
-        self._cmd.extend(["-i", path])
-        return self
-
-    def encoder(self, codec, preset, quality_args) -> "FFmpegCommand":
-        """-c:v codec -preset preset + quality_args"""
-        self._cmd.extend(["-c:v", codec, "-preset", preset])
-        self._cmd.extend(quality_args)
-        return self
-
-    def output(self, path: str, *, overwrite: bool = True) -> "FFmpegCommand":
-        """[-y] path"""
-        if overwrite:
-            self._cmd.append("-y")
-        self._cmd.append(path)
-        return self
-
-    def build(self) -> List[str]:
-        return list(self._cmd)
-
-    def __str__(self) -> str:
-        return " ".join(self._cmd)

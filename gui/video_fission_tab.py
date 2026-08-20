@@ -14,6 +14,7 @@ from gui.config import get_config, set_config
 from utils.path_utils import strip_quotes
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
+from gui.common.path_row import LINEEDIT_QSS
 
 
 class VideoFissionWorker(BaseWorker):
@@ -150,24 +151,7 @@ class _WrappingRow(QWidget):
 
 
 class VideoFissionTab(BaseTab):
-    # ===== 三保险 QLineEdit 样式（带 !important 强制覆盖任何主题）=====
-    LINEEDIT_QSS = """
-        QLineEdit {
-            min-height: 30px !important;
-            padding: 4px 8px !important;
-            border: 1px solid #5a5a5a !important;
-            border-radius: 4px !important;
-            background-color: #1e1e1e !important;
-            selection-background-color: #4d8fff !important;
-        }
-        QLineEdit:hover {
-            border-color: #7a7a7a !important;
-        }
-        QLineEdit:focus {
-            border: 1px solid #4d8fff !important;
-            background-color: #252525 !important;
-        }
-    """
+    # QLineEdit 样式统一从 gui/common/path_row.LINEEDIT_QSS 导入（唯一来源）
 
     def __init__(self):
         super().__init__()
@@ -194,7 +178,7 @@ class VideoFissionTab(BaseTab):
             edit.setPlaceholderText(
                 "输入 {}：文件夹路径，或直接填一个视频文件路径（可留空）".format(i))
             # 三保险：每个 QLineEdit 单独强制样式（绕开父级继承 / qt-material 覆盖）
-            edit.setStyleSheet(self.LINEEDIT_QSS)
+            edit.setStyleSheet(LINEEDIT_QSS)
             btn = QPushButton("浏览")
             btn.setFixedWidth(68)
             btn.setMinimumHeight(32)
@@ -229,7 +213,7 @@ class VideoFissionTab(BaseTab):
         self.output_edit.setMinimumHeight(32)
         self.output_edit.setPlaceholderText("裂变后的视频保存到这里")
         # 三保险：输出框也单独强制样式
-        self.output_edit.setStyleSheet(self.LINEEDIT_QSS)
+        self.output_edit.setStyleSheet(LINEEDIT_QSS)
         out_btn = QPushButton("浏览")
         out_btn.setFixedWidth(68)
         out_btn.setMinimumHeight(32)
@@ -375,7 +359,7 @@ class VideoFissionTab(BaseTab):
         self.setLayout(main)
 
         # ===== Tab 内部双保险：无论全局主题 QSS 怎么变，tab 内 setStyleSheet 强制 QLineEdit 样式 =====
-        self.setStyleSheet(self.LINEEDIT_QSS)
+        self.setStyleSheet(LINEEDIT_QSS)
 
     # ── 配置 ──────────────────────────────────────────────────
     def load_config(self):

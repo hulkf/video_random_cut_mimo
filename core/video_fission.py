@@ -5,7 +5,7 @@ import random
 import threading
 
 from core.encoder import fallback_to_software, get_default_workers, get_encoder
-from core.ffmpeg_runner import run_ffmpeg, terminate_all
+from core.ffmpeg_runner import run_ffmpeg, terminate_all, FFmpegError
 from utils.media_utils import collect_videos, probe_video
 from utils.path_utils import strip_quotes
 
@@ -34,7 +34,7 @@ class VideoFission:
 
     性能（V9 优化）：
       - 并发：ThreadPoolExecutor 并行跑多个 ffmpeg（默认按编码器策略自动选）
-      - 硬件编码：自动探测 NVENC → QSV → libx264，硬件会话受限时自动回退软件
+      - 硬件编码：自动探测 NVENC → libx264（QSV 实测慢于软件已排除），硬件会话受限时自动回退软件
       实测（640x360×5份）：NVENC并发3 = 1.33s，是原顺序 libx264(8.33s) 的 6.3 倍
 
     中断支持：
@@ -156,7 +156,7 @@ class VideoFission:
         try:
             run_ffmpeg(cmd, track=True, timeout=3600,
                        output_path=output_path, error_message="裂变失败")
-        except RuntimeError as e:
+        except FFmpegError as e:
             # 用户中断：删除半成品文件并抛出 FissionStopped
             if self._stop_requested:
                 if os.path.exists(output_path):
