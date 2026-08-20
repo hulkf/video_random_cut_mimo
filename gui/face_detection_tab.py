@@ -5,7 +5,7 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
-    QLabel, QLineEdit, QFileDialog,
+    QLabel, QFileDialog,
     QTableWidget, QTableWidgetItem, QProgressBar,
     QMessageBox, QGroupBox, QCheckBox, QSpinBox,
     QAbstractItemView
@@ -16,6 +16,7 @@ from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
 from core.screenshot import SCRFDetector
+from utils.media_utils import VIDEO_EXTS
 
 
 _FACE_DETECTOR = None
@@ -117,7 +118,7 @@ class FaceDetectionWorker(BaseWorker):
                 self.error.emit(f"模型文件不存在: {self.model_path}")
                 return
             
-            video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+            video_exts = VIDEO_EXTS
             results = []
             
             video_files = []
@@ -252,14 +253,9 @@ class FaceDetectionTab(BaseTab):
         input_layout = QHBoxLayout()
         input_layout.setSpacing(8)
 
-        self.folder_input = QLineEdit()
-        self.folder_input.setPlaceholderText("选择视频文件夹...")
-        self.folder_input.setMinimumHeight(30)
-        folder_btn = QPushButton("浏览")
-        folder_btn.setFixedWidth(80)
-        folder_btn.clicked.connect(self.browse_folder)
+        self.folder_input = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
         input_layout.addWidget(self.folder_input, 1)
-        input_layout.addWidget(folder_btn)
         
         input_group.setLayout(input_layout)
         
@@ -391,10 +387,6 @@ class FaceDetectionTab(BaseTab):
         set_config("face_detection", "min_face_ratio", str(self.min_face_ratio.value()))
         set_config("face_detection", "sample_count", str(self.sample_count.value()))
         set_config("face_detection", "max_workers", str(self.max_workers.value()))
-    
-    def browse_folder(self):
-        """兼容外部调用：等价于 PathRow 浏览。"""
-        self.folder_input._browse()
     
     def start_detection(self):
         folder = self.folder_input.text()
