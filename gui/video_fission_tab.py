@@ -7,14 +7,16 @@ from PyQt5.QtWidgets import (
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QSpinBox, QSlider, QComboBox, QCheckBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtCore import Qt, pyqtSignal, QSize
 
 from core.video_fission import VideoFission, FissionStopped
 from gui.config import get_config, set_config
 from utils.path_utils import strip_quotes
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
 
 
-class VideoFissionWorker(QThread):
+class VideoFissionWorker(BaseWorker):
     progress = pyqtSignal(int, int, str)
     video_done = pyqtSignal(dict)
     finished = pyqtSignal(list)
@@ -146,7 +148,7 @@ class _WrappingRow(QWidget):
             self.updateGeometry()
 
 
-class VideoFissionTab(QWidget):
+class VideoFissionTab(BaseTab):
     # ===== 三保险 QLineEdit 样式（带 !important 强制覆盖任何主题）=====
     LINEEDIT_QSS = """
         QLineEdit {
@@ -168,7 +170,6 @@ class VideoFissionTab(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.init_ui()
         self.load_config()
 
@@ -474,8 +475,6 @@ class VideoFissionTab(QWidget):
         self.progress_bar.setValue(0)
         self.pct_label.setText("0%")
         self.status_lbl.setText("准备处理...")
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
 
         options = {
             "intensity": self._intensity_key(),
@@ -484,15 +483,17 @@ class VideoFissionTab(QWidget):
             "force_1080x1920": self.force_1080_cb.isChecked(),
         }
 
-        self.worker = VideoFissionWorker(
+        worker = VideoFissionWorker(
             options, input_sources, output_dir, self.separate_cb.isChecked(),
             max_workers=self.workers_spin.value())
-        self.worker.progress.connect(self._on_progress)
-        self.worker.video_done.connect(self._on_video_done)
-        self.worker.finished.connect(self._on_finished)
-        self.worker.stopped.connect(self._on_stopped)
-        self.worker.error.connect(self._on_error)
-        self.worker.start()
+        worker.video_done.connect(self._on_video_done)
+        worker.stopped.connect(self._on_stopped)
+        if not self.start_worker(worker):
+            return
+
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.stop_btn.setEnabled(busy)
 
     def _stop(self):
         """点击停止：请求中断，正在处理的视频会终止，已完成的保留。"""
@@ -501,7 +502,7 @@ class VideoFissionTab(QWidget):
             self.status_lbl.setText("正在停止...")
             self.worker.request_stop()
 
-    def _on_progress(self, current, total, rel):
+    def on_worker_progress(self, current, total, rel):
         pct = int((current / total) * 100) if total else 0
         self.progress_bar.setValue(pct)
         self.pct_label.setText("{}%".format(pct))
@@ -514,9 +515,8 @@ class VideoFissionTab(QWidget):
         self.table.setItem(row, 1, QTableWidgetItem(str(len(result["outputs"]))))
         self.table.setItem(row, 2, QTableWidgetItem(result["subfolder"]))
 
-    def _on_finished(self, results):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.progress_bar.setValue(100)
         self.pct_label.setText("100%")
         total_videos = sum(len(r["outputs"]) for r in results)
@@ -537,8 +537,6 @@ class VideoFissionTab(QWidget):
             "裂变已停止。\n\n已完成源视频: {} 个\n已保留产物: {} 个\n\n未完成的已丢弃。".format(
                 len(results), total_videos))
 
-    def _on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.status_lbl.setText("处理失败")
-        QMessageBox.critical(self, "错误", msg)

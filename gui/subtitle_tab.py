@@ -11,9 +11,12 @@ from PyQt5.QtWidgets import (
     QMessageBox, QGroupBox, QComboBox, QColorDialog,
     QScrollArea, QFrame, QCheckBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from core.encoder import get_encoder
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 
 
 FIREMODELS_DIR = r"D:\Models\FireRed"
@@ -21,8 +24,8 @@ FUNASR_DIR = r"D:\Models\FunASR\paraformer-large-zh-en-timestamp-onnx-offline"
 SENSEVOICE_DIR = r"D:\Models\SenseVoiceSmall"
 
 
-class SubtitleWorker(QThread):
-    progress = pyqtSignal(int, int)
+class SubtitleWorker(BaseWorker):
+    progress = pyqtSignal(int, int, str)
     video_done = pyqtSignal(dict)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -83,7 +86,7 @@ class SubtitleWorker(QThread):
                     result = {"video": video_path, "success": False}
                 all_results.append(result)
                 self.video_done.emit(result)
-                self.progress.emit(idx + 1, total)
+                self.progress.emit(idx + 1, total, "")
 
             self.finished.emit(all_results)
         except Exception as e:
@@ -302,10 +305,9 @@ class SubtitleWorker(QThread):
             f.write("\n\n".join(new_blocks) + "\n")
 
 
-class SubtitleTab(QWidget):
+class SubtitleTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.results = []
         self.init_ui()
         self.load_config()
@@ -328,25 +330,15 @@ class SubtitleTab(QWidget):
 
         folder_layout = QHBoxLayout()
         folder_layout.setSpacing(8)
-        self.folder_input = QLineEdit()
-        self.folder_input.setPlaceholderText("\u9009\u62e9\u89c6\u9891\u6587\u4ef6\u5939...")
-        self.folder_input.setMinimumHeight(30)
-        folder_btn = QPushButton("\u6d4f\u89c8")
-        folder_btn.setFixedWidth(80)
-        folder_btn.clicked.connect(self.browse_folder)
+        self.folder_input = PathRow("\u9009\u62e9\u89c6\u9891\u6587\u4ef6\u5939...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
         folder_layout.addWidget(self.folder_input, 1)
-        folder_layout.addWidget(folder_btn)
 
         output_layout = QHBoxLayout()
         output_layout.setSpacing(8)
-        self.output_input = QLineEdit()
-        self.output_input.setPlaceholderText("\u8f93\u51fa\u6587\u4ef6\u5939...")
-        self.output_input.setMinimumHeight(30)
-        output_btn = QPushButton("\u6d4f\u89c8")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output)
+        self.output_input = PathRow("\u8f93\u51fa\u6587\u4ef6\u5939...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
         output_layout.addWidget(self.output_input, 1)
-        output_layout.addWidget(output_btn)
 
         input_layout.addLayout(folder_layout)
         input_layout.addLayout(output_layout)
@@ -625,16 +617,10 @@ class SubtitleTab(QWidget):
             self.outline_color_label.setStyleSheet(f"background-color: {self.current_outline_color}; padding: 5px; border: 1px solid gray;")
 
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "\u9009\u62e9\u89c6\u9891\u6587\u4ef6\u5939")
-        if folder:
-            self.folder_input.setText(folder)
-            self.save_config()
+        self.folder_input._browse()
 
     def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "\u9009\u62e9\u8f93\u51fa\u6587\u4ef6\u5939")
-        if folder:
-            self.output_input.setText(folder)
-            self.save_config()
+        self.output_input._browse()
 
     def browse_model(self):
         mt = self.model_combo.currentText()
@@ -660,20 +646,14 @@ class SubtitleTab(QWidget):
             QMessageBox.warning(self, "\u8b66\u544a", "\u8bf7\u9009\u62e9\u8f93\u5165\u548c\u8f93\u51fa\u6587\u4ef6\u5939")
             return
 
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "\u8b66\u544a", "\u4efb\u52a1\u6b63\u5728\u6267\u884c\u4e2d")
-            return
-
         self.save_config()
-        self.start_btn.setEnabled(False)
-        self.cancel_btn.setVisible(True)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.result_table.setRowCount(0)
         self.stats_label.setText("\u7edf\u8ba1: \u5904\u7406\u4e2d...")
         self.results = []
 
-        self.worker = SubtitleWorker(
+        worker = SubtitleWorker(
             folder, output,
             self.font_combo.currentText(),
             self.font_size.value(),
@@ -686,18 +666,20 @@ class SubtitleTab(QWidget):
             enable_correction=self.correction_check.isChecked(),
             keep_srt=self.keep_srt_check.isChecked()
         )
-        self.worker.progress.connect(self.on_progress)
-        self.worker.video_done.connect(self.on_video_done)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker.video_done.connect(self.on_video_done)
+        if not self.start_worker(worker):
+            return
+
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.cancel_btn.setVisible(busy)
 
     def cancel_subtitle(self):
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
             self.stats_label.setText("\u7edf\u8ba1: \u5df2\u505c\u6b62")
 
-    def on_progress(self, current, total):
+    def on_worker_progress(self, current, total, message):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
 
@@ -719,9 +701,8 @@ class SubtitleTab(QWidget):
             status_item.setForeground(Qt.red)
         self.result_table.setItem(row, 2, status_item)
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setVisible(False)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(100)
 
@@ -735,10 +716,8 @@ class SubtitleTab(QWidget):
 
         QMessageBox.information(self, "\u5b8c\u6210", msg)
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setVisible(False)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.stats_label.setText("\u7edf\u8ba1: \u5904\u7406\u5931\u8d25")
-        QMessageBox.critical(self, "\u9519\u8bef", msg)

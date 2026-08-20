@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog, QProgressBar,
     QMessageBox, QGroupBox, QPlainTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView
@@ -12,6 +12,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
 
 
 def extract_urls_from_text(text):
@@ -33,7 +35,7 @@ def extract_urls_from_text(text):
     return cleaned
 
 
-class DownloadWorker(QThread):
+class DownloadWorker(BaseWorker):
     """视频下载后台线程"""
     log = pyqtSignal(str)
     progress = pyqtSignal(int, int, int)  # current, total, percent
@@ -139,12 +141,11 @@ class LoginWorker(QThread):
             self.done.emit(False, str(e))
 
 
-class VideoDownloadTab(QWidget):
+class VideoDownloadTab(BaseTab):
     """综合视频下载标签页"""
 
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.login_worker = None
         self._link_rows = {}   # index -> 表格行号
         self._start_ts = None  # 本次下载开始时间
@@ -383,8 +384,6 @@ class VideoDownloadTab(QWidget):
         self._save_config()
         os.makedirs(output_dir, exist_ok=True)
 
-        self.btn_download.setEnabled(False)
-        self.btn_stop.setEnabled(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("准备中...")
 
@@ -403,19 +402,23 @@ class VideoDownloadTab(QWidget):
             self._link_rows[i] = row
         self.table_result.scrollToTop()
 
-        self.worker = DownloadWorker(links, output_dir)
-        self.worker.log.connect(self._log)
-        self.worker.progress.connect(self._on_progress)
-        self.worker.item_done.connect(self._on_item_done)
-        self.worker.all_done.connect(self._on_all_done)
-        self.worker.start()
+        worker = DownloadWorker(links, output_dir)
+        worker.log.connect(self._log)
+        worker.item_done.connect(self._on_item_done)
+        worker.all_done.connect(self._on_all_done)
+        if not self.start_worker(worker):
+            return
+
+    def set_busy(self, busy):
+        self.btn_download.setEnabled(not busy)
+        self.btn_stop.setEnabled(busy)
 
     def _on_stop(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self._log("正在停止...")
 
-    def _on_progress(self, current, total, percent):
+    def on_worker_progress(self, current, total, percent):
         if total > 0:
             overall = (current * 100 + percent) // (total * 100) if total > 0 else 0
             overall = min(overall, 100)

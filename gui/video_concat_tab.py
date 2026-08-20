@@ -1,16 +1,19 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QLineEdit, QFileDialog, QProgressBar,
+    QLabel, QProgressBar,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox, QComboBox,
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from core.video_concatenator import VideoConcatenatorEngine
 from gui.config import get_config, set_config
 from utils.path_utils import normalize_path as normalize_input_path
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 
 
-class VideoConcatWorker(QThread):
+class VideoConcatWorker(BaseWorker):
     progress = pyqtSignal(int, int, str, int)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -30,10 +33,9 @@ class VideoConcatWorker(QThread):
             self.error.emit(str(e))
 
 
-class VideoConcatTab(QWidget):
+class VideoConcatTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.init_ui()
         self.load_config()
 
@@ -51,29 +53,19 @@ class VideoConcatTab(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
 
         folder_a_group = QGroupBox("文件夹A（第一批视频）")
-        folder_a_layout = QHBoxLayout()
+        folder_a_layout = QVBoxLayout()
         folder_a_layout.setSpacing(8)
-        self.folder_a_input = QLineEdit()
-        self.folder_a_input.setPlaceholderText("选择文件夹A...")
-        self.folder_a_input.setMinimumHeight(30)
-        folder_a_btn = QPushButton("浏览")
-        folder_a_btn.setFixedWidth(80)
-        folder_a_btn.clicked.connect(self.browse_folder_a)
-        folder_a_layout.addWidget(self.folder_a_input, 1)
-        folder_a_layout.addWidget(folder_a_btn)
+        self.folder_a_input = PathRow("选择文件夹A...", mode=MODE_FOLDER,
+                                      on_change=lambda p: self.save_config())
+        folder_a_layout.addWidget(self.folder_a_input)
         folder_a_group.setLayout(folder_a_layout)
 
         folder_b_group = QGroupBox("文件夹B（第二批视频）")
-        folder_b_layout = QHBoxLayout()
+        folder_b_layout = QVBoxLayout()
         folder_b_layout.setSpacing(8)
-        self.folder_b_input = QLineEdit()
-        self.folder_b_input.setPlaceholderText("选择文件夹B...")
-        self.folder_b_input.setMinimumHeight(30)
-        folder_b_btn = QPushButton("浏览")
-        folder_b_btn.setFixedWidth(80)
-        folder_b_btn.clicked.connect(self.browse_folder_b)
-        folder_b_layout.addWidget(self.folder_b_input, 1)
-        folder_b_layout.addWidget(folder_b_btn)
+        self.folder_b_input = PathRow("选择文件夹B...", mode=MODE_FOLDER,
+                                      on_change=lambda p: self.save_config())
+        folder_b_layout.addWidget(self.folder_b_input)
         folder_b_group.setLayout(folder_b_layout)
 
         cover_group = QGroupBox("封面图设置")
@@ -100,17 +92,12 @@ class VideoConcatTab(QWidget):
         cover_folder_row = QHBoxLayout()
         cover_folder_row.setSpacing(8)
         cover_folder_row.addWidget(QLabel("封面图文件夹:"))
-        self.cover_folder_input = QLineEdit()
-        self.cover_folder_input.setPlaceholderText("选择封面图文件夹...")
+        self.cover_folder_input = PathRow("选择封面图文件夹...", mode=MODE_FOLDER,
+                                          on_change=lambda p: self.save_config())
         self.cover_folder_input.setEnabled(False)
-        self.cover_folder_input.setMinimumHeight(30)
-        cover_folder_btn = QPushButton("浏览")
-        cover_folder_btn.setFixedWidth(80)
-        cover_folder_btn.clicked.connect(self.browse_cover_folder)
-        cover_folder_btn.setEnabled(False)
-        self.cover_folder_btn = cover_folder_btn
+        self.cover_folder_btn = self.cover_folder_input.browse_btn
+        self.cover_folder_btn.setEnabled(False)
         cover_folder_row.addWidget(self.cover_folder_input, 1)
-        cover_folder_row.addWidget(cover_folder_btn)
         cover_layout.addLayout(cover_folder_row)
 
         cover_mode_row = QHBoxLayout()
@@ -147,16 +134,11 @@ class VideoConcatTab(QWidget):
         cover_group.setLayout(cover_layout)
 
         output_group = QGroupBox("输出设置")
-        output_layout = QHBoxLayout()
+        output_layout = QVBoxLayout()
         output_layout.setSpacing(8)
-        self.output_folder_input = QLineEdit()
-        self.output_folder_input.setPlaceholderText("选择输出文件夹...")
-        self.output_folder_input.setMinimumHeight(30)
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output_folder)
-        output_layout.addWidget(self.output_folder_input, 1)
-        output_layout.addWidget(output_btn)
+        self.output_folder_input = PathRow("选择输出文件夹...", mode=MODE_FOLDER,
+                                           on_change=lambda p: self.save_config())
+        output_layout.addWidget(self.output_folder_input)
         output_group.setLayout(output_layout)
 
         self.start_btn = QPushButton("开始拼接")
@@ -251,28 +233,16 @@ class VideoConcatTab(QWidget):
         self.cover_duration_max.setEnabled(enabled)
 
     def browse_folder_a(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择文件夹A")
-        if folder:
-            self.folder_a_input.setText(folder)
-            self.save_config()
+        self.folder_a_input._browse()
 
     def browse_folder_b(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择文件夹B")
-        if folder:
-            self.folder_b_input.setText(folder)
-            self.save_config()
+        self.folder_b_input._browse()
 
     def browse_cover_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择封面图文件夹")
-        if folder:
-            self.cover_folder_input.setText(folder)
-            self.save_config()
+        self.cover_folder_input._browse()
 
     def browse_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
-        if folder:
-            self.output_folder_input.setText(folder)
-            self.save_config()
+        self.output_folder_input._browse()
 
     def start_concat(self):
         folder_a = normalize_input_path(self.folder_a_input.text())
@@ -281,10 +251,6 @@ class VideoConcatTab(QWidget):
 
         if not folder_a or not folder_b or not output_folder:
             QMessageBox.warning(self, "警告", "请填写所有必填项")
-            return
-
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
             return
 
         self.save_config()
@@ -301,14 +267,14 @@ class VideoConcatTab(QWidget):
             "cover_duration_max": self.cover_duration_max.value()
         }
 
-        self.start_btn.setEnabled(False)
-        self.worker = VideoConcatWorker(config)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker = VideoConcatWorker(config)
+        if not self.start_worker(worker):
+            return
 
-    def on_progress(self, current, total, msg, sub_progress):
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+
+    def on_worker_progress(self, current, total, message, sub_progress):
         global_progress = int((current / total) * 100) if total > 0 else 0
         self.global_progress_bar.setValue(global_progress)
         self.global_progress_label.setText(f"{global_progress}%")
@@ -317,10 +283,10 @@ class VideoConcatTab(QWidget):
             self.task_progress_bar.setValue(sub_progress)
             self.task_progress_label.setText(f"{sub_progress}%")
 
-        self.status_label.setText(f"进度 {current}/{total} - {msg}")
+        self.status_label.setText(f"进度 {current}/{total} - {message}")
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.global_progress_bar.setValue(100)
         self.global_progress_label.setText("100%")
         self.task_progress_bar.setValue(100)
@@ -328,7 +294,6 @@ class VideoConcatTab(QWidget):
         self.status_label.setText("拼接完成")
         QMessageBox.information(self, "完成", f"已完成 {len(results)} 个拼接视频")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.status_label.setText("拼接失败")
-        QMessageBox.critical(self, "错误", msg)

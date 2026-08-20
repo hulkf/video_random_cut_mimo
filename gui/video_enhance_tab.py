@@ -8,12 +8,12 @@
 import os
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog, QProgressBar,
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QCheckBox, QSpinBox, QAbstractItemView
 )
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import pyqtSignal
 
 from core.wink_enhancer import (
     WinkEnhancer, LEVELS, IMAGE_ONLY_LEVELS,
@@ -21,6 +21,9 @@ from core.wink_enhancer import (
     build_output_path, human_size,
 )
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 
 
 #: 每个档位给一句人话说明，省得用户对着"高糊图""演唱会"猜用途
@@ -38,7 +41,7 @@ LEVEL_HINTS = {
 }
 
 
-class VideoEnhanceWorker(QThread):
+class VideoEnhanceWorker(BaseWorker):
     progress = pyqtSignal(int, int, str)
     file_done = pyqtSignal(dict)
     finished = pyqtSignal(dict)
@@ -155,10 +158,9 @@ class VideoEnhanceWorker(QThread):
             self.error.emit(str(e))
 
 
-class VideoEnhanceTab(QWidget):
+class VideoEnhanceTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.init_ui()
         self.load_config()
 
@@ -176,26 +178,16 @@ class VideoEnhanceTab(QWidget):
 
         folder_row = QHBoxLayout()
         folder_row.setSpacing(8)
-        self.input_folder = QLineEdit()
-        self.input_folder.setMinimumHeight(30)
-        self.input_folder.setPlaceholderText("选择需要优化的视频文件夹...")
-        input_btn = QPushButton("浏览")
-        input_btn.setFixedWidth(80)
-        input_btn.clicked.connect(self.browse_input)
+        self.input_folder = PathRow("选择需要优化的视频文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
         folder_row.addWidget(self.input_folder, 1)
-        folder_row.addWidget(input_btn)
         input_layout.addLayout(folder_row)
 
         output_row = QHBoxLayout()
         output_row.setSpacing(8)
-        self.output_folder = QLineEdit()
-        self.output_folder.setMinimumHeight(30)
-        self.output_folder.setPlaceholderText("选择输出文件夹...")
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output)
+        self.output_folder = PathRow("选择输出文件夹...", mode=MODE_FOLDER,
+                                     on_change=lambda p: self.save_config())
         output_row.addWidget(self.output_folder, 1)
-        output_row.addWidget(output_btn)
         input_layout.addLayout(output_row)
         input_group.setLayout(input_layout)
 
@@ -421,16 +413,10 @@ class VideoEnhanceTab(QWidget):
         self.refresh_wink_status()
 
     def browse_input(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
-        if folder:
-            self.input_folder.setText(folder)
-            self.save_config()
+        self.input_folder._browse()
 
     def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
-        if folder:
-            self.output_folder.setText(folder)
-            self.save_config()
+        self.output_folder._browse()
 
     def browse_wink(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -460,9 +446,6 @@ class VideoEnhanceTab(QWidget):
                 "没有可用的 Wink 客户端。\n请点「自动探测」或手动指定 Wink.exe 路径。"
             )
             return
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
 
         level = self.current_level()
         include_images = self.include_images_cb.isChecked() or level in IMAGE_ONLY_LEVELS
@@ -478,19 +461,19 @@ class VideoEnhanceTab(QWidget):
         self.progress_bar.setValue(0)
         self.progress_label.setText("0%")
         self.status_label.setText(f"准备处理 {len(files)} 个文件...")
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
 
-        self.worker = VideoEnhanceWorker(
+        worker = VideoEnhanceWorker(
             input_folder, output_folder, level, exe_path,
             include_images, self.skip_existing_cb.isChecked(),
             self.retry_spin.value(), self.timeout_spin.value(),
         )
-        self.worker.progress.connect(self.on_progress)
-        self.worker.file_done.connect(self.on_file_done)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker.file_done.connect(self.on_file_done)
+        if not self.start_worker(worker):
+            return
+
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.stop_btn.setEnabled(busy)
 
     def stop_enhance(self):
         if self.worker and self.worker.isRunning():
@@ -498,7 +481,7 @@ class VideoEnhanceTab(QWidget):
             self.status_label.setText("正在停止，等待当前文件中断...")
             self.worker.stop()
 
-    def on_progress(self, current, total, name):
+    def on_worker_progress(self, current, total, name):
         percent = int((current / total) * 100) if total else 0
         self.progress_bar.setValue(percent)
         self.progress_label.setText(f"{percent}%")
@@ -515,9 +498,8 @@ class VideoEnhanceTab(QWidget):
         self.result_table.setItem(row, 4, QTableWidgetItem(detail))
         self.result_table.scrollToBottom()
 
-    def on_finished(self, summary):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def on_worker_finished(self, summary):
+        super().on_worker_finished(summary)
 
         parts = [f"成功 {summary['ok']}"]
         if summary["fail"]:
@@ -544,8 +526,6 @@ class VideoEnhanceTab(QWidget):
             )
         QMessageBox.information(self, "完成", f"视频优化完成。\n\n{text}{extra}")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.status_label.setText("处理失败")
-        QMessageBox.critical(self, "错误", msg)

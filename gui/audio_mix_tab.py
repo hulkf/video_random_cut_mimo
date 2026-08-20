@@ -1,16 +1,19 @@
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QLineEdit, QFileDialog, QProgressBar,
+    QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QProgressBar,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from core.mixer import VideoMixer
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 import os
 
 
-class AudioMixWorker(QThread):
-    progress = pyqtSignal(int, int)
+class AudioMixWorker(BaseWorker):
+    progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
@@ -46,7 +49,7 @@ class AudioMixWorker(QThread):
                 self.config["clips_dir"],
                 self.config["media_dir"],
                 self.config["output_dir"],
-                lambda count, total: self._on_progress(count, total)
+                lambda count, total: self._on_mix_progress(count, total)
             )
             if not self._stop:
                 self.finished.emit(results)
@@ -54,17 +57,16 @@ class AudioMixWorker(QThread):
             if not self._stop:
                 self.error.emit(str(e))
 
-    def _on_progress(self, count, total):
+    def _on_mix_progress(self, count, total):
         self._wait_if_paused()
         if self._stop:
             raise InterruptedError("用户停止")
-        self.progress.emit(count, total)
+        self.progress.emit(count, total, "")
 
 
-class AudioMixTab(QWidget):
+class AudioMixTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.init_ui()
         self.load_config()
 
@@ -76,30 +78,17 @@ class AudioMixTab(QWidget):
         media_group = QGroupBox("音频/视频文件夹（支持音频和视频文件，自动遍历子文件夹）")
         media_layout = QVBoxLayout()
 
-        media_folder_layout = QHBoxLayout()
-        media_folder_layout.setSpacing(8)
-        self.media_folder_input = QLineEdit()
-        self.media_folder_input.setPlaceholderText("选择包含音频或视频的文件夹...")
-        self.media_folder_input.setMinimumHeight(30)
-        media_btn = QPushButton("浏览")
-        media_btn.setFixedWidth(80)
-        media_btn.clicked.connect(self.browse_media_folder)
-        media_folder_layout.addWidget(self.media_folder_input, 1)
-        media_folder_layout.addWidget(media_btn)
-        media_layout.addLayout(media_folder_layout)
+        self.media_folder_input = PathRow("选择包含音频或视频的文件夹...", mode=MODE_FOLDER,
+                                          on_change=lambda p: self.save_config())
+        media_layout.addWidget(self.media_folder_input)
         media_group.setLayout(media_layout)
 
         clips_group = QGroupBox("视频切片文件夹")
-        clips_layout = QHBoxLayout()
+        clips_layout = QVBoxLayout()
         clips_layout.setSpacing(8)
-        self.clips_folder_input = QLineEdit()
-        self.clips_folder_input.setPlaceholderText("选择切片视频文件夹...")
-        self.clips_folder_input.setMinimumHeight(30)
-        clips_btn = QPushButton("浏览")
-        clips_btn.setFixedWidth(80)
-        clips_btn.clicked.connect(self.browse_clips_folder)
-        clips_layout.addWidget(self.clips_folder_input, 1)
-        clips_layout.addWidget(clips_btn)
+        self.clips_folder_input = PathRow("选择切片视频文件夹...", mode=MODE_FOLDER,
+                                          on_change=lambda p: self.save_config())
+        clips_layout.addWidget(self.clips_folder_input)
         clips_group.setLayout(clips_layout)
 
         cover_group = QGroupBox("封面图设置")
@@ -111,21 +100,16 @@ class AudioMixTab(QWidget):
         self.cover_check.stateChanged.connect(self.on_cover_changed)
         cover_layout.addWidget(self.cover_check)
 
-        cover_folder_layout = QHBoxLayout()
-        cover_folder_layout.setSpacing(8)
-        cover_folder_layout.addWidget(QLabel("封面图文件夹:"))
-        self.cover_folder_input = QLineEdit()
-        self.cover_folder_input.setPlaceholderText("选择封面图文件夹...")
+        cover_folder_row = QHBoxLayout()
+        cover_folder_row.setSpacing(8)
+        cover_folder_row.addWidget(QLabel("封面图文件夹:"))
+        self.cover_folder_input = PathRow("选择封面图文件夹...", mode=MODE_FOLDER,
+                                          on_change=lambda p: self.save_config())
         self.cover_folder_input.setEnabled(False)
-        self.cover_folder_input.setMinimumHeight(30)
-        cover_folder_btn = QPushButton("浏览")
-        cover_folder_btn.setFixedWidth(80)
-        cover_folder_btn.clicked.connect(self.browse_cover_folder)
-        cover_folder_btn.setEnabled(False)
-        self.cover_folder_btn = cover_folder_btn
-        cover_folder_layout.addWidget(self.cover_folder_input, 1)
-        cover_folder_layout.addWidget(cover_folder_btn)
-        cover_layout.addLayout(cover_folder_layout)
+        self.cover_folder_btn = self.cover_folder_input.browse_btn
+        self.cover_folder_btn.setEnabled(False)
+        cover_folder_row.addWidget(self.cover_folder_input, 1)
+        cover_layout.addLayout(cover_folder_row)
 
         cover_duration_layout = QHBoxLayout()
         cover_duration_layout.addWidget(QLabel("封面时长(秒):"))
@@ -151,16 +135,11 @@ class AudioMixTab(QWidget):
         cover_group.setLayout(cover_layout)
 
         output_group = QGroupBox("输出设置")
-        output_layout = QHBoxLayout()
+        output_layout = QVBoxLayout()
         output_layout.setSpacing(8)
-        self.output_folder_input = QLineEdit()
-        self.output_folder_input.setPlaceholderText("选择输出文件夹...")
-        self.output_folder_input.setMinimumHeight(30)
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output_folder)
-        output_layout.addWidget(self.output_folder_input, 1)
-        output_layout.addWidget(output_btn)
+        self.output_folder_input = PathRow("选择输出文件夹...", mode=MODE_FOLDER,
+                                           on_change=lambda p: self.save_config())
+        output_layout.addWidget(self.output_folder_input)
         output_group.setLayout(output_layout)
 
         btn_row = QHBoxLayout()
@@ -235,28 +214,16 @@ class AudioMixTab(QWidget):
         self.cover_duration_max.setEnabled(enabled)
 
     def browse_media_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择音频/视频文件夹")
-        if folder:
-            self.media_folder_input.setText(folder)
-            self.save_config()
+        self.media_folder_input._browse()
 
     def browse_clips_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择切片视频文件夹")
-        if folder:
-            self.clips_folder_input.setText(folder)
-            self.save_config()
+        self.clips_folder_input._browse()
 
     def browse_cover_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择封面图文件夹")
-        if folder:
-            self.cover_folder_input.setText(folder)
-            self.save_config()
+        self.cover_folder_input._browse()
 
     def browse_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
-        if folder:
-            self.output_folder_input.setText(folder)
-            self.save_config()
+        self.output_folder_input._browse()
 
     def start_mixing(self):
         media_folder = self.media_folder_input.text()
@@ -267,15 +234,7 @@ class AudioMixTab(QWidget):
             QMessageBox.warning(self, "警告", "请填写所有必填项")
             return
 
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
-
         self.save_config()
-        self.start_btn.setEnabled(False)
-        self.pause_btn.setEnabled(True)
-        self.stop_btn.setEnabled(True)
-        self.pause_btn.setText("暂停")
 
         config = {
             "media_dir": media_folder,
@@ -287,11 +246,15 @@ class AudioMixTab(QWidget):
             "cover_duration_max": self.cover_duration_max.value(),
         }
 
-        self.worker = AudioMixWorker(config)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker = AudioMixWorker(config)
+        if not self.start_worker(worker):
+            return
+
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.pause_btn.setEnabled(busy)
+        self.pause_btn.setText("暂停")
+        self.stop_btn.setEnabled(busy)
 
     def toggle_pause(self):
         if not self.worker:
@@ -312,21 +275,20 @@ class AudioMixTab(QWidget):
             self.stop_btn.setEnabled(False)
             self.pause_btn.setEnabled(False)
 
-    def on_progress(self, current, total):
+    def on_worker_progress(self, current, total, message):
         progress = int((current / total) * 100) if total > 0 else 0
         self.progress_bar.setValue(progress)
         self.status_label.setText(f"正在处理 {current}/{total} 个媒体文件")
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.status_label.setText("混剪完成")
         QMessageBox.information(self, "完成", f"已完成 {len(results)} 个混剪视频")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.status_label.setText("混剪失败")
-        QMessageBox.critical(self, "错误", msg)

@@ -2,14 +2,17 @@ import os
 import json
 from datetime import datetime
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QLineEdit, QFileDialog, QProgressBar,
     QMessageBox, QGroupBox, QComboBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 
 # 延迟导入 sdk，避免启动时报错
 def get_skill_client():
@@ -19,7 +22,7 @@ def get_skill_client():
     return SkillClient()
 
 
-class KaipaiWorker(QThread):
+class KaipaiWorker(BaseWorker):
     progress = pyqtSignal(int, int, str)  # current, total, message
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -96,10 +99,9 @@ class KaipaiWorker(QThread):
             self.error.emit(str(e))
 
 
-class KaipaiCloudTab(QWidget):
+class KaipaiCloudTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.results = []
         self.init_ui()
         self.load_config()
@@ -236,15 +238,9 @@ class KaipaiCloudTab(QWidget):
         self.download_all_btn.clicked.connect(self.download_all)
         btn_row.addWidget(self.download_all_btn)
 
-        self.output_folder_input = QLineEdit()
-        self.output_folder_input.setPlaceholderText("下载保存目录...")
-        self.output_folder_input.setMinimumHeight(28)
+        self.output_folder_input = PathRow("下载保存目录...", mode=MODE_FOLDER,
+                                           browse_label="选择目录")
         btn_row.addWidget(self.output_folder_input, 1)
-
-        output_folder_btn = QPushButton("选择目录")
-        output_folder_btn.setFixedWidth(80)
-        output_folder_btn.clicked.connect(self.browse_output_folder)
-        btn_row.addWidget(output_folder_btn)
 
         result_layout.addLayout(btn_row)
         result_group.setLayout(result_layout)
@@ -352,16 +348,12 @@ class KaipaiCloudTab(QWidget):
         if params:
             self.log_message(f"自定义参数: {params}")
 
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
         self.progress_bar.setValue(0)
 
-        self.worker = KaipaiWorker(files, task_name, params)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.log.connect(self.log_message)
-        self.worker.start()
+        worker = KaipaiWorker(files, task_name, params)
+        worker.log.connect(self.log_message)
+        if not self.start_worker(worker):
+            return
 
     def _build_params(self, task_name):
         params = {}
@@ -401,14 +393,17 @@ class KaipaiCloudTab(QWidget):
             self.worker.stop()
             self.log_message("正在停止...")
 
-    def on_progress(self, current, total, message):
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.stop_btn.setEnabled(busy)
+
+    def on_worker_progress(self, current, total, message):
         progress = int((current / total) * 100) if total > 0 else 0
         self.progress_bar.setValue(progress)
         self.status_label.setText(message)
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.results = results
         self.status_label.setText(f"处理完成: {len(results)} 个文件")
 
@@ -443,9 +438,7 @@ class KaipaiCloudTab(QWidget):
         self.download_all_btn.setEnabled(success_count > 0)
 
     def browse_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择下载保存目录")
-        if folder:
-            self.output_folder_input.setText(folder)
+        self.output_folder_input._browse()
 
     def download_single(self, url, filename):
         import requests
@@ -532,12 +525,10 @@ class KaipaiCloudTab(QWidget):
         self.log_message(f"下载完成: 成功 {success_count}, 失败 {fail_count}")
         QMessageBox.information(self, "下载完成", f"成功 {success_count} 个，失败 {fail_count} 个")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.status_label.setText("处理失败")
         self.log_message(f"错误: {msg}")
-        QMessageBox.critical(self, "错误", msg)
 
     def refresh_quota(self):
         try:

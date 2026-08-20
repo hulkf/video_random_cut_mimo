@@ -1,13 +1,13 @@
 import os
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QLineEdit, QFileDialog, QProgressBar,
+    QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QProgressBar,
     QMessageBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTextEdit, QComboBox, QDoubleSpinBox,
     QRadioButton, QButtonGroup, QGridLayout
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 
 from core.keyword_remover import (
     KeywordRemover, collect_videos, parse_keywords,
@@ -15,10 +15,13 @@ from core.keyword_remover import (
 )
 from gui.config import get_config, set_config
 from gui.subtitle_tab import FIREMODELS_DIR, FUNASR_DIR, SENSEVOICE_DIR
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 
 
-class KeywordRemoveWorker(QThread):
-    progress = pyqtSignal(int, int)
+class KeywordRemoveWorker(BaseWorker):
+    progress = pyqtSignal(int, int, str)
     video_done = pyqtSignal(dict)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -65,7 +68,7 @@ class KeywordRemoveWorker(QThread):
                 result = self.process_video(video_path, asr, remover)
                 results.append(result)
                 self.video_done.emit(result)
-                self.progress.emit(index + 1, total)
+                self.progress.emit(index + 1, total, "")
 
             self.finished.emit(results)
         except Exception as e:
@@ -139,10 +142,9 @@ class KeywordRemoveWorker(QThread):
                 f.write(f"[{start:.2f}-{end:.2f}] {text}\n")
 
 
-class KeywordRemoveTab(QWidget):
+class KeywordRemoveTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.results = []
         self.init_ui()
         self.load_config()
@@ -158,26 +160,16 @@ class KeywordRemoveTab(QWidget):
 
         folder_row = QHBoxLayout()
         folder_row.setSpacing(8)
-        self.input_folder = QLineEdit()
-        self.input_folder.setMinimumHeight(30)
-        self.input_folder.setPlaceholderText("选择视频文件夹...")
-        input_btn = QPushButton("浏览")
-        input_btn.setFixedWidth(80)
-        input_btn.clicked.connect(self.browse_input)
+        self.input_folder = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
         folder_row.addWidget(self.input_folder, 1)
-        folder_row.addWidget(input_btn)
         input_layout.addLayout(folder_row)
 
         output_row = QHBoxLayout()
         output_row.setSpacing(8)
-        self.output_folder = QLineEdit()
-        self.output_folder.setMinimumHeight(30)
-        self.output_folder.setPlaceholderText("选择输出文件夹...")
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output)
+        self.output_folder = PathRow("选择输出文件夹...", mode=MODE_FOLDER,
+                                     on_change=lambda p: self.save_config())
         output_row.addWidget(self.output_folder, 1)
-        output_row.addWidget(output_btn)
         input_layout.addLayout(output_row)
         input_group.setLayout(input_layout)
 
@@ -270,13 +262,9 @@ class KeywordRemoveTab(QWidget):
         model_path_row = QHBoxLayout()
         model_path_row.setSpacing(8)
         model_path_row.addWidget(QLabel("模型路径:"))
-        self.model_path_input = QLineEdit()
-        self.model_path_input.setMinimumHeight(30)
-        model_browse_btn = QPushButton("浏览")
-        model_browse_btn.setFixedWidth(80)
-        model_browse_btn.clicked.connect(self.browse_model)
+        self.model_path_input = PathRow("模型路径...", mode=MODE_FOLDER,
+                                        on_change=lambda p: self.save_config())
         model_path_row.addWidget(self.model_path_input, 1)
-        model_path_row.addWidget(model_browse_btn)
         model_layout.addLayout(model_path_row)
         model_group.setLayout(model_layout)
 
@@ -373,22 +361,13 @@ class KeywordRemoveTab(QWidget):
         self.model_path_input.setText(self.default_model_path(self.model_combo.currentText()))
 
     def browse_input(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
-        if folder:
-            self.input_folder.setText(folder)
-            self.save_config()
+        self.input_folder._browse()
 
     def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
-        if folder:
-            self.output_folder.setText(folder)
-            self.save_config()
+        self.output_folder._browse()
 
     def browse_model(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择 ASR 模型目录")
-        if folder:
-            self.model_path_input.setText(folder)
-            self.save_config()
+        self.model_path_input._browse()
 
     def start_remove(self):
         input_folder = self.input_folder.text()
@@ -401,19 +380,14 @@ class KeywordRemoveTab(QWidget):
         if not keywords:
             QMessageBox.warning(self, "警告", "请至少输入一个关键词")
             return
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
 
         self.save_config()
         self.results = []
         self.result_table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.stats_label.setText("统计: 处理中...")
-        self.start_btn.setEnabled(False)
-        self.cancel_btn.setVisible(True)
 
-        self.worker = KeywordRemoveWorker(
+        worker = KeywordRemoveWorker(
             input_folder, output_folder, keywords,
             self.padding_spin.value(),
             self.current_match_mode(),
@@ -421,18 +395,20 @@ class KeywordRemoveTab(QWidget):
             self.model_combo.currentText(),
             self.model_path_input.text()
         )
-        self.worker.progress.connect(self.on_progress)
-        self.worker.video_done.connect(self.on_video_done)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker.video_done.connect(self.on_video_done)
+        if not self.start_worker(worker):
+            return
+
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.cancel_btn.setVisible(busy)
 
     def cancel_remove(self):
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
             self.stats_label.setText("统计: 已停止")
 
-    def on_progress(self, current, total):
+    def on_worker_progress(self, current, total, message):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
 
@@ -459,9 +435,8 @@ class KeywordRemoveTab(QWidget):
             status_item.setToolTip(result.get("message", ""))
         self.result_table.setItem(row, 3, status_item)
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setVisible(False)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(100)
 
@@ -473,10 +448,8 @@ class KeywordRemoveTab(QWidget):
         self.stats_label.setText(msg)
         QMessageBox.information(self, "完成", msg)
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setVisible(False)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.stats_label.setText("统计: 处理失败")
-        QMessageBox.critical(self, "错误", msg)
