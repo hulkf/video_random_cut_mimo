@@ -43,9 +43,17 @@ class BaseTab(QWidget):
         worker.progress.connect(self.on_worker_progress)
         worker.finished.connect(self.on_worker_finished)
         worker.error.connect(self.on_worker_error)
+        # 兜底清理：任务结束后无论子类是否调用 super().on_worker_finished，
+        # self.worker 都会置 None，is_busy 不再误判（AC-P0-契约）。
+        worker.finished.connect(lambda _r, w=worker: self._worker_finished_cleanup(w))
         self.set_busy(True)
         worker.start()
         return True
+
+    def _worker_finished_cleanup(self, worker: BaseWorker) -> None:
+        """任务结束兜底清理：若当前 worker 正是结束的实例则置 None。"""
+        if self.worker is worker:
+            self.worker = None
 
     def is_busy(self) -> bool:
         """是否正在执行任务（worker 存在且线程运行中）。"""
@@ -61,6 +69,7 @@ class BaseTab(QWidget):
 
     def on_worker_finished(self, results: list) -> None:
         self.set_busy(False)
+        self.worker = None
 
     def on_worker_error(self, message: str) -> None:
         self.set_busy(False)

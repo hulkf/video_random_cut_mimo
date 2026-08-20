@@ -25,10 +25,8 @@ SENSEVOICE_DIR = r"D:\Models\SenseVoiceSmall"
 
 
 class SubtitleWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    video_done = pyqtSignal(dict)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    video_done = pyqtSignal(dict)  # 单个视频处理结果（额外专用信号）
 
     def __init__(self, folder_path, output_folder, font_name,
                  font_size, font_color, outline_color, outline_width,
@@ -47,10 +45,10 @@ class SubtitleWorker(BaseWorker):
         self.model_type = model_type
         self.enable_correction = enable_correction
         self.keep_srt = keep_srt
-        self._cancelled = False
 
     def cancel(self):
-        self._cancelled = True
+        """兼容旧接口：等价于请求停止（父类停止协议）。"""
+        self.request_stop()
 
     def run(self):
         try:
@@ -75,7 +73,7 @@ class SubtitleWorker(BaseWorker):
                 asr = OnnxASR(self.model_dir, self.model_type)
 
             for idx, video_path in enumerate(video_files):
-                if self._cancelled:
+                if self.stopped():
                     break
 
                 if self.model_type in ("SenseVoice", "FunASR (Paraformer)", "FireRedASR"):

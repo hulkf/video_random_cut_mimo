@@ -14,9 +14,8 @@ from gui.common.path_row import PathRow, MODE_FOLDER
 
 
 class VideoConcatWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str, int)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    sub_progress = pyqtSignal(int)  # 单个任务的子进度（0-100）
 
     def __init__(self, config):
         super().__init__()
@@ -25,12 +24,17 @@ class VideoConcatWorker(BaseWorker):
     def run(self):
         try:
             engine = VideoConcatenatorEngine(self.config)
-            results = engine.run(
-                lambda cur, total, msg, sub: self.progress.emit(cur, total, msg, sub)
-            )
+            results = engine.run(self._on_progress)
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
+
+    def _on_progress(self, cur, total, msg, sub):
+        """引擎进度回调（worker 线程内执行）：轮询停止标志。"""
+        if self.stopped():
+            raise InterruptedError("用户停止")
+        self.progress.emit(cur, total, msg)
+        self.sub_progress.emit(sub)
 
 
 class VideoConcatTab(BaseTab):
@@ -268,22 +272,22 @@ class VideoConcatTab(BaseTab):
         }
 
         worker = VideoConcatWorker(config)
+        worker.sub_progress.connect(self.on_sub_progress)
         if not self.start_worker(worker):
             return
 
     def set_busy(self, busy):
         self.start_btn.setEnabled(not busy)
 
-    def on_worker_progress(self, current, total, message, sub_progress):
+    def on_worker_progress(self, current, total, message):
         global_progress = int((current / total) * 100) if total > 0 else 0
         self.global_progress_bar.setValue(global_progress)
         self.global_progress_label.setText(f"{global_progress}%")
-
-        if sub_progress >= 0:
-            self.task_progress_bar.setValue(sub_progress)
-            self.task_progress_label.setText(f"{sub_progress}%")
-
         self.status_label.setText(f"进度 {current}/{total} - {message}")
+
+    def on_sub_progress(self, sub_progress):
+        self.task_progress_bar.setValue(sub_progress)
+        self.task_progress_label.setText(f"{sub_progress}%")
 
     def on_worker_finished(self, results):
         super().on_worker_finished(results)

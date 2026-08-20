@@ -21,10 +21,8 @@ from gui.common.path_row import PathRow, MODE_FOLDER
 
 
 class KeywordRemoveWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    video_done = pyqtSignal(dict)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    video_done = pyqtSignal(dict)  # 单个视频处理结果（额外专用信号）
 
     def __init__(self, input_folder, output_folder, keywords,
                  padding, match_mode, estimate_min_duration,
@@ -38,10 +36,10 @@ class KeywordRemoveWorker(BaseWorker):
         self.estimate_min_duration = estimate_min_duration
         self.model_type = model_type
         self.model_path = model_path
-        self._cancelled = False
 
     def cancel(self):
-        self._cancelled = True
+        """兼容旧接口：等价于请求停止（父类停止协议）。"""
+        self.request_stop()
 
     def run(self):
         try:
@@ -62,7 +60,7 @@ class KeywordRemoveWorker(BaseWorker):
             total = len(videos)
 
             for index, video_path in enumerate(videos):
-                if self._cancelled:
+                if self.stopped():
                     break
 
                 result = self.process_video(video_path, asr, remover)

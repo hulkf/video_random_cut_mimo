@@ -23,10 +23,8 @@ def get_skill_client():
 
 
 class KaipaiWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)  # current, total, message
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
-    log = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    log = pyqtSignal(str)  # 日志行（额外专用信号）
 
     TASK_MAP = {
         "图片去水印": "eraser_watermark",
@@ -40,10 +38,6 @@ class KaipaiWorker(BaseWorker):
         self.files = files
         self.task_name = task_name
         self.params = params or {}
-        self._stop = False
-
-    def stop(self):
-        self._stop = True
 
     def run(self):
         try:
@@ -54,7 +48,7 @@ class KaipaiWorker(BaseWorker):
             total = len(self.files)
 
             for idx, file_path in enumerate(self.files):
-                if self._stop:
+                if self.stopped():
                     self.log.emit("用户停止")
                     break
 

@@ -42,10 +42,9 @@ LEVEL_HINTS = {
 
 
 class VideoEnhanceWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    file_done = pyqtSignal(dict)
-    finished = pyqtSignal(dict)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str) / finished(list)）
+    file_done = pyqtSignal(dict)   # 单个文件处理结果（额外专用信号）
+    summary = pyqtSignal(dict)     # 汇总统计（finished 之外供 Tab 展示，额外专用信号）
 
     def __init__(self, input_folder, output_folder, level, exe_path,
                  include_images, skip_existing, retry, timeout):
@@ -59,12 +58,11 @@ class VideoEnhanceWorker(BaseWorker):
         self.retry = retry
         self.timeout = timeout
 
-        self._stop = False
         self.engine = None
 
     def stop(self):
-        """请求停止。当前文件会被中断，不会再开始下一个。"""
-        self._stop = True
+        """请求停止（父类停止协议 + 中断当前 Wink 进程）。"""
+        super().stop()
         if self.engine:
             self.engine.stop()
 
@@ -98,7 +96,7 @@ class VideoEnhanceWorker(BaseWorker):
                 raise ValueError(err)
 
             for index, path in enumerate(files):
-                if self._stop:
+                if self.stopped():
                     break
 
                 name = os.path.relpath(path, self.input_folder)
@@ -121,13 +119,13 @@ class VideoEnhanceWorker(BaseWorker):
                 size_text = human_size(os.path.getsize(path))
                 result = None
                 for attempt in range(self.retry + 1):
-                    if self._stop:
+                    if self.stopped():
                         break
                     result = self.engine.process(path, dest)
                     if result["success"]:
                         break
 
-                if self._stop:
+                if self.stopped():
                     break
 
                 beans += result["beans"]
@@ -148,12 +146,14 @@ class VideoEnhanceWorker(BaseWorker):
                 })
                 self.progress.emit(index + 1, total, name)
 
-            self.finished.emit({
+            summary = {
                 "total": total, "ok": ok, "fail": fail,
                 "skipped": skipped, "beans": beans,
-                "stopped": self._stop,
+                "stopped": self.stopped(),
                 "skipped_by_level": skipped_by_level,
-            })
+            }
+            self.summary.emit(summary)
+            self.finished.emit([summary])
         except Exception as e:
             self.error.emit(str(e))
 
@@ -468,6 +468,7 @@ class VideoEnhanceTab(BaseTab):
             self.retry_spin.value(), self.timeout_spin.value(),
         )
         worker.file_done.connect(self.on_file_done)
+        worker.summary.connect(self.on_worker_summary)
         if not self.start_worker(worker):
             return
 
@@ -498,9 +499,11 @@ class VideoEnhanceTab(BaseTab):
         self.result_table.setItem(row, 4, QTableWidgetItem(detail))
         self.result_table.scrollToBottom()
 
-    def on_worker_finished(self, summary):
-        super().on_worker_finished(summary)
+    def on_worker_finished(self, results):
+        # finished 为标准 pyqtSignal(list)：业务汇总走 on_worker_summary
+        super().on_worker_finished(results)
 
+    def on_worker_summary(self, summary):
         parts = [f"成功 {summary['ok']}"]
         if summary["fail"]:
             parts.append(f"失败 {summary['fail']}")

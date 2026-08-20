@@ -20,9 +20,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class TextRecognitionWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
 
     def __init__(self, folder_path, frame_interval=1.0, threshold=0.3, max_workers=4):
         super().__init__()
@@ -58,6 +56,10 @@ class TextRecognitionWorker(BaseWorker):
                     for t in tasks
                 }
                 for future in as_completed(future_map):
+                    if self.stopped():
+                        for f in future_map:
+                            f.cancel()
+                        break
                     video_path, has_text, frames_dir = future.result()
                     rel_path = os.path.relpath(video_path, self.folder_path)
                     results.append({

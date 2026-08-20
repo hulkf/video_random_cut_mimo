@@ -17,11 +17,9 @@ from gui.common.base_worker import BaseWorker
 
 
 class VideoFissionWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    video_done = pyqtSignal(dict)
-    finished = pyqtSignal(list)
-    stopped = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    video_done = pyqtSignal(dict)   # 单个视频完成（额外专用信号）
+    stopped = pyqtSignal(list)      # 中断时携带部分结果（额外专用信号）
 
     def __init__(self, options, input_sources, output_folder, separate_folder, max_workers=0):
         super().__init__()
@@ -49,11 +47,14 @@ class VideoFissionWorker(BaseWorker):
             self.error.emit(str(e))
 
     def request_stop(self):
-        """请求中断：立即终止正在运行的 ffmpeg 并停止后续处理。"""
+        """请求中断：置父类停止标志 + 立即终止正在运行的 ffmpeg 并停止后续处理。"""
+        super().request_stop()
         if self._engine is not None:
             self._engine.request_stop()
 
     def _cb(self, current, total, rel):
+        if self.stopped():
+            raise FissionStopped("用户中断")
         self.progress.emit(current, total, rel)
 
 

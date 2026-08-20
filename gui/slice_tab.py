@@ -41,6 +41,9 @@ class SliceWorker(BaseWorker):
     def resume(self):
         self._paused = False
 
+    def is_paused(self) -> bool:
+        return self._paused
+
     def stop(self):
         """覆盖：设置停止标志（super）并解除暂停。"""
         super().stop()
@@ -337,7 +340,7 @@ class SliceTab(BaseTab):
     def toggle_pause(self):
         if not self.worker or not self.worker.isRunning():
             return
-        if self.worker._paused:
+        if self.worker.is_paused():
             self.worker.resume()
             self.pause_btn.setText("暂停")
             self.stats_label.setText("统计: 切片进行中...")

@@ -13,15 +13,12 @@ import os
 
 
 class AudioMixWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
 
     def __init__(self, config):
         super().__init__()
         self.config = config
         self._paused = False
-        self._stop = False
 
     def pause(self):
         self._paused = True
@@ -29,12 +26,11 @@ class AudioMixWorker(BaseWorker):
     def resume(self):
         self._paused = False
 
-    def stop(self):
-        self._stop = True
-        self._paused = False
+    def is_paused(self) -> bool:
+        return self._paused
 
     def _wait_if_paused(self):
-        while self._paused and not self._stop:
+        while self._paused and not self.stopped():
             self.msleep(100)
 
     def run(self):
@@ -51,15 +47,15 @@ class AudioMixWorker(BaseWorker):
                 self.config["output_dir"],
                 lambda count, total: self._on_mix_progress(count, total)
             )
-            if not self._stop:
+            if not self.stopped():
                 self.finished.emit(results)
         except Exception as e:
-            if not self._stop:
+            if not self.stopped():
                 self.error.emit(str(e))
 
     def _on_mix_progress(self, count, total):
         self._wait_if_paused()
-        if self._stop:
+        if self.stopped():
             raise InterruptedError("用户停止")
         self.progress.emit(count, total, "")
 
@@ -259,7 +255,7 @@ class AudioMixTab(BaseTab):
     def toggle_pause(self):
         if not self.worker:
             return
-        if self.worker._paused:
+        if self.worker.is_paused():
             self.worker.resume()
             self.pause_btn.setText("暂停")
             self.status_label.setText("继续处理中...")

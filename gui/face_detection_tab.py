@@ -92,10 +92,8 @@ def _detect_face_task(args):
 
 
 class FaceDetectionWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    video_done = pyqtSignal(dict)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    video_done = pyqtSignal(dict)  # 单个视频检测结果（额外专用信号）
     
     def __init__(self, folder_path, min_face_ratio=2, sample_count=8, 
                  model_path=None, score_thresh=0.5, auto_delete=False,
@@ -136,6 +134,8 @@ class FaceDetectionWorker(BaseWorker):
 
             if self.max_workers <= 1:
                 for idx, video_path in enumerate(video_files):
+                    if self.stopped():
+                        break
                     result = self._build_result(
                         video_path,
                         _detect_face_video(
@@ -164,6 +164,11 @@ class FaceDetectionWorker(BaseWorker):
                         for task in tasks
                     }
                     for future in as_completed(future_map):
+                        if self.stopped():
+                            # 中断：取消未开始的 future，已完成的照常收集
+                            for f in future_map:
+                                f.cancel()
+                            break
                         raw_result = future.result()
                         result = self._build_result(
                             raw_result["full_path"],

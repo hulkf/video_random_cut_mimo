@@ -23,19 +23,13 @@ DEFAULT_CONDA = r"D:\Anaconda\Scripts\conda.exe"
 
 
 class VoiceCloneWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
 
     def __init__(self, settings, profile, preview_text=""):
         super().__init__()
         self.settings = settings
         self.profile = profile
         self.preview_text = preview_text
-        self._stop = False
-
-    def stop(self):
-        self._stop = True
 
     def run(self):
         try:
@@ -59,7 +53,7 @@ class VoiceCloneWorker(BaseWorker):
                 raise RuntimeError("输入文件夹中没有视频")
             results = []
             for index, video in enumerate(videos, 1):
-                if self._stop:
+                if self.stopped():
                     break
                 relative = os.path.relpath(video, self.settings["input_dir"])
                 output = os.path.join(

@@ -38,7 +38,8 @@ def extract_urls_from_text(text):
 class DownloadWorker(BaseWorker):
     """视频下载后台线程"""
     log = pyqtSignal(str)
-    progress = pyqtSignal(int, int, int)  # current, total, percent
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    percent = pyqtSignal(int)  # 当前链接下载百分比（额外专用信号）
     item_done = pyqtSignal(int, bool, str, str)  # index, success, message, video_url
     all_done = pyqtSignal(int, int)  # success_count, fail_count
 
@@ -46,10 +47,8 @@ class DownloadWorker(BaseWorker):
         super().__init__()
         self.links = links
         self.output_dir = output_dir
-        self._stop = False
-
-    def stop(self):
-        self._stop = True
+        self.current_index = -1  # 当前处理下标（UI on_percent 读取）
+        self.total = len(links)
 
     def run(self):
         try:
@@ -57,6 +56,7 @@ class DownloadWorker(BaseWorker):
         except ImportError as e:
             self.log.emit(f"导入下载模块失败: {e}")
             self.all_done.emit(0, len(self.links))
+            self.finished.emit([])
             return
 
         success_count = 0
@@ -64,21 +64,22 @@ class DownloadWorker(BaseWorker):
         total = len(self.links)
 
         for i, url in enumerate(self.links):
-            if self._stop:
+            if self.stopped():
                 break
+            self.current_index = i
 
             url = url.strip()
             if not url:
                 continue
 
             self.log.emit(f"[{i+1}/{total}] 处理: {url[:80]}")
-            self.progress.emit(i, total, 0)
+            self.progress.emit(i, total, f"正在下载第 {i+1}/{total} 个视频")
 
             def log_cb(msg):
                 self.log.emit(f"  {msg}")
 
             def progress_cb(pct, downloaded, total_bytes):
-                self.progress.emit(i, total, pct)
+                self.percent.emit(pct)
 
             self._video_url = ""
 
@@ -102,7 +103,7 @@ class DownloadWorker(BaseWorker):
                 self.item_done.emit(i, False, result, self._video_url)
                 self.log.emit(f"  [ERR] {result}")
 
-            self.progress.emit(i + 1, total, 100)
+            self.progress.emit(i + 1, total, f"完成第 {i+1}/{total} 个")
 
         # 批量结束，释放复用的浏览器资源
         try:
@@ -111,6 +112,7 @@ class DownloadWorker(BaseWorker):
             pass
 
         self.all_done.emit(success_count, fail_count)
+        self.finished.emit([])
 
 
 class LoginWorker(QThread):
@@ -404,6 +406,7 @@ class VideoDownloadTab(BaseTab):
 
         worker = DownloadWorker(links, output_dir)
         worker.log.connect(self._log)
+        worker.percent.connect(self.on_percent)
         worker.item_done.connect(self._on_item_done)
         worker.all_done.connect(self._on_all_done)
         if not self.start_worker(worker):
@@ -418,14 +421,16 @@ class VideoDownloadTab(BaseTab):
             self.worker.stop()
             self._log("正在停止...")
 
-    def on_worker_progress(self, current, total, percent):
+    def on_worker_progress(self, current, total, message):
+        self.lbl_status.setText(message or f"正在下载第 {current + 1}/{total} 个视频...")
+
+    def on_percent(self, percent):
+        worker = self.worker
+        current = worker.current_index if worker else 0
+        total = worker.total if worker else 0
         if total > 0:
-            overall = (current * 100 + percent) // (total * 100) if total > 0 else 0
-            overall = min(overall, 100)
-            self.progress_bar.setValue(overall)
-            self.progress_bar.setFormat(f"[{current}/{total}] {percent}%")
-            self.lbl_status.setText(f"正在下载第 {current + 1}/{total} 个视频...")
-        # 更新当前链接行的下载中状态
+            self.progress_bar.setValue(min(percent, 100))
+            self.progress_bar.setFormat(f"[{current + 1}/{total}] {percent}%")
         row = self._link_rows.get(current)
         if row is not None:
             self._set_status_cell(row, f"下载中 {percent}%", color="#E8C15A")

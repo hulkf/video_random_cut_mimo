@@ -21,10 +21,8 @@ from utils.media_utils import get_video_duration as _media_duration
 
 
 class ScreenshotWorker(BaseWorker):
-    progress = pyqtSignal(int, int, str)
-    video_done = pyqtSignal(dict)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
+    video_done = pyqtSignal(dict)  # 单个视频结果（额外专用信号）
     
     def __init__(self, folder_path, output_folder, frame_count, delete_faces, 
                  separate_folders=True, delete_face_videos=False):
@@ -55,6 +53,8 @@ class ScreenshotWorker(BaseWorker):
         total = len(video_files)
         
         for idx, video_path in enumerate(video_files):
+            if self.stopped():
+                break
             result = self._process_video(video_path, detector)
             all_results.append(result)
             self.video_done.emit(result)

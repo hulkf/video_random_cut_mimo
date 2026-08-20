@@ -50,6 +50,8 @@ class VideoResizeWorker(BaseWorker):
             return
 
         for index, video_path in enumerate(videos):
+            if self.stopped():
+                break
             rel_path = engine_target_rel_path(video_path, self.input_folder, self.target_ratio)
             output_path = os.path.join(self.output_folder, rel_path)
 
