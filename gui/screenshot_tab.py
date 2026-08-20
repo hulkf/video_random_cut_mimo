@@ -6,18 +6,22 @@ import cv2
 import numpy as np
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QLineEdit, QSpinBox, QFileDialog,
-    QTreeWidget, QTreeWidgetItem, QProgressBar,
+    QLabel, QSpinBox,
+    QTreeWidget, QTreeWidgetItem,
     QMessageBox, QGroupBox, QCheckBox, QAbstractItemView, QComboBox,
     QScrollArea, QFrame
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
+from gui.common.progress_panel import ProgressPanel
 from core.screenshot import SCRFDetector
 
 
-class ScreenshotWorker(QThread):
-    progress = pyqtSignal(int, int)
+class ScreenshotWorker(BaseWorker):
+    progress = pyqtSignal(int, int, str)
     video_done = pyqtSignal(dict)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -32,34 +36,31 @@ class ScreenshotWorker(QThread):
         self.separate_folders = separate_folders
         self.delete_face_videos = delete_face_videos
     
-    def run(self):
-        try:
-            video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
-            video_files = []
-            for root, dirs, files in os.walk(self.folder_path):
-                for f in files:
-                    if f.lower().endswith(video_exts):
-                        video_files.append(os.path.join(root, f))
-            
-            # 使用SCRFD检测器
-            model_path = r"D:\Models\scrfd_10g\det_10g.onnx"
-            detector = None
-            if os.path.exists(model_path):
-                detector = SCRFDetector(model_path)
-            
-            os.makedirs(self.output_folder, exist_ok=True)
-            all_results = []
-            total = len(video_files)
-            
-            for idx, video_path in enumerate(video_files):
-                result = self._process_video(video_path, detector)
-                all_results.append(result)
-                self.video_done.emit(result)
-                self.progress.emit(idx + 1, total)
-            
-            self.finished.emit(all_results)
-        except Exception as e:
-            self.error.emit(str(e))
+    def work(self):
+        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_files = []
+        for root, dirs, files in os.walk(self.folder_path):
+            for f in files:
+                if f.lower().endswith(video_exts):
+                    video_files.append(os.path.join(root, f))
+        
+        # 使用SCRFD检测器
+        model_path = r"D:\Models\scrfd_10g\det_10g.onnx"
+        detector = None
+        if os.path.exists(model_path):
+            detector = SCRFDetector(model_path)
+        
+        os.makedirs(self.output_folder, exist_ok=True)
+        all_results = []
+        total = len(video_files)
+        
+        for idx, video_path in enumerate(video_files):
+            result = self._process_video(video_path, detector)
+            all_results.append(result)
+            self.video_done.emit(result)
+            self.progress.emit(idx + 1, total, "")
+
+        self.emit_finished(all_results)
     
     def _get_video_duration(self, video_path):
         cmd = [
@@ -160,10 +161,9 @@ class ScreenshotWorker(QThread):
         }
 
 
-class ScreenshotTab(QWidget):
+class ScreenshotTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.results = []
         self.init_ui()
         self.load_config()
@@ -186,30 +186,13 @@ class ScreenshotTab(QWidget):
         input_layout = QVBoxLayout()
         input_layout.setSpacing(8)
 
-        folder_layout = QHBoxLayout()
-        folder_layout.setSpacing(8)
-        self.folder_input = QLineEdit()
-        self.folder_input.setMinimumHeight(30)
-        self.folder_input.setPlaceholderText("选择视频文件夹...")
-        folder_btn = QPushButton("浏览")
-        folder_btn.setFixedWidth(80)
-        folder_btn.clicked.connect(self.browse_folder)
-        folder_layout.addWidget(self.folder_input, 1)
-        folder_layout.addWidget(folder_btn)
+        self.folder_input = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
+        input_layout.addWidget(self.folder_input)
 
-        output_layout = QHBoxLayout()
-        output_layout.setSpacing(8)
-        self.output_input = QLineEdit()
-        self.output_input.setMinimumHeight(30)
-        self.output_input.setPlaceholderText("截图输出文件夹...")
-        output_btn = QPushButton("浏览")
-        output_btn.setFixedWidth(80)
-        output_btn.clicked.connect(self.browse_output)
-        output_layout.addWidget(self.output_input, 1)
-        output_layout.addWidget(output_btn)
-
-        input_layout.addLayout(folder_layout)
-        input_layout.addLayout(output_layout)
+        self.output_input = PathRow("截图输出文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
+        input_layout.addWidget(self.output_input)
         input_group.setLayout(input_layout)
 
         # ===== 截图参数 =====
@@ -357,7 +340,10 @@ class ScreenshotTab(QWidget):
         self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self.start_screenshot)
 
-        self.progress_bar = QProgressBar()
+        # 进度区用公共 ProgressPanel（保留"总数刻度"语义）
+        self.progress_panel = ProgressPanel()
+        self.progress_bar = self.progress_panel.bar
+        self.progress_label = self.progress_panel.percent_label
 
         self.stats_label = QLabel("统计: 等待截图...")
         self.stats_label.setStyleSheet("font-weight: bold; padding: 5px;")
@@ -405,7 +391,7 @@ class ScreenshotTab(QWidget):
         layout.addWidget(screenshot_action_group)
         layout.addWidget(video_action_group)
         layout.addWidget(self.start_btn)
-        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.progress_panel)
         layout.addWidget(self.stats_label)
         layout.addWidget(self.result_tree, 1)
         layout.addWidget(desc_label)
@@ -431,17 +417,13 @@ class ScreenshotTab(QWidget):
         set_config("screenshot", "delete_face_videos", str(self.delete_face_video_check.isChecked()).lower())
     
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
-        if folder:
-            self.folder_input.setText(folder)
-            self.save_config()
-    
+        """兼容外部调用：等价于 PathRow 浏览（保留原方法名）。"""
+        self.folder_input._browse()
+
     def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择截图输出文件夹")
-        if folder:
-            self.output_input.setText(folder)
-            self.save_config()
-    
+        self.output_input._browse()
+
+    # ── 任务启动（P2：统一走 BaseTab.start_worker）──
     def start_screenshot(self):
         folder = self.folder_input.text()
         output = self.output_input.text()
@@ -450,34 +432,34 @@ class ScreenshotTab(QWidget):
             QMessageBox.warning(self, "警告", "请选择输入和输出文件夹")
             return
         
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
-        
         self.save_config()
-        self.start_btn.setEnabled(False)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.result_tree.clear()
         self.stats_label.setText("统计: 截图进行中...")
         self.results = []
         
-        self.worker = ScreenshotWorker(
+        worker = ScreenshotWorker(
             folder, output,
             self.frame_count.value(),
             self.delete_face_check.isChecked(),
             self.separate_folders_check.isChecked(),
             self.delete_face_video_check.isChecked()
         )
-        self.worker.progress.connect(self.on_progress)
-        self.worker.video_done.connect(self.on_video_done)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker.video_done.connect(self.on_video_done)
+        if not self.start_worker(worker):
+            self.stats_label.setText("统计: 等待截图...")
+            return
+
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
     
-    def on_progress(self, current, total):
+    def on_worker_progress(self, current, total, message):
+        # 保持原语义：进度条刻度 = 总数（非百分比）
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
+        percent = int((current / total) * 100) if total else 0
+        self.progress_label.setText(f"{percent}%")
     
     def on_video_done(self, result):
         self.results.append(result)
@@ -518,10 +500,11 @@ class ScreenshotTab(QWidget):
         
         video_item.setExpanded(True)
     
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(100)
+        self.progress_label.setText("100%")
         
         total_images = sum(len(r["images"]) for r in results)
         face_count = sum(1 for r in results if r["has_faces"])
@@ -550,12 +533,12 @@ class ScreenshotTab(QWidget):
         
         QMessageBox.information(self, "完成", msg)
     
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
+        self.progress_label.setText("0%")
         self.stats_label.setText("统计: 截图失败")
-        QMessageBox.critical(self, "错误", msg)
     
     # ===== 截图操作方法 =====
     
