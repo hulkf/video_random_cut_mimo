@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QDesktopServices, QColor
-from gui.config import get_config, set_config
+from gui.config import get_config, set_config, get_secret, set_secret
 from gui.styles import apply_theme_and_font
 from qt_material import list_themes
 
@@ -312,8 +312,8 @@ class SettingsTab(QWidget):
         self.model_dir_input.blockSignals(False)
         self.refresh_model_status()
 
-        self.kaipai_key_input.setText(get_config("kaipai", "api_key", ""))
-        self.kaipai_secret_input.setText(get_config("kaipai", "secret_key", ""))
+        self.kaipai_key_input.setText(get_secret("kaipai", "api_key", ""))
+        self.kaipai_secret_input.setText(get_secret("kaipai", "secret_key", ""))
 
     def save_config(self):
         set_config("settings", "fireredasr_model_path", self.fire_path_input.text())
@@ -321,8 +321,8 @@ class SettingsTab(QWidget):
         set_config("settings", "whisper_model_dir", self.model_dir_input.text())
 
     def save_kaipai_config(self):
-        set_config("kaipai", "api_key", self.kaipai_key_input.text())
-        set_config("kaipai", "secret_key", self.kaipai_secret_input.text())
+        set_secret("kaipai", "api_key", self.kaipai_key_input.text())
+        set_secret("kaipai", "secret_key", self.kaipai_secret_input.text())
         QMessageBox.information(self, "成功", "开拍 API 配置已保存")
 
     def on_theme_changed(self, theme):

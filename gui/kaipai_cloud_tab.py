@@ -9,15 +9,15 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
-from gui.config import get_config, set_config
+from gui.config import get_config, set_config, get_secret
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
 
 # 延迟导入 sdk，避免启动时报错
 def get_skill_client():
-    os.environ["MT_AK"] = get_config("kaipai", "api_key", "")
-    os.environ["MT_SK"] = get_config("kaipai", "secret_key", "")
+    os.environ["MT_AK"] = get_secret("kaipai", "api_key", "")
+    os.environ["MT_SK"] = get_secret("kaipai", "secret_key", "")
     from sdk import SkillClient
     return SkillClient()
 
@@ -306,8 +306,8 @@ class KaipaiCloudTab(BaseTab):
         self.log_text.append(f"[{timestamp}] {msg}")
 
     def start_processing(self):
-        api_key = get_config("kaipai", "api_key", "")
-        secret_key = get_config("kaipai", "secret_key", "")
+        api_key = get_secret("kaipai", "api_key", "")
+        secret_key = get_secret("kaipai", "secret_key", "")
         input_path = self.file_input.text()
         task_name = self.task_combo.currentText()
 

@@ -7,9 +7,9 @@
     "separate_folders": "false"
   },
   "video_mix": {
-    "video_folder": "D:/千川素材/1301/1301 增强 02 无字幕",
-    "clips_folder": "D:/千川素材/1301/素材切片-无字幕",
-    "output_folder": "D:/千川素材/1301/1301 混剪结果",
+    "video_folder": "D:\\千川素材\\6310\\基底口播素材-无字幕",
+    "clips_folder": "D:\\千川素材\\6310\\平铺视频-无字幕-切片",
+    "output_folder": "D:\\千川素材\\6310\\视频混剪-无字幕",
     "head_tail": "1",
     "head_min": "3",
     "head_max": "5",
@@ -20,9 +20,9 @@
     "slice_duration_min": "3",
     "slice_duration_max": "5",
     "mode": "0",
-    "mix_count": "3",
+    "mix_count": "7",
     "cover_enabled": "true",
-    "cover_folder": "D:/千川素材/1301/素材截图",
+    "cover_folder": "D:\\千川素材\\6310\\视频截图",
     "cover_duration_min": "0.2",
     "cover_duration_max": "0.5"
   },
@@ -44,14 +44,15 @@
     "keep_frames": false
   },
   "face_detection": {
-    "folder": "D:\\千川素材\\306 市场素材\\平铺素材切片",
+    "folder": "D:\\千川素材\\6310\\平铺视频-切片",
     "delete_face": "false",
-    "min_face_ratio": "2",
-    "sample_count": "8"
+    "min_face_ratio": "5",
+    "sample_count": "8",
+    "auto_delete_face": "false"
   },
   "screenshot": {
-    "folder": "D:\\千川素材\\2556\\平铺视频\\916",
-    "output": "D:\\千川素材\\2556\\视频截图",
+    "folder": "D:\\千川素材\\1538\\平铺视频916",
+    "output": "D:\\千川素材\\1538\\视频截图",
     "frame_count": "5",
     "separate_folders": "false",
     "delete_faces": "false",
@@ -80,25 +81,26 @@
     "sensevoice_model_path": "D:/Models/SenseVoiceSmall"
   },
   "kaipai": {
-    "api_key": "f26bd01400414e2786165fd001a5b77a",
-    "secret_key": "e8e93448389d4162a747c6347a01eed7",
+    "api_key": "",
+    "secret_key": "",
     "last_task": "视频画质修复"
   },
   "video_concat": {
-    "folder_a": "D:\\千川素材\\M810\\模特0708 增强",
-    "folder_b": "D:\\千川素材\\M810\\M810 千川素材 0325\\M810 千川素材 2K 0325",
-    "output_folder": "D:\\千川素材\\M810\\M810 千川素材 0708",
+    "folder_a": "D:\\千川素材\\2620\\模特素材 胖 0819",
+    "folder_b": "D:\\千川素材\\2620\\平铺素材\\916",
+    "output_folder": "D:\\千川素材\\2620\\2620 千川素材 胖 0819",
     "cover_enabled": "true",
-    "cover_folder": "D:\\千川素材\\M810\\视频截图",
+    "cover_folder": "D:\\千川素材\\D1010\\视频截图",
     "cover_mode": "0",
     "cover_duration_min": "0.2",
-    "cover_duration_max": "0.5"
+    "cover_duration_max": "0.5",
+    "cover_source": "video_b_frame"
   },
   "video_resize": {
-    "input_folder": "D:\\千川素材\\M810\\模特0708",
-    "output_folder": "D:\\千川素材\\M810\\模特0708\\916",
-    "ratio": "9:16->3:4->9:16",
-    "process_mode": "all",
+    "input_folder": "D:\\千川素材\\2620\\模特素材 0819",
+    "output_folder": "D:\\千川素材\\2620\\模特素材 0819\\916",
+    "ratio": "9:16",
+    "process_mode": "mismatched",
     "blur_strength": "4"
   },
   "keyword_remove": {
@@ -110,5 +112,39 @@
     "model_path": "D:/Models/SenseVoiceSmall",
     "match_mode": "estimate",
     "estimate_min_duration": "0.6"
+  },
+  "video_fission": {
+    "input_folder": "D:\\千川素材\\M810\\M810 千川素材 0805\\8月5日 (1)\\新建文件夹",
+    "output_folder": "D:\\千川素材\\M810\\撞审",
+    "count": "10",
+    "intensity": "mild",
+    "preset": "ultrafast",
+    "crf": "20",
+    "input_folders": [
+      "D:\\千川素材\\M810\\M810 千川素材 0807\\新建文件夹",
+      "D:\\千川素材\\M810\\炮灰",
+      ""
+    ],
+    "input_counts": [
+      10,
+      50,
+      10
+    ],
+    "separate_folder": "False",
+    "max_workers": "10",
+    "force_1080x1920": "True"
+  },
+  "video_download": {
+    "output_dir": "D:/C_Mirror/Downloads"
+  },
+  "video_enhance": {
+    "input_folder": "D:\\千川素材\\8850\\市场素材\\新建文件夹",
+    "output_folder": "D:\\千川素材\\8850\\市场素材",
+    "level": "3",
+    "include_images": "0",
+    "skip_existing": "1",
+    "retry": "1",
+    "timeout": "1800",
+    "wink_exe": "D:\\software\\Meitu\\Wink\\3.7.5\\Wink.exe"
   }
 }

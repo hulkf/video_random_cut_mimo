@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地敏感配置（密钥独立存储，不入库）
+config.local.json
+
+# 临时/解包/探测目录与一次性脚本
+_p0p1_tmp/
+TaobaoVideoDownloader.exe_extracted/
+_whisper_transcribe.py
+.probe/
+.trae-html-share-packages/
+.codegraph/
+
+# 运行时产物
+downloads/
+models/
+Users/
+v/
