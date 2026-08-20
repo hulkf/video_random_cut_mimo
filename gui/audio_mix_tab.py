@@ -47,11 +47,19 @@ class AudioMixWorker(BaseWorker):
                 self.config["output_dir"],
                 lambda count, total: self._on_mix_progress(count, total)
             )
-            if not self.stopped():
-                self.finished.emit(results)
+        except InterruptedError:
+            # 用户停止（_on_mix_progress 在 stopped 时抛 InterruptedError）：复位 UI，不报错误
+            self.finished.emit([])
+            return
         except Exception as e:
             if not self.stopped():
                 self.error.emit(str(e))
+            else:
+                # 异常发生在停止过程中：仍复位 UI，避免卡死
+                self.finished.emit([])
+            return
+        # 正常完成 / 停止后收尾：复位 UI（停止时返回空列表，避免误导"完成"弹窗）
+        self.finished.emit([] if self.stopped() else results)
 
     def _on_mix_progress(self, count, total):
         self._wait_if_paused()

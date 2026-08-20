@@ -28,10 +28,26 @@ class BaseWorker(QThread):
 
     # ── 线程入口（统一 try/except，子类不再需要重复样板）──
     def run(self):
+        emitted = {"finished": False, "error": False}
+
+        def _mark_finished(_r):
+            emitted["finished"] = True
+
+        def _mark_error(_m):
+            emitted["error"] = True
+
+        self.finished.connect(_mark_finished)
+        self.error.connect(_mark_error)
         try:
             self.work()
         except Exception as e:  # noqa: BLE001 —— 所有异常统一走 error 信号
-            self.error.emit(str(e))
+            if not emitted["error"]:
+                self.error.emit(str(e))
+        finally:
+            # 兜底：work() 既没 emit finished 也没 emit error（如中途被停止）时，
+            # 仍复位 UI，避免标签页卡在"正在停止/执行中"（P1.4 / Phase3）。
+            if not emitted["finished"] and not emitted["error"]:
+                self.finished.emit([])
 
     def work(self):
         """子类覆盖：业务逻辑主体（run() 已统一处理异常）。"""
