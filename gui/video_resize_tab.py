@@ -93,7 +93,7 @@ class VideoResizeTab(BaseTab):
         input_layout.setSpacing(8)
         # P2：路径行用公共 PathRow 控件（内置输入框样式修复 + 浏览 + 自动保存配置）
         self.input_folder = PathRow("选择需要处理的视频文件夹...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         input_layout.addWidget(self.input_folder)
         self.output_folder = PathRow("选择输出文件夹...", mode=MODE_FOLDER,
                                      on_change=lambda p: self.save_config())

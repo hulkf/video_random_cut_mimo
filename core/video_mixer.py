@@ -6,7 +6,7 @@ from core.video_utils import (
     get_video_duration, cut_video, cut_video_no_audio,
     concat_videos, add_audio, add_audio_with_silence, image_to_video
 )
-from utils.media_utils import VIDEO_EXTS
+from utils.media_utils import VIDEO_EXTS, collect_files
 
 
 
@@ -35,23 +35,11 @@ class VideoMixerEngine:
         self._cover_images_cache = None
     
     def get_base_videos(self, video_folder):
-        video_exts = VIDEO_EXTS
-        videos = []
-        for root, dirs, files in os.walk(video_folder):
-            for f in files:
-                if f.lower().endswith(video_exts):
-                    videos.append(os.path.join(root, f))
-        return videos
-    
+        return collect_files(video_folder, VIDEO_EXTS)
+
     def get_clip_videos(self):
-        video_exts = VIDEO_EXTS
-        clips = []
-        for root, dirs, files in os.walk(self.clips_folder):
-            for f in files:
-                if f.lower().endswith(video_exts):
-                    clips.append(os.path.join(root, f))
-        return clips
-    
+        return collect_files(self.clips_folder, VIDEO_EXTS)
+
     def get_cover_images(self):
         """Get list of cover images from the specified folder and all subfolders."""
         if not self.cover_enabled or not self.cover_folder:
@@ -59,11 +47,7 @@ class VideoMixerEngine:
         if self._cover_images_cache is not None:
             return self._cover_images_cache
         image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
-        images = []
-        for root, dirs, files in os.walk(self.cover_folder):
-            for f in files:
-                if f.lower().endswith(image_exts):
-                    images.append(os.path.join(root, f))
+        images = collect_files(self.cover_folder, image_exts)
         self._cover_images_cache = images
         return images
     

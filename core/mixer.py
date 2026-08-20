@@ -4,7 +4,7 @@ import shutil
 import tempfile
 from core.audio_extractor import AudioExtractor
 from core.ffmpeg_runner import run_ffmpeg, FFmpegError
-from utils.media_utils import VIDEO_EXTS
+from utils.media_utils import VIDEO_EXTS, collect_files
 from core.video_utils import (
     get_video_duration, concat_videos, add_audio,
     extract_audio, add_audio_with_silence, image_to_video
@@ -26,13 +26,8 @@ class VideoMixer:
         self._clip_duration_cache = {}
 
     def get_media_files(self, folder):
-        """Get all audio and video files recursively from folder."""
-        files = []
-        for root, dirs, file_list in os.walk(folder):
-            for f in file_list:
-                if f.lower().endswith(MEDIA_EXTS):
-                    files.append(os.path.join(root, f))
-        return files
+        """Get all audio and video files recursively from folder (or single file)."""
+        return collect_files(folder, MEDIA_EXTS)
 
     def get_duration(self, path):
         """Get duration of audio or video file."""
@@ -53,26 +48,17 @@ class VideoMixer:
         return path
 
     def get_cover_images(self):
-        """Get list of cover images from cover folder recursively."""
+        """Get list of cover images from cover folder (or single file)."""
         if not self.cover_enabled or not self.cover_folder:
             return []
         image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
-        images = []
-        for root, dirs, files in os.walk(self.cover_folder):
-            for f in files:
-                if f.lower().endswith(image_exts):
-                    images.append(os.path.join(root, f))
-        return images
+        return collect_files(self.cover_folder, image_exts)
 
     def mix_videos(self, clips_dir, media_path, output_path, callback=None):
         """Mix clips to match media duration. media_path can be audio or video."""
         media_duration = self.get_duration(media_path)
 
-        clip_files = []
-        for root, dirs, files in os.walk(clips_dir):
-            for f in files:
-                if f.lower().endswith(VIDEO_EXTS):
-                    clip_files.append(os.path.join(root, f))
+        clip_files = collect_files(clips_dir, VIDEO_EXTS)
 
         if not clip_files:
             raise ValueError("No video clips found")

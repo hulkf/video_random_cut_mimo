@@ -85,7 +85,7 @@ def _detect_face_task(args):
         sample_count,
     )
     return {
-        "file": os.path.relpath(video_path, folder_path),
+        "file": os.path.basename(video_path) if os.path.isfile(folder_path) else os.path.relpath(video_path, folder_path),
         "full_path": video_path,
         "has_face": has_face,
     }
@@ -118,14 +118,9 @@ class FaceDetectionWorker(BaseWorker):
                 self.error.emit(f"模型文件不存在: {self.model_path}")
                 return
             
-            video_exts = VIDEO_EXTS
+            from utils.media_utils import collect_videos
+            video_files = collect_videos(self.folder_path, VIDEO_EXTS)
             results = []
-            
-            video_files = []
-            for root, dirs, files in os.walk(self.folder_path):
-                for f in files:
-                    if f.lower().endswith(video_exts):
-                        video_files.append(os.path.join(root, f))
             
             total = len(video_files)
             if total == 0:
@@ -254,7 +249,7 @@ class FaceDetectionTab(BaseTab):
         input_layout.setSpacing(8)
 
         self.folder_input = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         input_layout.addWidget(self.folder_input, 1)
         
         input_group.setLayout(input_layout)

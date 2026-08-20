@@ -441,11 +441,8 @@ def extract_frames_from_folder(folder_path, output_dir, count_per_video=5,
         list: 处理结果列表
     """
     video_exts = VIDEO_EXTS
-    video_files = []
-    for root, dirs, files in os.walk(folder_path):
-        for f in files:
-            if f.lower().endswith(video_exts):
-                video_files.append(os.path.join(root, f))
+    from utils.media_utils import collect_videos
+    video_files = collect_videos(folder_path, video_exts)
 
     # 初始化SCRFD检测器
     detector = None
@@ -461,7 +458,8 @@ def extract_frames_from_folder(folder_path, output_dir, count_per_video=5,
     total = len(video_files)
 
     for idx, video_path in enumerate(video_files):
-        rel_path = os.path.relpath(video_path, folder_path)
+        # 单文件输入时 relpath 取 basename，目录输入时取相对路径（行为对齐）
+        rel_path = os.path.relpath(video_path, folder_path) if os.path.isdir(folder_path) else os.path.basename(video_path)
         video_output = os.path.join(output_dir, os.path.splitext(os.path.basename(video_path))[0])
 
         images = extract_random_frames(video_path, video_output, count=count_per_video)

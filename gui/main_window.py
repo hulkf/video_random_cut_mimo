@@ -114,10 +114,20 @@ class MainWindow(QMainWindow):
         stop_tab_threads 只停 QThread（协作式停止 + terminate 兜底）；
         之后再 kill_all_ffmpeg() 兜底杀净所有被追踪的 ffmpeg 子进程，
         避免关窗后残留 ffmpeg 孤儿进程。
+
+        关窗前统一保存各 tab 配置（save_config 兜底）：即使改了配置没点"开始"
+        直接关窗，下次打开也能恢复（PathRow 已支持手动输入自动保存，这里是双保险）。
         """
         for attr, _title, _factory in TABS:
             tab = getattr(self, attr, None)
-            if tab is not None:
-                stop_tab_threads(tab)
+            if tab is None:
+                continue
+            save = getattr(tab, "save_config", None)
+            if callable(save):
+                try:
+                    save()
+                except Exception:
+                    pass
+            stop_tab_threads(tab)
         kill_all_ffmpeg()
         event.accept()

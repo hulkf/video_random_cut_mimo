@@ -83,7 +83,7 @@ class AudioMixTab(BaseTab):
         media_layout = QVBoxLayout()
 
         self.media_folder_input = PathRow("选择包含音频或视频的文件夹...", mode=MODE_FOLDER,
-                                          on_change=lambda p: self.save_config())
+                                          on_change=lambda p: self.save_config(), allow_file=True)
         media_layout.addWidget(self.media_folder_input)
         media_group.setLayout(media_layout)
 
@@ -91,7 +91,7 @@ class AudioMixTab(BaseTab):
         clips_layout = QVBoxLayout()
         clips_layout.setSpacing(8)
         self.clips_folder_input = PathRow("选择切片视频文件夹...", mode=MODE_FOLDER,
-                                          on_change=lambda p: self.save_config())
+                                          on_change=lambda p: self.save_config(), allow_file=True)
         clips_layout.addWidget(self.clips_folder_input)
         clips_group.setLayout(clips_layout)
 
@@ -108,7 +108,7 @@ class AudioMixTab(BaseTab):
         cover_folder_row.setSpacing(8)
         cover_folder_row.addWidget(QLabel("封面图文件夹:"))
         self.cover_folder_input = PathRow("选择封面图文件夹...", mode=MODE_FOLDER,
-                                          on_change=lambda p: self.save_config())
+                                          on_change=lambda p: self.save_config(), allow_file=True)
         self.cover_folder_input.setEnabled(False)
         self.cover_folder_btn = self.cover_folder_input.browse_btn
         self.cover_folder_btn.setEnabled(False)

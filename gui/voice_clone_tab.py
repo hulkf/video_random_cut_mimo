@@ -53,10 +53,12 @@ class VoiceCloneWorker(BaseWorker):
             if not videos:
                 raise RuntimeError("输入文件夹中没有视频")
             results = []
+            is_single_file = os.path.isfile(self.settings["input_dir"])
             for index, video in enumerate(videos, 1):
                 if self.stopped():
                     break
-                relative = os.path.relpath(video, self.settings["input_dir"])
+                # 单文件输入时 relpath 用 basename，目录输入用相对路径
+                relative = os.path.basename(video) if is_single_file else os.path.relpath(video, self.settings["input_dir"])
                 output = os.path.join(
                     self.settings["output_dir"], os.path.splitext(relative)[0] + "_voice.mp4"
                 )
@@ -85,7 +87,7 @@ class VoiceCloneTab(BaseTab):
         self.library = VoiceLibrary(get_config("voice_clone", "voices_dir", DEFAULT_VOICES))
         self.profiles = []
         self._build_ui()
-        self._load_settings()
+        self.load_config()
         self.refresh_voices()
 
     def _build_ui(self):
@@ -127,7 +129,7 @@ class VoiceCloneTab(BaseTab):
 
         batch_group = QGroupBox("批量应用")
         batch_form = QFormLayout(batch_group)
-        self.input_dir = PathRow("选择视频文件夹...", mode=MODE_FOLDER)
+        self.input_dir = PathRow("选择视频文件夹...", mode=MODE_FOLDER, allow_file=True)
         self.output_dir = PathRow("选择输出文件夹...", mode=MODE_FOLDER)
         batch_form.addRow("视频文件夹", self.input_dir)
         batch_form.addRow("输出文件夹", self.output_dir)
@@ -180,20 +182,31 @@ class VoiceCloneTab(BaseTab):
     def _browse_output(self):
         self.output_dir._browse()
 
-    def _load_settings(self):
+    def load_config(self):
         self.input_dir.setText(get_config("voice_clone", "input_dir", ""))
         self.output_dir.setText(get_config("voice_clone", "output_dir", ""))
         self.model_dir.setText(get_config("voice_clone", "model_dir", DEFAULT_MODEL))
         self.conda_exe.setText(get_config("voice_clone", "conda_exe", DEFAULT_CONDA))
         self.speed.setValue(float(get_config("voice_clone", "speed", "1.0")))
+        # 补充保存/恢复：文案来源 + 识别引擎
+        ts = get_config("voice_clone", "text_source", "auto")
+        ts_idx = self.text_source.findData(ts)
+        if ts_idx >= 0:
+            self.text_source.setCurrentIndex(ts_idx)
+        at = get_config("voice_clone", "asr_type", "FireRedASR")
+        at_idx = self.asr_type.findText(at)
+        if at_idx >= 0:
+            self.asr_type.setCurrentIndex(at_idx)
 
-    def _save_settings(self):
+    def save_config(self):
         set_config("voice_clone", "input_dir", self.input_dir.text())
         set_config("voice_clone", "output_dir", self.output_dir.text())
         set_config("voice_clone", "model_dir", self.model_dir.text())
         set_config("voice_clone", "conda_exe", self.conda_exe.text())
         set_config("voice_clone", "voices_dir", str(self.library.root))
         set_config("voice_clone", "speed", str(self.speed.value()))
+        set_config("voice_clone", "text_source", self.text_source.currentData())
+        set_config("voice_clone", "asr_type", self.asr_type.currentText())
 
     def refresh_voices(self):
         current = self.voice_combo.currentData()
@@ -250,10 +263,13 @@ class VoiceCloneTab(BaseTab):
             QMessageBox.warning(self, "提示", "请先克隆或选择一个音色")
             return
         settings = self._settings()
-        if not preview_text and (not os.path.isdir(settings["input_dir"]) or not settings["output_dir"]):
-            QMessageBox.warning(self, "提示", "请选择视频文件夹和输出文件夹")
+        if not preview_text and (
+            not settings["input_dir"] or not settings["output_dir"]
+            or not (os.path.isdir(settings["input_dir"]) or os.path.isfile(settings["input_dir"]))
+        ):
+            QMessageBox.warning(self, "提示", "请选择视频文件夹（或单个视频）和输出文件夹")
             return
-        self._save_settings()
+        self.save_config()
         worker = VoiceCloneWorker(settings, profile, preview_text)
         if not self.start_worker(worker):
             return

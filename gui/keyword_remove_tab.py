@@ -159,7 +159,7 @@ class KeywordRemoveTab(BaseTab):
         folder_row = QHBoxLayout()
         folder_row.setSpacing(8)
         self.input_folder = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         folder_row.addWidget(self.input_folder, 1)
         input_layout.addLayout(folder_row)
 
@@ -261,7 +261,7 @@ class KeywordRemoveTab(BaseTab):
         model_path_row.setSpacing(8)
         model_path_row.addWidget(QLabel("模型路径:"))
         self.model_path_input = PathRow("模型路径...", mode=MODE_FOLDER,
-                                        on_change=lambda p: self.save_config())
+                                        on_change=lambda p: self.save_config(), allow_file=True)
         model_path_row.addWidget(self.model_path_input, 1)
         model_layout.addLayout(model_path_row)
         model_group.setLayout(model_layout)

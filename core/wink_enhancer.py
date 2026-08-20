@@ -122,14 +122,10 @@ def find_wink_exe():
 
 
 def collect_media(folder, include_images=False):
-    """递归收集文件夹里的媒体文件，返回排序后的绝对路径列表。"""
+    """递归收集文件夹里的媒体文件，返回排序后的绝对路径列表（支持目录或单文件输入）。"""
+    from utils.media_utils import collect_files
     exts = VIDEO_EXTS + (IMAGE_EXTS if include_images else ())
-    found = []
-    for root, _dirs, files in os.walk(folder):
-        for name in files:
-            if name.lower().endswith(exts):
-                found.append(os.path.abspath(os.path.join(root, name)))
-    return sorted(found)
+    return [os.path.abspath(p) for p in collect_files(folder, exts)]
 
 
 def is_video(path):

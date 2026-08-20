@@ -8,14 +8,16 @@
 - **本机无 NVIDIA GPU**（仅 Intel Arc）；QSV 实测比软件慢 3.4× → 唯一可用编码 = libx264。encoder.py 自动探测，换到 NVIDIA 机器自动启用 NVENC
 - push 用 `git -c credential.helper=wincred push origin main`（GCM 读不了 LegacyGeneric 凭据）
 
-## 架构（2026-08-20 P0+P1+P2 重构已落地）
-- `core/encoder.py` get_encoder/get_default_workers/fallback_to_software —— **编码参数必须走这里，禁止写死 libx264**
-- `core/ffmpeg_runner.py` run_ffmpeg / run_ffmpeg_with_fallback / terminate_all + FFmpegError；CREATE_NO_WINDOW
-- `utils/media_utils.py` VIDEO_EXTS / collect_videos / probe_video；`utils/path_utils.py` strip_quotes / unique_output_path / build_output_path
+## 架构（2026-08-20 P0+P1+P2 重构已落地，全部 commit+push 到 origin/main）
+- `core/encoder.py` get_encoder/get_default_workers/fallback_to_software/is_session_limit —— **编码参数必须走这里，禁止写死 libx264**；NVENC fallback 已收窄为"仅会话受限且非超时"才回退
+- `core/ffmpeg_runner.py` run_ffmpeg / run_ffmpeg_with_fallback / terminate_all / terminate_owner（owner 分组防跨 tab 互杀）+ track_proc(owner=) + FFmpegError(timed_out)；CREATE_NO_WINDOW
+- `core/video_utils.py`（原 `utils/video_utils.py`，已 git mv 下沉收口反向依赖）/ `utils/media_utils.py` VIDEO_EXTS / collect_videos / probe_video；`utils/path_utils.py` strip_quotes / unique_output_path / build_output_path
+- `core/model_dirs.py` 单点收敛 FIREMODELS_DIR / FUNASR_DIR / SENSEVOICE_DIR（切断 gui→gui 耦合）
 - `gui/tab_registry.py` TABS 16 项 + stop_tab_threads —— **增删 tab 只改此文件**
-- `gui/common/` BaseWorker(信号 progress(int,int,str)/finished/error) + BaseTab(start_worker 防重入+set_busy) + PathRow + ProgressPanel；**16 页全部迁移完成**
+- `gui/common/` BaseWorker(run 统一 try/except + finally 兜底 emit finished，信号 progress(int,int,str)/finished/error) + BaseTab(start_worker 防重入+set_busy) + PathRow + ProgressPanel；**16 页全部迁移完成**
+- `core/text_detector.py` paddleocr 改为 lazy import（_init_worker/__init__ 内）；`core/voice_clone.py` 新增 CosyVoiceService.stop() 清理残留进程；`core/audio_utils.py` demucs 接入 track_proc
 - 约定：滤镜链冻结；公共模块只依赖标准库；密钥存 config.local.json
-- 未迁移 backlog：GUI 格式列表、wink_enhancer 8 元组
+- 未迁移 backlog：GUI 格式列表、wink_enhancer 8 元组、统一 logging、大视频内存分块（P3 暂缓）；taobao 巨石分区/冒烟脚本/路径全收敛/crf 统一（P4 暂缓）
 
 ## 关键坑（高频）
 - qt-material 下 QLineEdit 无边框 → gui/styles.py FIX_LAYOUT_QSS + LINEEDIT_QSS 全带 !important

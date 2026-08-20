@@ -51,12 +51,8 @@ class SubtitleWorker(BaseWorker):
 
     def run(self):
         try:
-            video_exts = VIDEO_EXTS
-            video_files = []
-            for root, dirs, files in os.walk(self.folder_path):
-                for f in files:
-                    if f.lower().endswith(video_exts):
-                        video_files.append(os.path.join(root, f))
+            from utils.media_utils import collect_videos
+            video_files = collect_videos(self.folder_path, VIDEO_EXTS)
 
             os.makedirs(self.output_folder, exist_ok=True)
             all_results = []
@@ -158,7 +154,7 @@ class SubtitleWorker(BaseWorker):
             success = False
 
         return {
-            "video": os.path.relpath(video_path, self.folder_path),
+            "video": os.path.basename(video_path) if os.path.isfile(self.folder_path) else os.path.relpath(video_path, self.folder_path),
             "full_path": video_path,
             "output_path": output_path,
             "success": success
@@ -337,7 +333,7 @@ class SubtitleTab(BaseTab):
         folder_layout = QHBoxLayout()
         folder_layout.setSpacing(8)
         self.folder_input = PathRow("\u9009\u62e9\u89c6\u9891\u6587\u4ef6\u5939...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         folder_layout.addWidget(self.folder_input, 1)
 
         output_layout = QHBoxLayout()

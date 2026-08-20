@@ -35,6 +35,28 @@ def collect_videos(path: str, exts=VIDEO_EXTS) -> list:
     return sorted(videos)
 
 
+def collect_files(path: str, exts) -> list:
+    """通用收集（目录或单文件，兼容用户"输入目录/输入单文件"两种填法）。
+
+    - path 为目录：os.walk 递归收集匹配 exts 的文件，排序返回；
+    - path 为单文件：匹配 exts 返回 [path]，否则 []；
+    - 大小写不敏感。exts 为元组（如 VIDEO_EXTS / 图片扩展名集合）。
+    """
+    path = (path or "").strip()
+    if not path:
+        return []
+    if os.path.isfile(path):
+        return [path] if path.lower().endswith(tuple(exts)) else []
+    if not os.path.isdir(path):
+        return []
+    found = []
+    for root, _dirs, files in os.walk(path):
+        for file_name in files:
+            if file_name.lower().endswith(tuple(exts)):
+                found.append(os.path.join(root, file_name))
+    return sorted(found)
+
+
 def _parse_frame_rate(r_frame_rate) -> float:
     """r_frame_rate（如 "30000/1001" / "30/1" / 缺失）→ float。"""
     if not r_frame_rate:

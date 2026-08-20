@@ -32,12 +32,8 @@ class TextRecognitionWorker(BaseWorker):
 
     def run(self):
         try:
-            video_exts = VIDEO_EXTS
-            video_files = []
-            for root, dirs, files in os.walk(self.folder_path):
-                for f in files:
-                    if f.lower().endswith(video_exts):
-                        video_files.append(os.path.join(root, f))
+            from utils.media_utils import collect_videos
+            video_files = collect_videos(self.folder_path, VIDEO_EXTS)
 
             total = len(video_files)
             if total == 0:
@@ -62,7 +58,11 @@ class TextRecognitionWorker(BaseWorker):
                             f.cancel()
                         break
                     video_path, has_text, frames_dir = future.result()
-                    rel_path = os.path.relpath(video_path, self.folder_path)
+                    # 单文件输入时 relpath 退化为 basename
+                    if os.path.isfile(self.folder_path):
+                        rel_path = os.path.basename(video_path)
+                    else:
+                        rel_path = os.path.relpath(video_path, self.folder_path)
                     results.append({
                         "file": rel_path,
                         "full_path": video_path,
@@ -94,7 +94,7 @@ class TextRecognitionTab(BaseTab):
         input_layout.setSpacing(8)
 
         self.folder_input = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         input_layout.addWidget(self.folder_input)
         input_group.setLayout(input_layout)
 

@@ -61,7 +61,7 @@ class VideoConcatTab(BaseTab):
         folder_a_layout = QVBoxLayout()
         folder_a_layout.setSpacing(8)
         self.folder_a_input = PathRow("选择文件夹A...", mode=MODE_FOLDER,
-                                      on_change=lambda p: self.save_config())
+                                      on_change=lambda p: self.save_config(), allow_file=True)
         folder_a_layout.addWidget(self.folder_a_input)
         folder_a_group.setLayout(folder_a_layout)
 
@@ -69,7 +69,7 @@ class VideoConcatTab(BaseTab):
         folder_b_layout = QVBoxLayout()
         folder_b_layout.setSpacing(8)
         self.folder_b_input = PathRow("选择文件夹B...", mode=MODE_FOLDER,
-                                      on_change=lambda p: self.save_config())
+                                      on_change=lambda p: self.save_config(), allow_file=True)
         folder_b_layout.addWidget(self.folder_b_input)
         folder_b_group.setLayout(folder_b_layout)
 
@@ -98,7 +98,7 @@ class VideoConcatTab(BaseTab):
         cover_folder_row.setSpacing(8)
         cover_folder_row.addWidget(QLabel("封面图文件夹:"))
         self.cover_folder_input = PathRow("选择封面图文件夹...", mode=MODE_FOLDER,
-                                          on_change=lambda p: self.save_config())
+                                          on_change=lambda p: self.save_config(), allow_file=True)
         self.cover_folder_input.setEnabled(False)
         self.cover_folder_btn = self.cover_folder_input.browse_btn
         self.cover_folder_btn.setEnabled(False)

@@ -185,7 +185,7 @@ class ScreenshotTab(BaseTab):
         input_layout.setSpacing(8)
 
         self.folder_input = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         input_layout.addWidget(self.folder_input)
 
         self.output_input = PathRow("截图输出文件夹...", mode=MODE_FOLDER,

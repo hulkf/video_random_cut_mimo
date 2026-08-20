@@ -17,6 +17,7 @@ from gui.common.path_row import PathRow, MODE_FOLDER
 from gui.common.progress_panel import ProgressPanel
 from gui.config import get_config, set_config
 from utils.media_utils import VIDEO_EXTS
+from utils.path_utils import strip_quotes
 
 
 class SliceWorker(BaseWorker):
@@ -282,7 +283,7 @@ class SliceTab(BaseTab):
         self.separate_folders_check.setChecked(get_config("slice", "separate_folders", "false") == "true")
 
     def save_config(self):
-        set_config("slice", "folder", self.folder_input.text())
+        set_config("slice", "folder", strip_quotes(self.folder_input.text()))
         set_config("slice", "output", self.output_input.text())
         set_config("slice", "min_duration", str(self.min_duration.value()))
         set_config("slice", "max_duration", str(self.max_duration.value()))
@@ -307,7 +308,7 @@ class SliceTab(BaseTab):
 
     # ── 任务启动（P2：统一走 BaseTab.start_worker）──
     def start_slicing(self):
-        folder = self.folder_input.text()
+        folder = strip_quotes(self.folder_input.text())
         output = self.output_input.text()
 
         if not folder or not output:

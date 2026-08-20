@@ -182,13 +182,8 @@ class VoiceClonePipeline:
 
     @staticmethod
     def find_videos(folder):
-        videos = []
-        for root, _, files in os.walk(folder):
-            videos.extend(
-                os.path.join(root, name) for name in files
-                if name.lower().endswith(VIDEO_EXTENSIONS)
-            )
-        return sorted(videos)
+        from utils.media_utils import collect_videos
+        return collect_videos(folder, VIDEO_EXTENSIONS)
 
     def _load_asr(self):
         if self.asr is None:

@@ -179,7 +179,7 @@ class VideoEnhanceTab(BaseTab):
         folder_row = QHBoxLayout()
         folder_row.setSpacing(8)
         self.input_folder = PathRow("选择需要优化的视频文件夹...", mode=MODE_FOLDER,
-                                    on_change=lambda p: self.save_config())
+                                    on_change=lambda p: self.save_config(), allow_file=True)
         folder_row.addWidget(self.input_folder, 1)
         input_layout.addLayout(folder_row)
 
@@ -437,8 +437,8 @@ class VideoEnhanceTab(BaseTab):
         if not input_folder or not output_folder:
             QMessageBox.warning(self, "警告", "请选择输入和输出文件夹")
             return
-        if not os.path.isdir(input_folder):
-            QMessageBox.warning(self, "警告", f"输入文件夹不存在：{input_folder}")
+        if not os.path.isdir(input_folder) and not os.path.isfile(input_folder):
+            QMessageBox.warning(self, "警告", f"输入路径不存在：{input_folder}")
             return
         if not exe_path or not os.path.isfile(exe_path):
             QMessageBox.warning(

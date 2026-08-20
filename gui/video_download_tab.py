@@ -152,7 +152,7 @@ class VideoDownloadTab(BaseTab):
         self._link_rows = {}   # index -> 表格行号
         self._start_ts = None  # 本次下载开始时间
         self._init_ui()
-        self._load_config()
+        self.load_config()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -292,21 +292,21 @@ class VideoDownloadTab(BaseTab):
         help_layout.addWidget(help_text)
         layout.addWidget(help_group)
 
-    def _load_config(self):
+    def load_config(self):
         output_dir = get_config("video_download", "output_dir", "")
         if not output_dir:
             output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "downloads")
         self.edit_output.setText(output_dir)
         self._check_auth()
 
-    def _save_config(self):
+    def save_config(self):
         set_config("video_download", "output_dir", self.edit_output.text())
 
     def _browse_output(self):
         d = QFileDialog.getExistingDirectory(self, "选择输出目录", self.edit_output.text())
         if d:
             self.edit_output.setText(d)
-            self._save_config()
+            self.save_config()
 
     def _check_auth(self):
         try:
@@ -383,7 +383,7 @@ class VideoDownloadTab(BaseTab):
         except ImportError:
             pass
 
-        self._save_config()
+        self.save_config()
         os.makedirs(output_dir, exist_ok=True)
 
         self.progress_bar.setValue(0)

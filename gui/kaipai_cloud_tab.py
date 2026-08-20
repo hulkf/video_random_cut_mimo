@@ -14,6 +14,7 @@ from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
 from utils.media_utils import VIDEO_EXTS
+from utils.path_utils import strip_quotes
 
 # 延迟导入 sdk，避免启动时报错
 def get_skill_client():
@@ -281,7 +282,7 @@ class KaipaiCloudTab(BaseTab):
             self.update_file_count()
 
     def update_file_count(self):
-        input_path = self.file_input.text()
+        input_path = strip_quotes(self.file_input.text())
         task_name = self.task_combo.currentText()
         if not input_path:
             self.file_count_label.setText("")
@@ -303,7 +304,7 @@ class KaipaiCloudTab(BaseTab):
     def start_processing(self):
         api_key = get_secret("kaipai", "api_key", "")
         secret_key = get_secret("kaipai", "secret_key", "")
-        input_path = self.file_input.text()
+        input_path = strip_quotes(self.file_input.text())
         task_name = self.task_combo.currentText()
 
         if not api_key or not secret_key:
