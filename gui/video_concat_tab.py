@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QProgressBar,
+    QLabel,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox, QComboBox,
     QScrollArea
 )
@@ -11,6 +11,7 @@ from utils.path_utils import normalize_path as normalize_input_path
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
+from gui.common.progress_panel import ProgressPanel
 
 
 class VideoConcatWorker(BaseWorker):
@@ -149,28 +150,12 @@ class VideoConcatTab(BaseTab):
         self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self.start_concat)
 
-        progress_group = QGroupBox("处理进度")
-        progress_layout = QVBoxLayout()
-
-        global_row = QHBoxLayout()
-        global_row.addWidget(QLabel("全局进度:"))
-        self.global_progress_bar = QProgressBar()
-        self.global_progress_bar.setRange(0, 100)
-        global_row.addWidget(self.global_progress_bar)
-        self.global_progress_label = QLabel("0%")
-        global_row.addWidget(self.global_progress_label)
-        progress_layout.addLayout(global_row)
-
-        task_row = QHBoxLayout()
-        task_row.addWidget(QLabel("当前任务:"))
-        self.task_progress_bar = QProgressBar()
-        self.task_progress_bar.setRange(0, 100)
-        task_row.addWidget(self.task_progress_bar)
-        self.task_progress_label = QLabel("0%")
-        task_row.addWidget(self.task_progress_label)
-        progress_layout.addLayout(task_row)
-
-        progress_group.setLayout(progress_layout)
+        # P2-5：双进度统一用公共 ProgressPanel（总进度 + 子进度）
+        self.progress_panel = ProgressPanel("处理进度", dual=True)
+        self.global_progress_bar = self.progress_panel.bar
+        self.global_progress_label = self.progress_panel.percent_label
+        self.task_progress_bar = self.progress_panel.sub_bar
+        self.task_progress_label = self.progress_panel.sub_percent_label
 
         self.status_label = QLabel("就绪")
 
@@ -191,7 +176,7 @@ class VideoConcatTab(BaseTab):
         layout.addWidget(cover_group)
         layout.addWidget(output_group)
         layout.addWidget(self.start_btn)
-        layout.addWidget(progress_group)
+        layout.addWidget(self.progress_panel)
         layout.addWidget(self.status_label)
         layout.addWidget(desc_label)
         layout.addStretch()
