@@ -5,9 +5,12 @@ from PyQt5.QtWidgets import (
     QMessageBox, QGroupBox, QCheckBox, QHeaderView, QAbstractItemView,
     QStyle
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from core.text_detector import detect_single_video, _init_worker
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 import os
 import sys
 import shutil
@@ -16,8 +19,8 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
-class TextRecognitionWorker(QThread):
-    progress = pyqtSignal(int, int)
+class TextRecognitionWorker(BaseWorker):
+    progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
@@ -63,7 +66,7 @@ class TextRecognitionWorker(QThread):
                         "has_text": has_text,
                         "frames_dir": frames_dir,
                     })
-                    self.progress.emit(len(results), total)
+                    self.progress.emit(len(results), total, "")
 
             results.sort(key=lambda r: r["file"])
             self.finished.emit(results)
@@ -71,10 +74,9 @@ class TextRecognitionWorker(QThread):
             self.error.emit(str(e))
 
 
-class TextRecognitionTab(QWidget):
+class TextRecognitionTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.results = []
         self.init_ui()
         self.load_config()
@@ -88,14 +90,9 @@ class TextRecognitionTab(QWidget):
         input_layout = QHBoxLayout()
         input_layout.setSpacing(8)
 
-        self.folder_input = QLineEdit()
-        self.folder_input.setPlaceholderText("选择视频文件夹...")
-        self.folder_input.setMinimumHeight(30)
-        folder_btn = QPushButton("浏览")
-        folder_btn.setFixedWidth(80)
-        folder_btn.clicked.connect(self.browse_folder)
-        input_layout.addWidget(self.folder_input, 1)
-        input_layout.addWidget(folder_btn)
+        self.folder_input = PathRow("选择视频文件夹...", mode=MODE_FOLDER,
+                                    on_change=lambda p: self.save_config())
+        input_layout.addWidget(self.folder_input)
         input_group.setLayout(input_layout)
 
         self.start_btn = QPushButton("开始识别")
@@ -156,11 +153,10 @@ class TextRecognitionTab(QWidget):
         set_config("text_recognition", "keep_frames", self.keep_frames_check.isChecked())
 
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
-        if folder:
-            self.folder_input.setText(folder)
-            self.save_config()
+        """兼容外部调用：等价于 PathRow 浏览。"""
+        self.folder_input._browse()
 
+    # ── 任务启动（P2：统一走 BaseTab.start_worker）──
     def start_recognition(self):
         folder = self.folder_input.text()
 
@@ -168,29 +164,24 @@ class TextRecognitionTab(QWidget):
             QMessageBox.warning(self, "警告", "请选择视频文件夹")
             return
 
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
-
         self.save_config()
-        self.start_btn.setEnabled(False)
-        self.move_btn.setEnabled(False)
         self.result_table.setRowCount(0)
         self.results = []
 
-        self.worker = TextRecognitionWorker(folder, max_workers=4)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker = TextRecognitionWorker(folder, max_workers=4)
+        if not self.start_worker(worker):
+            return
 
-    def on_progress(self, current, total):
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.move_btn.setEnabled(not busy)
+
+    def on_worker_progress(self, current, total, message):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
 
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
-        self.move_btn.setEnabled(True)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.select_text_btn.setEnabled(True)
         self.results = results
 
@@ -217,9 +208,8 @@ class TextRecognitionTab(QWidget):
         QMessageBox.information(self, "完成",
                                 f"识别完成，共{len(results)}个视频，{text_count}个包含文字")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        QMessageBox.critical(self, "错误", msg)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
 
     def select_text_videos(self):
         self.result_table.clearSelection()

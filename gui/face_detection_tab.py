@@ -11,8 +11,11 @@ from PyQt5.QtWidgets import (
     QMessageBox, QGroupBox, QCheckBox, QSpinBox,
     QAbstractItemView
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from gui.config import get_config, set_config
+from gui.common.base_tab import BaseTab
+from gui.common.base_worker import BaseWorker
+from gui.common.path_row import PathRow, MODE_FOLDER
 from core.screenshot import SCRFDetector
 
 
@@ -88,8 +91,8 @@ def _detect_face_task(args):
     }
 
 
-class FaceDetectionWorker(QThread):
-    progress = pyqtSignal(int, int)
+class FaceDetectionWorker(BaseWorker):
+    progress = pyqtSignal(int, int, str)
     video_done = pyqtSignal(dict)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -144,7 +147,7 @@ class FaceDetectionWorker(QThread):
                     )
                     results.append(result)
                     self.video_done.emit(result)
-                    self.progress.emit(idx + 1, total)
+                    self.progress.emit(idx + 1, total, "")
             else:
                 tasks = [
                     (video_path, self.folder_path, self.min_face_ratio, self.sample_count)
@@ -170,7 +173,7 @@ class FaceDetectionWorker(QThread):
                         results.append(result)
                         completed += 1
                         self.video_done.emit(result)
-                        self.progress.emit(completed, total)
+                        self.progress.emit(completed, total, "")
             
             self.finished.emit(results)
         except Exception as e:
@@ -229,10 +232,9 @@ class FaceDetectionWorker(QThread):
         return face_detections >= self.min_face_ratio
 
 
-class FaceDetectionTab(QWidget):
+class FaceDetectionTab(BaseTab):
     def __init__(self):
         super().__init__()
-        self.worker = None
         self.results = []
         self.init_ui()
         self.load_config()
@@ -387,10 +389,8 @@ class FaceDetectionTab(QWidget):
         set_config("face_detection", "max_workers", str(self.max_workers.value()))
     
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
-        if folder:
-            self.folder_input.setText(folder)
-            self.save_config()
+        """兼容外部调用：等价于 PathRow 浏览。"""
+        self.folder_input._browse()
     
     def start_detection(self):
         folder = self.folder_input.text()
@@ -399,37 +399,34 @@ class FaceDetectionTab(QWidget):
             QMessageBox.warning(self, "警告", "请选择视频文件夹")
             return
         
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "任务正在执行中")
-            return
-        
         self.save_config()
-        self.start_btn.setEnabled(False)
-        self.export_btn.setEnabled(False)
-        self.select_all_face_btn.setEnabled(False)
-        self.select_no_face_btn.setEnabled(False)
-        self.delete_selected_btn.setEnabled(False)
-        self.open_selected_btn.setEnabled(False)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.result_table.setRowCount(0)
         self.stats_label.setText("统计: 检测进行中...")
         self.results = []
         
-        self.worker = FaceDetectionWorker(
+        worker = FaceDetectionWorker(
             folder,
             self.min_face_ratio.value(),
             self.sample_count.value(),
             auto_delete=self.auto_delete_face_check.isChecked(),
             max_workers=self.max_workers.value()
         )
-        self.worker.progress.connect(self.on_progress)
-        self.worker.video_done.connect(self.on_video_done)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.start()
+        worker.video_done.connect(self.on_video_done)
+        if not self.start_worker(worker):
+            self.stats_label.setText("统计: 等待检测...")
+            return
     
-    def on_progress(self, current, total):
+    def set_busy(self, busy):
+        self.start_btn.setEnabled(not busy)
+        self.export_btn.setEnabled(not busy)
+        self.select_all_face_btn.setEnabled(not busy)
+        self.select_no_face_btn.setEnabled(not busy)
+        self.delete_selected_btn.setEnabled(not busy)
+        self.open_selected_btn.setEnabled(not busy)
+
+    def on_worker_progress(self, current, total, message):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
     
@@ -457,8 +454,8 @@ class FaceDetectionTab(QWidget):
             open_btn.clicked.connect(lambda checked, r=result: self.open_video(r["full_path"]))
             self.result_table.setCellWidget(row, 2, open_btn)
     
-    def on_finished(self, results):
-        self.start_btn.setEnabled(True)
+    def on_worker_finished(self, results):
+        super().on_worker_finished(results)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(100)
         
@@ -506,12 +503,11 @@ class FaceDetectionTab(QWidget):
                 f"可在下方表格中选中视频后批量删除或打开"
             )
     
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
+    def on_worker_error(self, msg):
+        super().on_worker_error(msg)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         self.stats_label.setText("统计: 检测失败")
-        QMessageBox.critical(self, "错误", msg)
     
     def on_cell_clicked(self, row, col):
         if col == 2:
