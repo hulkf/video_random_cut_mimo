@@ -1,10 +1,29 @@
+# video_random_cut_mimo 依赖清单（核心 / 必需）
+# 安装：pip install -r requirements.txt
+# 仅当要用“音色复刻 / 人声分离 / Whisper 转写 / 淘宝下载 / 开拍云”等进阶功能时，
+# 再按需安装：pip install -r requirements-optional.txt
+#
+# 本文件于 2026-08-20 第三轮架构评审(R1)校准：
+#   - 补全了之前漏声明的包：sherpa-onnx（字幕 ASR）、opencv-python（cv2）、requests（开拍云/淘宝下载）
+#   - 把仅服务于可选功能的重型依赖（torch / torchaudio / demucs / cosyvoice / whisper / playwright）
+#     移到了 requirements-optional.txt，避免主安装臃肿、换机卡在 torch 老坑。
+
+# —— 应用外壳与界面 ——
 PyQt5>=5.15.0
-paddlepaddle>=2.4.0
-paddleocr>=2.6.0
-Pillow>=9.0.0
-numpy>=1.24.0
-onnxruntime-directml>=1.20.1
-demucs>=4.0.0
-torch>=2.0.0
-torchaudio>=2.0.0
 qt-material>=2.17
+
+# —— 引擎基础（视频/音频处理）——
+numpy>=1.24.0
+opencv-python>=4.8.1.78 # cv2：人脸检测、截图
+Pillow>=11.3.0 # PIL：图像处理
+
+# —— 语音识别 ASR（字幕 / 去关键词）——
+onnxruntime-directml>=1.20.1  # 提供 onnxruntime，Windows DirectML 加速
+sherpa-onnx>=1.10.0           # 字幕 SherpaASR（原漏声明，sherpa_asr.py 顶层 import）
+
+# —— 文字识别 OCR（去关键词 / 字幕擦除） ——
+paddlepaddle>=2.6.1
+paddleocr>=2.6.0
+
+# —— 网络请求（开拍云 / 淘宝下载） ——
+requests>=2.32.4 # 原漏声明

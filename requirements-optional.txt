@@ -1,0 +1,24 @@
+# video_random_cut_mimo 依赖清单（进阶 / 可选）
+# 仅当你要用到下列“重型或特定功能”时才安装，避免主安装臃肿、换机卡在 torch 老坑。
+# 安装：pip install -r requirements-optional.txt
+#
+# 这些依赖在代码里均为“懒加载”（用到对应功能才 import），所以主程序启动不依赖它们。
+
+# —— 音色复刻（voice_clone，services/cosyvoice_server.py 懒加载） ——
+torch>=2.0.0
+torchaudio>=2.0.0
+cosyvoice                   # 阿里 CosyVoice3；若官方源安装失败，按官方文档从 git 安装
+
+# —— 人声分离（core/audio_utils.py 以子进程调用 `python -m demucs`） ——
+demucs>=4.0.0
+
+# —— Whisper 转写（_whisper_transcribe.py 独立脚本，懒加载） ——
+openai-whisper              # import 名为 whisper
+
+# —— 淘宝视频下载（core/taobao_downloader.py 懒加载，需额外装浏览器） ——
+playwright>=1.40.0
+# 装完还需执行一次：playwright install
+
+# —— 开拍云 SDK（gui/kaipai_cloud_tab.py 懒加载，import 名为 sdk） ——
+# 请按开拍云官方文档安装对应 SDK 包（如 pip install <kaipai-sdk>），
+# 不同版本包名可能不同，故此处不写死版本。
