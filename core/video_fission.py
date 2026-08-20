@@ -5,7 +5,7 @@ import random
 import threading
 
 from core.encoder import fallback_to_software, get_default_workers, get_encoder
-from core.ffmpeg_runner import run_ffmpeg, terminate_all, FFmpegError
+from core.ffmpeg_runner import run_ffmpeg, terminate_owner, FFmpegError
 from utils.media_utils import collect_videos, probe_video
 from utils.path_utils import strip_quotes
 
@@ -53,6 +53,7 @@ class VideoFission:
         # 中断控制
         self._stop_requested = False
         self.partial_results = []    # 中断前已完成的视频列表
+        self._owner = "fission-{}".format(id(self))  # 进程分组标识（P1.6 跨 tab 互杀修复）
 
     # ── 编码器探测与并发策略（委托公共模块 core.encoder，模块级缓存 + 全局回退）──
     def encoder(self):
@@ -65,9 +66,9 @@ class VideoFission:
 
     # ── 中断控制 ─────────────────────────────────────────────
     def request_stop(self):
-        """请求中断：设置标志 + 终止所有正在运行的 ffmpeg（全局进程表）。"""
+        """请求中断：设置标志 + 仅终止本实例（owner 分组）追踪的 ffmpeg，不误杀其他 tab。"""
         self._stop_requested = True
-        terminate_all()
+        terminate_owner(self._owner)
 
     def _check_stop(self):
         if self._stop_requested:
@@ -154,7 +155,7 @@ class VideoFission:
 
         # 统一执行器：CREATE_NO_WINDOW + 全局进程追踪（中断时可 terminate_all）+ 失败删半成品
         try:
-            run_ffmpeg(cmd, track=True, timeout=3600,
+            run_ffmpeg(cmd, track=True, timeout=3600, owner=self._owner,
                        output_path=output_path, error_message="裂变失败")
         except FFmpegError as e:
             # 用户中断：删除半成品文件并抛出 FissionStopped

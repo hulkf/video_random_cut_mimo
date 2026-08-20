@@ -44,20 +44,25 @@ class FFmpegResult:
 
 
 # ── 全局进程注册表（从 video_fission._track_proc/_untrack_proc/_procs_lock 上提）────
+# _owners 记录每个进程所属 owner（token）；terminate_owner 只杀同组进程，
+# 避免某一任务停止时误杀其他 tab 正在运行的 ffmpeg（跨 tab 进程互杀修复，P1.6）。
 _procs: set = set()
+_owners: dict = {}
 _procs_lock = threading.Lock()
 
 
-def track_proc(proc: subprocess.Popen) -> None:
-    """将子进程注册到全局进程表（供 terminate_all 中断）。"""
+def track_proc(proc: subprocess.Popen, owner=None) -> None:
+    """将子进程注册到全局进程表（供 terminate_all/terminate_owner 中断）。"""
     with _procs_lock:
         _procs.add(proc)
+        _owners[id(proc)] = owner
 
 
 def untrack_proc(proc: subprocess.Popen) -> None:
     """将子进程从全局进程表移除。"""
     with _procs_lock:
         _procs.discard(proc)
+        _owners.pop(id(proc), None)
 
 
 def active_procs() -> list:
@@ -67,10 +72,28 @@ def active_procs() -> list:
 
 
 def terminate_all() -> int:
-    """终止所有被追踪的活跃进程，返回终止数量（裂变 request_stop 调用，AC-P1-4）。"""
+    """终止所有被追踪的活跃进程，返回终止数量（关窗兜底 / 全局清理）。"""
     terminated = 0
     with _procs_lock:
         procs = list(_procs)
+    for p in procs:
+        if p.poll() is None:
+            try:
+                p.terminate()
+                terminated += 1
+            except Exception:
+                pass
+    return terminated
+
+
+def terminate_owner(owner_id) -> int:
+    """仅终止归属 owner_id 的进程（裂变按实例分组停止，避免误杀其他 tab 的 ffmpeg，P1.6）。
+
+    owner_id 与 track_proc(proc, owner) 传入的标识一致；None 表示未分组（不匹配任何组）。
+    """
+    terminated = 0
+    with _procs_lock:
+        procs = [p for p in _procs if _owners.get(id(p)) == owner_id]
     for p in procs:
         if p.poll() is None:
             try:
@@ -201,6 +224,7 @@ def run_ffmpeg(
     output_path: Optional[str] = None,        # 失败/超时后删除该半成品
     track: bool = True,                       # 是否注册到全局进程表
     error_message: str = "ffmpeg failed",
+    owner: Optional[str] = None,              # 进程分组标识（P1.6：仅同组可被 terminate_owner 终止）
 ) -> FFmpegResult:
     """执行 ffmpeg 命令。行为契约：
     1. Windows 下自动 creationflags=CREATE_NO_WINDOW；
@@ -225,7 +249,7 @@ def run_ffmpeg(
         **kwargs,
     )
     if track:
-        track_proc(proc)
+        track_proc(proc, owner=owner)
     try:
         if on_progress is not None and "-progress" in cmd and "pipe:1" in cmd:
             stdout_data, stderr_data, timed_out = _read_progress_stdout(
@@ -290,13 +314,15 @@ def run_ffmpeg_with_fallback(
 
     供试点/裂变之外的模块复用回退能力（R5/R6）；裂变保留自身编排，不使用本函数。
     """
-    from core.encoder import get_encoder, fallback_to_software
+    from core.encoder import get_encoder, fallback_to_software, is_session_limit
 
     params = get_encoder(crf=crf, preset=preset)
     try:
         return run_ffmpeg(build_cmd(params), **run_kwargs)
     except FFmpegError as e:
-        if params[0] != "libx264":
+        # 仅当硬件编码会话受限（非超时、非用户中断、非坏输入）才全局回退软件重试一次；
+        # 超时(timed_out)与用户中断绝不重试，避免把"超时/坏文件"误判为硬件失败而废掉 NVENC。
+        if params[0] != "libx264" and is_session_limit(e.stderr) and not e.timed_out:
             fallback_to_software()
             return run_ffmpeg(build_cmd(get_encoder(crf=crf, preset=preset)), **run_kwargs)
         raise
