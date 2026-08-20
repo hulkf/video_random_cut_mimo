@@ -6,6 +6,8 @@ import tempfile
 import numpy as np
 import onnxruntime as ort
 
+from core.ffmpeg_runner import CREATE_NO_WINDOW
+
 
 FIREMODELS_DIR = r"D:\Models\FireRed"
 
@@ -136,7 +138,8 @@ class FireRedASR:
             "-ar", "16000", "-ac", "1",
             "-f", "wav", "-y", "pipe:1"
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=3600)
+        result = subprocess.run(cmd, capture_output=True, timeout=3600,
+                                creationflags=CREATE_NO_WINDOW)
         if result.returncode != 0:
             return None, 0
         wav_data = io.BytesIO(result.stdout)

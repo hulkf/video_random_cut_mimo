@@ -1,10 +1,11 @@
 import os
 import random
-import subprocess
-import json
 import cv2
 import numpy as np
 import onnxruntime as ort
+
+from core.ffmpeg_runner import run_ffmpeg, FFmpegError
+from utils.media_utils import get_video_duration as _media_duration
 
 
 class SCRFDetector:
@@ -322,15 +323,15 @@ class SCRFDetector:
 
 
 def get_video_duration(video_path):
-    cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", video_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-    if result.returncode != 0 or not result.stdout:
+    """视频时长（秒）。失败返回 0（保持调用方行为，不抛异常）。
+
+    统一委托 utils.media_utils.get_video_duration，用 try/except 包住以保持
+    原实现「失败返回 0」的语义。
+    """
+    try:
+        return float(_media_duration(video_path))
+    except Exception:
         return 0
-    data = json.loads(result.stdout)
-    return float(data["format"]["duration"])
 
 
 def extract_random_frames(video_path, output_dir, count=5, prefix="frame"):
@@ -350,9 +351,12 @@ def extract_random_frames(video_path, output_dir, count=5, prefix="frame"):
             "-vframes", "1", "-q:v", "2",
             "-y", output_path
         ]
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore")
-        if result.returncode == 0 and os.path.exists(output_path):
-            saved.append(output_path)
+        try:
+            run_ffmpeg(cmd, error_message="extract frame failed", output_path=output_path)
+            if os.path.exists(output_path):
+                saved.append(output_path)
+        except FFmpegError:
+            continue
 
     return saved
 

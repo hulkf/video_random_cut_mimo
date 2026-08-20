@@ -1,10 +1,8 @@
-import subprocess
-import json
 import os
 import tempfile
 import shutil
 
-from core.encoder import get_encoder
+from core.ffmpeg_runner import run_ffmpeg, run_ffmpeg_with_fallback, FFmpegError
 from utils.media_utils import get_video_duration, probe_video
 
 
@@ -15,7 +13,10 @@ def extract_frames(video_path, output_dir, frame_interval=1.0):
         "ffmpeg", "-i", video_path, "-vf", f"fps=1/{frame_interval}",
         "-q:v", "2", os.path.join(output_dir, "frame_%04d.jpg")
     ]
-    subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore")
+    try:
+        run_ffmpeg(cmd, error_message="extract_frames failed")
+    except FFmpegError:
+        pass
     return sorted([
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
@@ -25,55 +26,70 @@ def extract_frames(video_path, output_dir, frame_interval=1.0):
 
 def cut_video(video_path, start_time, duration, output_path):
     """Cut a segment from video with accurate seeking."""
-    codec, enc_preset, quality_args = get_encoder(crf=23)
-    cmd = [
-        "ffmpeg", "-i", video_path,
-        "-ss", str(start_time), "-t", str(duration),
-        "-vf", "setsar=1",
-        "-c:v", codec, "-preset", enc_preset, *quality_args,
-        "-c:a", "aac", "-b:a", "128k",
-        "-y", output_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-    if result.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"cut_video failed: {result.stderr}")
+    def _build_cmd(params):
+        _codec, _enc_preset, _quality_args = params
+        return [
+            "ffmpeg", "-i", video_path,
+            "-ss", str(start_time), "-t", str(duration),
+            "-vf", "setsar=1",
+            "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+            "-c:a", "aac", "-b:a", "128k",
+            "-y", output_path
+        ]
+
+    run_ffmpeg_with_fallback(
+        _build_cmd, crf=23, timeout=3600,
+        error_message="cut_video failed", output_path=output_path,
+    )
+    if not os.path.exists(output_path):
+        raise RuntimeError("cut_video failed: output file not created")
     return output_path
 
 
 def cut_video_fast(video_path, start_time, duration, output_path):
     """Cut a segment using input-side seeking for faster batch slicing."""
-    codec, enc_preset, quality_args = get_encoder(crf=23)
-    cmd = [
-        "ffmpeg",
-        "-ss", str(start_time),
-        "-i", video_path,
-        "-t", str(duration),
-        "-vf", "setsar=1",
-        "-c:v", codec, "-preset", enc_preset, *quality_args,
-        "-c:a", "aac", "-b:a", "128k",
-        "-avoid_negative_ts", "make_zero",
-        "-y", output_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-    if result.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"cut_video_fast failed: {result.stderr}")
+    def _build_cmd(params):
+        _codec, _enc_preset, _quality_args = params
+        return [
+            "ffmpeg",
+            "-ss", str(start_time),
+            "-i", video_path,
+            "-t", str(duration),
+            "-vf", "setsar=1",
+            "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+            "-c:a", "aac", "-b:a", "128k",
+            "-avoid_negative_ts", "make_zero",
+            "-y", output_path
+        ]
+
+    run_ffmpeg_with_fallback(
+        _build_cmd, crf=23, timeout=3600,
+        error_message="cut_video_fast failed", output_path=output_path,
+    )
+    if not os.path.exists(output_path):
+        raise RuntimeError("cut_video_fast failed: output file not created")
     return output_path
 
 
 def cut_video_no_audio(video_path, start_time, duration, output_path):
     """Cut a video-only segment for filler clips."""
-    codec, enc_preset, quality_args = get_encoder(crf=23)
-    cmd = [
-        "ffmpeg", "-i", video_path,
-        "-ss", str(start_time), "-t", str(duration),
-        "-vf", "setsar=1",
-        "-c:v", codec, "-preset", enc_preset, *quality_args,
-        "-an",
-        "-y", output_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-    if result.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"cut_video_no_audio failed: {result.stderr}")
+    def _build_cmd(params):
+        _codec, _enc_preset, _quality_args = params
+        return [
+            "ffmpeg", "-i", video_path,
+            "-ss", str(start_time), "-t", str(duration),
+            "-vf", "setsar=1",
+            "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+            "-an",
+            "-y", output_path
+        ]
+
+    run_ffmpeg_with_fallback(
+        _build_cmd, crf=23, timeout=3600,
+        error_message="cut_video_no_audio failed", output_path=output_path,
+    )
+    if not os.path.exists(output_path):
+        raise RuntimeError("cut_video_no_audio failed: output file not created")
     return output_path
 
 
@@ -83,9 +99,8 @@ def extract_audio(video_path, output_path):
         "ffmpeg", "-i", video_path, "-vn", "-acodec", "copy",
         "-y", output_path
     ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-    if result.returncode != 0:
-        raise RuntimeError(f"extract_audio failed: {result.stderr}")
+    run_ffmpeg(cmd, timeout=3600, error_message="extract_audio failed",
+               output_path=output_path)
     return output_path
 
 
@@ -109,14 +124,23 @@ def _blur_pad_video(input_path, output_path, target_w, target_h):
     if abs(src_ratio - target_ratio) < 0.01:
         if src_w == target_w and src_h == target_h:
             return input_path
-        codec, enc_preset, quality_args = get_encoder(crf=23)
-        cmd = [
-            "ffmpeg", "-i", input_path,
-            "-vf", f"scale={target_w}:{target_h},setsar=1",
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-an", "-y", output_path
-        ]
-        subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=120)
+
+        def _build_scale_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            return [
+                "ffmpeg", "-i", input_path,
+                "-vf", f"scale={target_w}:{target_h},setsar=1",
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-an", "-y", output_path
+            ]
+
+        try:
+            run_ffmpeg_with_fallback(
+                _build_scale_cmd, crf=23, timeout=120,
+                error_message="blur pad failed", output_path=output_path,
+            )
+        except FFmpegError:
+            pass
         return output_path
 
     if src_ratio > target_ratio:
@@ -132,17 +156,19 @@ def _blur_pad_video(input_path, output_path, target_w, target_h):
         f"[blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2,setsar=1"
     )
 
-    codec, enc_preset, quality_args = get_encoder(crf=23)
-    cmd = [
-        "ffmpeg", "-i", input_path,
-        "-filter_complex", vf,
-        "-c:v", codec, "-preset", enc_preset, *quality_args,
-        "-an", "-y", output_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                            errors="ignore", timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(f"blur pad failed: {result.stderr}")
+    def _build_blur_cmd(params):
+        _codec, _enc_preset, _quality_args = params
+        return [
+            "ffmpeg", "-i", input_path,
+            "-filter_complex", vf,
+            "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+            "-an", "-y", output_path
+        ]
+
+    run_ffmpeg_with_fallback(
+        _build_blur_cmd, crf=23, timeout=120,
+        error_message="blur pad failed", output_path=output_path,
+    )
     return output_path
 
 
@@ -153,66 +179,61 @@ def image_to_video(image_path, duration, output_path, target_w=1080, target_h=19
     No audio track - audio is handled separately.
     Uses FFmpeg for all operations to avoid OpenCV path encoding issues.
     """
-    probe_cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "json", image_path
-    ]
-    result = subprocess.run(probe_cmd, capture_output=True, text=True,
-                            encoding="utf-8", errors="ignore", timeout=10)
-    if result.returncode != 0 or not result.stdout:
-        raise RuntimeError(f"Failed to probe image: {image_path}")
-    
-    probe_data = json.loads(result.stdout)
-    stream = probe_data.get("streams", [{}])[0]
-    w = stream.get("width", 0)
-    h = stream.get("height", 0)
-    
+    try:
+        probe_data = probe_video(image_path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to probe image: {image_path}") from e
+    w = probe_data.get("width", 0) or 0
+    h = probe_data.get("height", 0) or 0
+
     if w == 0 or h == 0:
         raise RuntimeError(f"Failed to get image dimensions: {image_path}")
-    
+
     src_ratio = w / h
     target_ratio = target_w / target_h
-    codec, enc_preset, quality_args = get_encoder(crf=23)
-    
+
     if abs(src_ratio - target_ratio) < 0.01 and w == target_w and h == target_h:
-        cmd = [
-            "ffmpeg", "-loop", "1", "-i", image_path,
-            "-t", str(duration),
-            "-vf", f"scale={target_w}:{target_h},setsar=1",
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-pix_fmt", "yuv420p",
-            "-an",
-            "-y", output_path
-        ]
+        def _build_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            return [
+                "ffmpeg", "-loop", "1", "-i", image_path,
+                "-t", str(duration),
+                "-vf", f"scale={target_w}:{target_h},setsar=1",
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-pix_fmt", "yuv420p",
+                "-an",
+                "-y", output_path
+            ]
     else:
         if src_ratio > target_ratio:
             fit_w, fit_h = target_w, int(target_w / src_ratio)
         else:
             fit_h = target_h
             fit_w = int(target_h * src_ratio)
-        
+
         vf = (
             f"split[bg][fg];"
             f"[bg]scale={target_w}:{target_h},crop={target_w}:{target_h},boxblur=20:5[blurred];"
             f"[fg]scale={fit_w}:{fit_h}[fg_scaled];"
             f"[blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2,setsar=1"
         )
-        
-        cmd = [
-            "ffmpeg", "-loop", "1", "-i", image_path,
-            "-t", str(duration),
-            "-filter_complex", vf,
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-pix_fmt", "yuv420p",
-            "-an",
-            "-y", output_path
-        ]
-    
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                            errors="ignore", timeout=60)
-    if result.returncode != 0:
-        raise RuntimeError(f"image_to_video failed: {result.stderr}")
+
+        def _build_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            return [
+                "ffmpeg", "-loop", "1", "-i", image_path,
+                "-t", str(duration),
+                "-filter_complex", vf,
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-pix_fmt", "yuv420p",
+                "-an",
+                "-y", output_path
+            ]
+
+    run_ffmpeg_with_fallback(
+        _build_cmd, crf=23, timeout=60,
+        error_message="image_to_video failed", output_path=output_path,
+    )
     return output_path
 
 
@@ -261,10 +282,6 @@ def concat_videos(input_paths, output_path):
         raise RuntimeError("No valid video paths to concatenate")
 
     try:
-        cmd = ["ffmpeg"]
-        for p in processed_paths:
-            cmd.extend(["-i", p])
-
         filters = []
         input_parts = []
         for i in range(len(processed_paths)):
@@ -275,18 +292,24 @@ def concat_videos(input_paths, output_path):
         filters.append(f"{concat_in}concat=n={len(processed_paths)}:v=1:a=0[outv]")
 
         filter_str = ";".join(filters)
-        codec, enc_preset, quality_args = get_encoder(crf=23)
-        cmd.extend([
-            "-filter_complex", filter_str,
-            "-map", "[outv]",
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-an", "-y", output_path
-        ])
 
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                                errors="ignore", timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(f"concat failed: {result.stderr}")
+        def _build_concat_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            _cmd = ["ffmpeg"]
+            for _p in processed_paths:
+                _cmd.extend(["-i", _p])
+            _cmd.extend([
+                "-filter_complex", filter_str,
+                "-map", "[outv]",
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-an", "-y", output_path
+            ])
+            return _cmd
+
+        run_ffmpeg_with_fallback(
+            _build_concat_cmd, crf=23, timeout=300,
+            error_message="concat failed", output_path=output_path,
+        )
         return output_path
     finally:
         if tmp_dir:
@@ -302,9 +325,10 @@ def remove_audio(video_path, output_path):
         "-c", "copy",
         "-y", output_path
     ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
-    if result.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"remove_audio failed: {result.stderr}")
+    run_ffmpeg(cmd, timeout=60, error_message="remove_audio failed",
+               output_path=output_path)
+    if not os.path.exists(output_path):
+        raise RuntimeError("remove_audio failed: output file not created")
     return output_path
 
 
@@ -321,9 +345,10 @@ def add_audio(video_path, audio_path, output_path):
         "-shortest",
         "-y", output_path
     ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-    if result.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"add_audio failed: {result.stderr}")
+    run_ffmpeg(cmd, timeout=3600, error_message="add_audio failed",
+               output_path=output_path)
+    if not os.path.exists(output_path):
+        raise RuntimeError("add_audio failed: output file not created")
     return output_path
 
 
@@ -351,7 +376,8 @@ def add_audio_with_silence(video_path, audio_path, output_path, silence_duration
         "-shortest",
         "-y", output_path
     ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=3600)
-    if result.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"add_audio_with_silence failed: {result.stderr}")
+    run_ffmpeg(cmd, timeout=3600, error_message="add_audio_with_silence failed",
+               output_path=output_path)
+    if not os.path.exists(output_path):
+        raise RuntimeError("add_audio_with_silence failed: output file not created")
     return output_path

@@ -1,7 +1,8 @@
 from paddleocr import PaddleOCR
 import os
-import subprocess
 import glob as glob_module
+
+from core.ffmpeg_runner import run_ffmpeg, FFmpegError
 
 
 _ocr_instance = None
@@ -38,7 +39,10 @@ def detect_single_video(args):
             "ffmpeg", "-i", video_path, "-vf", f"fps=1/{frame_interval}",
             "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
         ]
-        subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore")
+        try:
+            run_ffmpeg(cmd, error_message="extract frames failed")
+        except FFmpegError:
+            return video_path, False, frames_dir
 
         frame_files = sorted(glob_module.glob(os.path.join(frames_dir, "*.jpg")))
         if not frame_files:

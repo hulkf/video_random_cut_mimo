@@ -81,6 +81,40 @@ def terminate_all() -> int:
     return terminated
 
 
+def kill_all_ffmpeg() -> int:
+    """兜底杀净所有被追踪的 ffmpeg 进程（关窗时调用）。
+
+    先 terminate 优雅退出；仍在运行的（poll() is None）再补 taskkill /F /PID
+    强制结束，避免关窗后残留 ffmpeg 孤儿进程。返回终止数量。
+    """
+    terminated = 0
+    with _procs_lock:
+        procs = list(_procs)
+    for p in procs:
+        if p.poll() is not None:
+            continue
+        try:
+            p.terminate()
+            terminated += 1
+        except Exception:
+            pass
+    # 强制兜底：terminate 未生效的用 taskkill /F
+    if sys.platform == "win32":
+        for p in procs:
+            if p.poll() is not None:
+                continue
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(p.pid)],
+                    capture_output=True, timeout=5,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                terminated += 1
+            except Exception:
+                pass
+    return terminated
+
+
 def _remove_output(output_path: Optional[str]) -> None:
     """删除半成品输出（失败/超时后清理，R7）。"""
     if output_path and os.path.exists(output_path):
@@ -91,10 +125,13 @@ def _remove_output(output_path: Optional[str]) -> None:
 
 
 def _read_progress_stdout(proc: subprocess.Popen,
-                          on_progress: Callable[[dict], None]) -> str:
+                          on_progress: Callable[[dict], None]) -> tuple:
     """实时读取 stdout 进度行（-progress pipe:1 输出 key=value 行）并回调。
 
     stderr 在独立线程中读取，避免管道缓冲写满导致子进程阻塞。
+    Returns:
+        (stdout_data, stderr_data) 两个字符串；stderr 由后台线程收集，
+        超时/失败时供 FFmpegError.stderr 使用（修复进度模式下 stderr 丢失缺陷）。
     """
     stderr_chunks: List[str] = []
 
@@ -129,7 +166,7 @@ def _read_progress_stdout(proc: subprocess.Popen,
                     pass
     finally:
         reader.join(timeout=5)
-    return "".join(stdout_parts)
+    return "".join(stdout_parts), "".join(stderr_chunks)
 
 
 def run_ffmpeg(
@@ -167,9 +204,9 @@ def run_ffmpeg(
         track_proc(proc)
     try:
         if on_progress is not None and "-progress" in cmd and "pipe:1" in cmd:
-            stdout_data = _read_progress_stdout(proc, on_progress)
-            # stderr 由 _read_progress_stdout 的线程收集；等进程结束后再聚合
-            stderr_data = ""
+            stdout_data, stderr_data = _read_progress_stdout(proc, on_progress)
+            # 进度模式下 stderr 由 _read_progress_stdout 线程收集并一并返回；
+            # 超时/失败时 FFmpegError.stderr 有内容（修复原 stderr 丢失缺陷）
         else:
             try:
                 stdout_data, stderr_data = proc.communicate(timeout=timeout)

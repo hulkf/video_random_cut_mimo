@@ -2,9 +2,10 @@ import os
 import random
 import tempfile
 import shutil
-import subprocess
 
-from core.encoder import get_encoder
+from core.ffmpeg_runner import (
+    run_ffmpeg, run_ffmpeg_with_fallback, FFmpegError
+)
 from utils.media_utils import collect_videos, probe_video
 from utils.path_utils import normalize_path
 from utils.video_utils import (
@@ -67,7 +68,8 @@ class VideoConcatenatorEngine:
             "-strict", "unofficial",
             "-q:v", "2", output_path
         ]
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
+        result = run_ffmpeg(cmd, timeout=60, error_message="extract cover frame failed",
+                            output_path=output_path)
         if result.returncode != 0 or not os.path.exists(output_path):
             raise RuntimeError(f"extract cover frame failed: {result.stderr}")
         return output_path
@@ -100,18 +102,8 @@ class VideoConcatenatorEngine:
                     cover_video = None
                     cover_duration = 0
 
-            # 构建 ffmpeg 命令：直接拼接视频和音频
-            cmd = ["ffmpeg"]
-
-            # 输入视频
-            if cover_video:
-                cmd.extend(["-i", cover_video])
-            cmd.extend(["-i", video_a, "-i", video_b])
-
-            # 静音时长
-            total_silence = cover_duration
-
             # 构建 filter_complex
+            total_silence = cover_duration
             filter_parts = []
             video_idx = 0
             cover_mode = self._cover_mode_name()
@@ -175,19 +167,23 @@ class VideoConcatenatorEngine:
 
             filter_str = ";".join(filter_parts)
 
-            codec, enc_preset, quality_args = get_encoder(crf=23)
-            cmd.extend([
-                "-filter_complex", filter_str,
-                "-map", "[outv]", "-map", "[outa]",
-                "-c:v", codec, "-preset", enc_preset, *quality_args,
-                "-c:a", "aac", "-b:a", "128k",
-                "-shortest",
-                "-y", output_path
-            ])
+            # 编码参数统一走 run_ffmpeg_with_fallback（硬件失败自动回退软件）
+            def _build_concat_cmd(params):
+                _codec, _enc_preset, _quality_args = params
+                return [
+                    "ffmpeg",
+                    "-filter_complex", filter_str,
+                    "-map", "[outv]", "-map", "[outa]",
+                    "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-shortest",
+                    "-y", output_path
+                ]
 
-            result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=600)
-            if result.returncode != 0:
-                raise RuntimeError(f"concat failed: {result.stderr}")
+            run_ffmpeg_with_fallback(
+                _build_concat_cmd, crf=23,
+                timeout=600, error_message="concat failed", output_path=output_path,
+            )
 
             return output_path
         finally:
@@ -199,17 +195,27 @@ class VideoConcatenatorEngine:
         normalized_paths = []
         for i, p in enumerate(input_paths):
             norm_path = os.path.join(os.path.dirname(output_path), f"norm_{i}.mp4")
-            codec, enc_preset, quality_args = get_encoder(crf=23)
-            cmd = [
-                "ffmpeg", "-i", p,
-                "-vf", f"scale={ref_w}:{ref_h},fps={ref_fps},setsar=1",
-                "-c:v", codec, "-preset", enc_preset, *quality_args,
-                "-pix_fmt", "yuv420p",
-                "-an", "-y", norm_path
-            ]
-            result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=120)
-            if result.returncode == 0 and os.path.exists(norm_path):
-                normalized_paths.append(norm_path)
+
+            def _build_norm_cmd(params):
+                _codec, _enc_preset, _quality_args = params
+                return [
+                    "ffmpeg", "-i", p,
+                    "-vf", f"scale={ref_w}:{ref_h},fps={ref_fps},setsar=1",
+                    "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                    "-pix_fmt", "yuv420p",
+                    "-an", "-y", norm_path
+                ]
+
+            try:
+                run_ffmpeg_with_fallback(
+                    _build_norm_cmd, crf=23,
+                    timeout=120, error_message="normalize video failed",
+                    output_path=norm_path,
+                )
+                if os.path.exists(norm_path):
+                    normalized_paths.append(norm_path)
+            except FFmpegError:
+                continue
 
         if not normalized_paths:
             raise RuntimeError("No valid video paths to concatenate")
@@ -220,14 +226,23 @@ class VideoConcatenatorEngine:
             for p in normalized_paths:
                 f.write(f"file '{p}'\n")
 
-        codec, enc_preset, quality_args = get_encoder(crf=23)
-        cmd = [
-            "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list,
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-pix_fmt", "yuv420p",
-            "-an", "-y", output_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=300)
+        def _build_concat_demux_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            return [
+                "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list,
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-pix_fmt", "yuv420p",
+                "-an", "-y", output_path
+            ]
+
+        concat_error = None
+        try:
+            run_ffmpeg_with_fallback(
+                _build_concat_demux_cmd, crf=23,
+                timeout=300, error_message="concat video failed", output_path=output_path,
+            )
+        except FFmpegError as e:
+            concat_error = e
 
         # 清理
         if os.path.exists(concat_list):
@@ -236,8 +251,8 @@ class VideoConcatenatorEngine:
             if os.path.exists(p):
                 os.remove(p)
 
-        if result.returncode != 0:
-            raise RuntimeError(f"concat video failed: {result.stderr}")
+        if concat_error is not None:
+            raise RuntimeError(f"concat video failed: {concat_error.stderr}") from concat_error
 
     def _extract_audio(self, video_path, audio_path):
         """提取音频"""
@@ -245,9 +260,13 @@ class VideoConcatenatorEngine:
             "ffmpeg", "-i", video_path, "-vn", "-acodec", "copy",
             "-y", audio_path
         ]
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
+        try:
+            run_ffmpeg(cmd, timeout=60, error_message="extract audio failed",
+                       output_path=audio_path)
+        except FFmpegError:
+            return False
         # 如果提取失败（可能没有音频），返回False
-        return result.returncode == 0 and os.path.exists(audio_path)
+        return os.path.exists(audio_path)
 
     def _merge_audio(self, audio_parts, output_path):
         """合并音频：支持静音和文件"""
@@ -257,7 +276,11 @@ class VideoConcatenatorEngine:
                 "ffmpeg", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
                 "-t", "1", "-c:a", "aac", "-y", output_path
             ]
-            subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore")
+            try:
+                run_ffmpeg(cmd, error_message="create silence failed",
+                           output_path=output_path)
+            except FFmpegError:
+                pass
             return
 
         filter_parts = []
@@ -296,7 +319,11 @@ class VideoConcatenatorEngine:
                 "-t", str(total_silence), "-c:a", "aac", "-b:a", "128k",
                 "-y", silence_path
             ]
-            subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
+            try:
+                run_ffmpeg(cmd, timeout=60, error_message="create silence failed",
+                           output_path=silence_path)
+            except FFmpegError:
+                pass
             if os.path.exists(silence_path):
                 file_parts.insert(0, silence_path)
 
@@ -317,7 +344,11 @@ class VideoConcatenatorEngine:
             "-c:a", "aac", "-b:a", "128k",
             "-y", output_path
         ]
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=60)
+        try:
+            run_ffmpeg(cmd, timeout=60, error_message="merge audio failed",
+                       output_path=output_path)
+        except FFmpegError:
+            pass
 
         # 清理
         if os.path.exists(concat_list):
@@ -335,9 +366,8 @@ class VideoConcatenatorEngine:
             "-shortest",
             "-y", output_path
         ]
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore", timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(f"add audio failed: {result.stderr}")
+        run_ffmpeg(cmd, timeout=300, error_message="add audio failed",
+                   output_path=output_path)
 
     def run(self, callback=None):
         os.makedirs(self.output_folder, exist_ok=True)

@@ -33,6 +33,8 @@ import shutil
 import subprocess
 import time
 
+from utils.media_utils import VIDEO_EXTS as _BASE_VIDEO_EXTS
+
 # ---------------------------------------------------------------- 常量
 
 #: 画质修复档位表（CLI 的 --level 取值）
@@ -52,7 +54,8 @@ LEVELS = {
 #: 仅支持图片的档位。传视频进去会白白上传一遍才失败，所以提前拦截。
 IMAGE_ONLY_LEVELS = {5, 6, 9}
 
-VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".m4v", ".wmv")
+#: 从公共 VIDEO_EXTS 派生（保持 8 元组语义不变）
+VIDEO_EXTS = _BASE_VIDEO_EXTS + (".webm", ".m4v", ".wmv")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 
 #: CLI 成功时打印"结果路径："，真实路径通常在**下一行**

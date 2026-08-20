@@ -1,10 +1,9 @@
 import os
 import re
 import shutil
-import subprocess
 
-from core.encoder import get_encoder
-from utils.media_utils import VIDEO_EXTS, collect_videos
+from core.ffmpeg_runner import run_ffmpeg_with_fallback
+from utils.media_utils import VIDEO_EXTS, collect_videos, probe_video
 from utils.video_utils import get_video_duration
 
 
@@ -158,13 +157,11 @@ def build_keep_ranges(duration, delete_ranges, min_duration=0.08):
 
 
 def has_audio_stream(video_path):
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "a:0",
-        "-show_entries", "stream=index", "-of", "csv=p=0", video_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                            encoding="utf-8", errors="ignore")
-    return result.returncode == 0 and bool(result.stdout.strip())
+    """判断视频是否含音频流（委托 utils.media_utils.probe_video）。"""
+    try:
+        return bool(probe_video(video_path)["has_audio"])
+    except Exception:
+        return False
 
 
 class KeywordRemover:
@@ -327,19 +324,24 @@ class KeywordRemover:
             )
             map_args = ["-map", "[outv]"]
 
-        codec, enc_preset, quality_args = get_encoder(crf=23)
-        cmd = [
-            "ffmpeg", "-i", video_path,
-            "-filter_complex", ";".join(filter_parts),
-            *map_args,
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            "-y", output_path
-        ]
-        result = subprocess.run(cmd, capture_output=True,
-                                encoding="utf-8", errors="ignore", timeout=7200)
-        if result.returncode != 0 or not os.path.exists(output_path):
-            raise RuntimeError(f"remove keyword ranges failed: {result.stderr}")
+        def _build_remove_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            return [
+                "ffmpeg", "-i", video_path,
+                "-filter_complex", ";".join(filter_parts),
+                *map_args,
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-y", output_path
+            ]
+
+        run_ffmpeg_with_fallback(
+            _build_remove_cmd, crf=23,
+            timeout=7200, error_message="remove keyword ranges failed",
+            output_path=output_path,
+        )
+        if not os.path.exists(output_path):
+            raise RuntimeError("remove keyword ranges failed: output file not created")
 
         return output_path, delete_ranges

@@ -11,6 +11,8 @@ import wave
 import numpy as np
 import onnxruntime as ort
 
+from core.ffmpeg_runner import CREATE_NO_WINDOW
+
 
 class FunASR_ONNX:
     """FunASR Paraformer ONNX 离线推理"""
@@ -105,7 +107,8 @@ class FunASR_ONNX:
             "-ar", str(self.sr), "-ac", "1",
             "-f", "wav", "-y", "pipe:1"
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=3600)
+        result = subprocess.run(cmd, capture_output=True, timeout=3600,
+                                creationflags=CREATE_NO_WINDOW)
         if result.returncode != 0:
             return None
         wav_data = io.BytesIO(result.stdout)

@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QCheckBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from core.encoder import get_encoder
+from core.ffmpeg_runner import run_ffmpeg, run_ffmpeg_with_fallback, FFmpegError
 from gui.config import get_config, set_config
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
@@ -141,23 +141,30 @@ class SubtitleWorker(BaseWorker):
             f"{position_style}'"
         )
 
-        codec, enc_preset, quality_args = get_encoder(crf=23)
-        cmd = [
-            "ffmpeg", "-i", video_path,
-            "-vf", subtitle_filter,
-            "-c:v", codec, "-preset", enc_preset, *quality_args,
-            "-c:a", "copy",
-            "-y", output_path
-        ]
+        def _build_burn_cmd(params):
+            _codec, _enc_preset, _quality_args = params
+            return [
+                "ffmpeg", "-i", video_path,
+                "-vf", subtitle_filter,
+                "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                "-c:a", "copy",
+                "-y", output_path
+            ]
 
-        ff_result = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                                   errors="ignore", timeout=3600)
+        try:
+            run_ffmpeg_with_fallback(
+                _build_burn_cmd, crf=23, timeout=3600,
+                error_message="burn subtitles failed", output_path=output_path,
+            )
+            success = os.path.exists(output_path)
+        except FFmpegError:
+            success = False
 
         return {
             "video": os.path.relpath(video_path, self.folder_path),
             "full_path": video_path,
             "output_path": output_path,
-            "success": ff_result.returncode == 0 and os.path.exists(output_path)
+            "success": success
         }
 
     def _process_video(self, video_path, asr):
@@ -222,9 +229,10 @@ class SubtitleWorker(BaseWorker):
 
         try:
             # 1. \u63d0\u53d6\u97f3\u9891
-            subprocess.run(["ffmpeg", "-i", video_path, "-vn", "-acodec", "pcm_s16le",
-                           "-ar", "16000", "-ac", "1", "-y", tmp_audio],
-                          capture_output=True, timeout=3600, check=True)
+            run_ffmpeg(["ffmpeg", "-i", video_path, "-vn", "-acodec", "pcm_s16le",
+                        "-ar", "16000", "-ac", "1", "-y", tmp_audio],
+                       timeout=3600, error_message="extract audio failed",
+                       output_path=tmp_audio)
 
             # 2. \u89e3\u6790\u6a21\u578b\u8def\u5f84
             model_dir = self.model_dir
@@ -270,7 +278,7 @@ class SubtitleWorker(BaseWorker):
                     pass
 
             return {"video": video_path, "success": False}
-        except subprocess.CalledProcessError:
+        except FFmpegError:
             return {"video": video_path, "success": False}
         except Exception as e:
             return {"video": video_path, "success": False}

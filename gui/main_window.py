@@ -2,6 +2,7 @@ from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPus
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from gui.tab_registry import TABS, stop_tab_threads
+from core.ffmpeg_runner import kill_all_ffmpeg
 
 
 class WrapTabWidget(QWidget):
@@ -108,9 +109,15 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(tab, title)
 
     def closeEvent(self, event):
-        """关闭窗口时停止所有后台线程，确保进程（及启动它的终端）能随之退出。"""
+        """关闭窗口时停止所有后台线程，确保进程（及启动它的终端）能随之退出。
+
+        stop_tab_threads 只停 QThread（协作式停止 + terminate 兜底）；
+        之后再 kill_all_ffmpeg() 兜底杀净所有被追踪的 ffmpeg 子进程，
+        避免关窗后残留 ffmpeg 孤儿进程。
+        """
         for attr, _title, _factory in TABS:
             tab = getattr(self, attr, None)
             if tab is not None:
                 stop_tab_threads(tab)
+        kill_all_ffmpeg()
         event.accept()

@@ -1,9 +1,10 @@
 import os
 import random
 import shutil
-import subprocess
 import tempfile
 from core.audio_extractor import AudioExtractor
+from core.ffmpeg_runner import run_ffmpeg, FFmpegError
+from utils.media_utils import VIDEO_EXTS
 from utils.video_utils import (
     get_video_duration, concat_videos, add_audio,
     extract_audio, add_audio_with_silence, image_to_video
@@ -11,7 +12,6 @@ from utils.video_utils import (
 
 
 AUDIO_EXTS = (".mp3", ".wav", ".aac", ".flac", ".ogg")
-VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".flv")
 MEDIA_EXTS = AUDIO_EXTS + VIDEO_EXTS
 
 
@@ -137,10 +137,10 @@ class VideoMixer:
                     "-c", "copy", "-y", no_audio_path
                 ]
                 try:
-                    subprocess.run(cmd, capture_output=True,
-                                   encoding="utf-8", errors="ignore", timeout=30)
+                    run_ffmpeg(cmd, timeout=30, error_message="strip audio failed",
+                               output_path=no_audio_path)
                     all_parts.append(no_audio_path)
-                except subprocess.TimeoutExpired:
+                except FFmpegError:
                     continue
 
             if not all_parts:

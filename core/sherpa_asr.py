@@ -11,6 +11,8 @@ import wave
 import numpy as np
 import sherpa_onnx
 
+from core.ffmpeg_runner import CREATE_NO_WINDOW
+
 
 class SherpaASR:
     """基于 sherpa-onnx 的统一 ASR 引擎"""
@@ -245,7 +247,8 @@ class SherpaASR:
             "-ar", str(self.sr), "-ac", "1",
             "-f", "wav", "-y", "pipe:1"
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=3600)
+        result = subprocess.run(cmd, capture_output=True, timeout=3600,
+                                creationflags=CREATE_NO_WINDOW)
 
         if tmp_file and os.path.exists(tmp_file.name):
             os.remove(tmp_file.name)
