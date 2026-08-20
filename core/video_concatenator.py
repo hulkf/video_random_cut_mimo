@@ -13,17 +13,37 @@ from core.video_utils import (
 )
 
 
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _as_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class VideoConcatenatorEngine:
     def __init__(self, config):
         self.config = config
         self.folder_a = normalize_path(config["folder_a"])
         self.folder_b = normalize_path(config["folder_b"])
         self.output_folder = normalize_path(config["output_folder"])
-        self.cover_enabled = config.get("cover_enabled", False)
+        self.cover_enabled = _as_bool(config.get("cover_enabled", False))
         self.cover_source = config.get("cover_source", "folder")
         self.cover_folder = normalize_path(config.get("cover_folder", ""))
-        self.cover_duration_min = config.get("cover_duration_min", 0.5)
-        self.cover_duration_max = config.get("cover_duration_max", 1.0)
+        self.cover_duration_min = _as_float(config.get("cover_duration_min", 0.5), 0.5)
+        self.cover_duration_max = _as_float(config.get("cover_duration_max", 1.0), 1.0)
+        if self.cover_duration_max < self.cover_duration_min:
+            self.cover_duration_min, self.cover_duration_max = (
+                self.cover_duration_max,
+                self.cover_duration_min,
+            )
         self.cover_mode = config.get("cover_mode", "front")  # front, back, both
 
     def get_videos(self, folder):
