@@ -17,6 +17,7 @@ import shutil
 import glob as glob_module
 import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from utils.media_utils import VIDEO_EXTS
 
 
 class TextRecognitionWorker(BaseWorker):
@@ -31,7 +32,7 @@ class TextRecognitionWorker(BaseWorker):
 
     def run(self):
         try:
-            video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+            video_exts = VIDEO_EXTS
             video_files = []
             for root, dirs, files in os.walk(self.folder_path):
                 for f in files:

@@ -13,6 +13,7 @@ from gui.config import get_config, set_config, get_secret
 from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
+from utils.media_utils import VIDEO_EXTS
 
 # 延迟导入 sdk，避免启动时报错
 def get_skill_client():
@@ -369,7 +370,7 @@ class KaipaiCloudTab(BaseTab):
         if os.path.isdir(input_path):
             is_video_task = "视频" in task_name
             if is_video_task:
-                exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+                exts = VIDEO_EXTS
             else:
                 exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 

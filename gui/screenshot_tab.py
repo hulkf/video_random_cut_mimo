@@ -17,7 +17,7 @@ from gui.common.path_row import PathRow, MODE_FOLDER
 from gui.common.progress_panel import ProgressPanel
 from core.ffmpeg_runner import run_ffmpeg, FFmpegError
 from core.screenshot import SCRFDetector
-from utils.media_utils import get_video_duration as _media_duration
+from utils.media_utils import get_video_duration as _media_duration, VIDEO_EXTS
 
 
 class ScreenshotWorker(BaseWorker):
@@ -35,7 +35,7 @@ class ScreenshotWorker(BaseWorker):
         self.delete_face_videos = delete_face_videos
     
     def work(self):
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
         video_files = []
         for root, dirs, files in os.walk(self.folder_path):
             for f in files:

@@ -16,6 +16,7 @@ from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
 from gui.common.progress_panel import ProgressPanel
 from gui.config import get_config, set_config
+from utils.media_utils import VIDEO_EXTS
 
 
 class SliceWorker(BaseWorker):
@@ -64,7 +65,7 @@ class SliceWorker(BaseWorker):
         return slicer.slice_video(video_path, video_output)
 
     def work(self):
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
 
         if os.path.isfile(self.folder_path):
             video_files = [os.path.basename(self.folder_path)]
@@ -421,7 +422,7 @@ class SliceTab(BaseTab):
             QMessageBox.critical(self, "错误", f"整理失败: {str(e)}")
 
     def _organize_by_filename(self, output_dir):
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
         moved_count = 0
 
         for item in os.listdir(output_dir):
@@ -443,7 +444,7 @@ class SliceTab(BaseTab):
         QMessageBox.information(self, "完成", f"已将{moved_count}个文件整理到独立文件夹")
 
     def _flatten_to_root(self, output_dir):
-        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+        video_exts = VIDEO_EXTS
         moved_count = 0
         removed_dirs = []
 

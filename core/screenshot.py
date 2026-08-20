@@ -5,7 +5,7 @@ import numpy as np
 import onnxruntime as ort
 
 from core.ffmpeg_runner import run_ffmpeg, FFmpegError
-from utils.media_utils import get_video_duration as _media_duration
+from utils.media_utils import get_video_duration as _media_duration, VIDEO_EXTS
 
 
 class SCRFDetector:
@@ -440,7 +440,7 @@ def extract_frames_from_folder(folder_path, output_dir, count_per_video=5,
     Returns:
         list: 处理结果列表
     """
-    video_exts = (".mp4", ".avi", ".mov", ".mkv", ".flv")
+    video_exts = VIDEO_EXTS
     video_files = []
     for root, dirs, files in os.walk(folder_path):
         for f in files:
