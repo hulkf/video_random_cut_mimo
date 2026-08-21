@@ -59,6 +59,45 @@ class VideoToolTests(unittest.TestCase):
         self.assertEqual(result["outputs"], ["out.mp4"])
         run.assert_called_once_with()
 
+    @patch("video_tool._probe", side_effect=[
+        {"valid": True, "exists": True, "path": "out.mp4", "width": 720,
+         "height": 1280, "duration": 10.0},
+        {"valid": True, "exists": True, "path": "a.mp4", "width": 720,
+         "height": 1280, "duration": 3.0},
+        {"valid": True, "exists": True, "path": "b.mp4", "width": 720,
+         "height": 1280, "duration": 3.0},
+    ])
+    @patch("video_tool.os.makedirs")
+    @patch("core.video_concatenator.VideoConcatenatorEngine.run", return_value=["out.mp4"])
+    @patch("core.video_concatenator.VideoConcatenatorEngine.__init__", return_value=None)
+    def test_concat_accepts_any_9x16_output(self, _init, run, _makedirs, _probe):
+        result = video_tool.run_request({
+            "operation": "video_concat",
+            "inputs": {"folder_a": "a", "folder_b": "b", "output_folder": "out"},
+            "options": {"require_9x16": True, "require_cover": False, "cover_enabled": False},
+        })
+        self.assertTrue(result["success"])
+        self.assertTrue(result["validation"][0]["checks"]["aspect_ratio_9x16"])
+
+    @patch("video_tool._probe", side_effect=[
+        {"valid": True, "exists": True, "path": "out.mp4", "width": 16,
+         "height": 9, "duration": 10.0},
+        {"valid": True, "exists": True, "path": "a.mp4", "width": 16,
+         "height": 9, "duration": 3.0},
+        {"valid": True, "exists": True, "path": "b.mp4", "width": 16,
+         "height": 9, "duration": 3.0},
+    ])
+    @patch("video_tool.os.makedirs")
+    @patch("core.video_concatenator.VideoConcatenatorEngine.run", return_value=["out.mp4"])
+    @patch("core.video_concatenator.VideoConcatenatorEngine.__init__", return_value=None)
+    def test_concat_rejects_non_9x16_output(self, _init, run, _makedirs, _probe):
+        with self.assertRaisesRegex(RuntimeError, "要求 9:16"):
+            video_tool.run_request({
+                "operation": "video_concat",
+                "inputs": {"folder_a": "a", "folder_b": "b", "output_folder": "out"},
+                "options": {"require_9x16": True, "require_cover": False, "cover_enabled": False},
+            })
+
 
 if __name__ == "__main__":
     unittest.main()

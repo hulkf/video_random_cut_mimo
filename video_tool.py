@@ -93,6 +93,11 @@ def _probe(path: str) -> Dict[str, Any]:
     }
 
 
+def _is_9x16(width: int, height: int) -> bool:
+    """Return whether a pixel-sized video has an exact 9:16 ratio."""
+    return width > 0 and height > 0 and width * 16 == height * 9
+
+
 def _validate_request(request: Dict[str, Any]) -> None:
     if not isinstance(request, dict):
         raise ValueError("request 必须是 JSON 对象")
@@ -152,11 +157,11 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         checks = {
             "exists": info["exists"],
             "decodable": info["valid"],
-            "resolution_1080x1920": info["width"] == 1080 and info["height"] == 1920,
+            "aspect_ratio_9x16": _is_9x16(info["width"], info["height"]),
         }
-        if require_9x16 and not checks["resolution_1080x1920"]:
+        if require_9x16 and not checks["aspect_ratio_9x16"]:
             raise RuntimeError(
-                "输出校验失败：要求 1080x1920，实际 {}x{} ({})".format(
+                "输出校验失败：要求 9:16，实际 {}x{} ({})".format(
                     info["width"], info["height"], output
                 )
             )
@@ -185,7 +190,7 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         "summary": {
             "count": len(validated),
             "all_decodable": all(item["checks"]["decodable"] for item in validated),
-            "all_1080x1920": all(item["checks"]["resolution_1080x1920"] for item in validated),
+            "all_9x16": all(item["checks"]["aspect_ratio_9x16"] for item in validated),
             "all_cover_valid": all(item["checks"]["cover_present"] for item in validated),
         },
     }
