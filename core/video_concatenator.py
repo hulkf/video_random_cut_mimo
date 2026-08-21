@@ -37,8 +37,8 @@ class VideoConcatenatorEngine:
         self.cover_enabled = _as_bool(config.get("cover_enabled", False))
         self.cover_source = config.get("cover_source", "folder")
         self.cover_folder = normalize_path(config.get("cover_folder", ""))
-        self.cover_duration_min = _as_float(config.get("cover_duration_min", 0.5), 0.5)
-        self.cover_duration_max = _as_float(config.get("cover_duration_max", 1.0), 1.0)
+        self.cover_duration_min = _as_float(config.get("cover_duration_min", 0.2), 0.2)
+        self.cover_duration_max = _as_float(config.get("cover_duration_max", 0.5), 0.5)
         if self.cover_duration_max < self.cover_duration_min:
             self.cover_duration_min, self.cover_duration_max = (
                 self.cover_duration_max,

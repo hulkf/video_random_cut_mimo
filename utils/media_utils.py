@@ -126,6 +126,24 @@ def probe_video(video_path: str, *, timeout: float = 10.0) -> dict:
 
     width = int(vstream.get("width", 0) or 0)
     height = int(vstream.get("height", 0) or 0)
+    rotation = 0
+    rotation_values = [(vstream.get("tags") or {}).get("rotate")]
+    rotation_values.extend(
+        side_data.get("rotation")
+        for side_data in (vstream.get("side_data_list") or [])
+        if isinstance(side_data, dict)
+    )
+    for value in rotation_values:
+        if value is None or value == "":
+            continue
+        try:
+            rotation = int(round(float(value))) % 360
+            break
+        except (TypeError, ValueError):
+            continue
+    display_width, display_height = width, height
+    if rotation % 180 == 90:
+        display_width, display_height = height, width
     fps = _parse_frame_rate(vstream.get("r_frame_rate", ""))
     duration = _parse_duration(
         (data.get("format", {}) or {}).get("duration", ""),
@@ -135,6 +153,9 @@ def probe_video(video_path: str, *, timeout: float = 10.0) -> dict:
         "codec_name": vstream.get("codec_name", "") or "",
         "width": width,
         "height": height,
+        "rotation": rotation,
+        "display_width": display_width,
+        "display_height": display_height,
         "pix_fmt": vstream.get("pix_fmt", "") or "",
         "r_frame_rate": fps,
         "fps": fps,

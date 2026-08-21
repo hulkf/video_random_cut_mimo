@@ -422,7 +422,7 @@ def delete_video(video_path: str) -> bool:
 def extract_frames_from_folder(folder_path, output_dir, count_per_video=5,
                                 detect_faces=False, delete_faces=False, delete_face_videos=False,
                                 progress_callback=None, video_done_callback=None,
-                                model_path=None):
+                                model_path=None, separate_folders=True):
     """
     从文件夹中提取视频帧
     
@@ -436,6 +436,7 @@ def extract_frames_from_folder(folder_path, output_dir, count_per_video=5,
         progress_callback: 进度回调函数
         video_done_callback: 单个视频处理完成回调
         model_path: SCRFD模型路径
+        separate_folders: 是否为每个视频建立独立截图目录
     
     Returns:
         list: 处理结果列表
@@ -460,7 +461,10 @@ def extract_frames_from_folder(folder_path, output_dir, count_per_video=5,
     for idx, video_path in enumerate(video_files):
         # 单文件输入时 relpath 取 basename，目录输入时取相对路径（行为对齐）
         rel_path = os.path.relpath(video_path, folder_path) if os.path.isdir(folder_path) else os.path.basename(video_path)
-        video_output = os.path.join(output_dir, os.path.splitext(os.path.basename(video_path))[0])
+        video_output = (
+            os.path.join(output_dir, os.path.splitext(os.path.basename(video_path))[0])
+            if separate_folders else output_dir
+        )
 
         images = extract_random_frames(video_path, video_output, count=count_per_video)
 
