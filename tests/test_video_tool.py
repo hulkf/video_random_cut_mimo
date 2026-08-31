@@ -83,6 +83,32 @@ class VideoToolTests(unittest.TestCase):
             })
             self.assertTrue(result["results"][0]["optimization_required"])
 
+    def test_material_organize_rar_uses_7zip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            archive = temp_path / "8819视频01.rar"
+            archive.write_bytes(b"rar")
+            extracted = temp_path / "fake_extract"
+            extracted.mkdir()
+            (extracted / "clip.mp4").write_bytes(b"video")
+
+            def fake_run(*_args, **_kwargs):
+                target = Path(_kwargs.get("cwd", temp_path))
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            with patch("core.material_organizer._find_7zip", return_value="7z.exe"), \
+                 patch("core.material_organizer.subprocess.run", side_effect=fake_run), \
+                 patch("core.material_organizer.tempfile.TemporaryDirectory") as tempdir:
+                tempdir.return_value.__enter__.return_value = str(extracted)
+                tempdir.return_value.__exit__.return_value = False
+                result = video_tool.run_request({
+                    "operation": "material_organize",
+                    "inputs": {"source_path": str(archive)},
+                    "options": {"output_root": str(temp_path / "out")},
+                    "authorization": {"confirmed": True, "scope": "material_organize"},
+                })
+            self.assertEqual(result["results"][0]["video_count"], 1)
+
     def test_every_operation_publishes_a_complete_contract(self):
         for name, spec in video_tool.CAPABILITIES["operations"].items():
             with self.subTest(operation=name):

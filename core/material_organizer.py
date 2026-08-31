@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -48,6 +49,52 @@ def _download_url(url: str, temp_dir: Path) -> Path:
     return target
 
 
+def _find_7zip() -> str | None:
+    for name in ("7z.exe", "7zz.exe", "7z"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for candidate in (
+        Path(r"C:\Program Files\7-Zip\7z.exe"),
+        Path(r"C:\Program Files (x86)\7-Zip\7z.exe"),
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _extract_archive_videos(path: Path, material_dir: Path, videos: list[str]) -> None:
+    if path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            for member in members:
+                if member.is_dir() or Path(member.filename).suffix.lower() not in VIDEO_EXTS:
+                    continue
+                target = _unique_path(material_dir, member.filename)
+                with archive.open(member) as source, target.open("wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                videos.append(str(target))
+        return
+    if path.suffix.lower() != ".rar":
+        raise ValueError(f"不支持的压缩包格式：{path.suffix}")
+    seven_zip = _find_7zip()
+    if not seven_zip:
+        raise RuntimeError("RAR 解压需要本机已安装 7-Zip（未找到 7z.exe/7zz.exe）")
+    with tempfile.TemporaryDirectory(prefix="material_rar_") as extracted:
+        completed = subprocess.run(
+            [seven_zip, "x", "-y", f"-o{extracted}", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "未知错误").strip()
+            raise RuntimeError(f"RAR 解压失败：{detail[-500:]}")
+        for item in sorted(Path(extracted).rglob("*")):
+            if item.is_file() and item.suffix.lower() in VIDEO_EXTS:
+                target = _unique_path(material_dir, item.name)
+                shutil.copy2(item, target)
+                videos.append(str(target))
+
+
 def organize_materials(source_path, *, material_type="model", cargo_number="",
                        output_root=r"D:\千川素材", delete_archive=True) -> dict:
     """归档来源中的视频；压缩包只提取视频文件并安全展平到分类目录。"""
@@ -75,20 +122,13 @@ def organize_materials(source_path, *, material_type="model", cargo_number="",
         material_dir.mkdir(parents=True, exist_ok=True)
         videos, stored, deleted, kinds = [], [], [], []
         for path in local_paths:
-            if path.suffix.lower() == ".zip":
+            if path.suffix.lower() in (".zip", ".rar"):
                 kinds.append("archive")
                 archive_copy = _unique_path(cargo_dir, path.name)
                 if path.resolve() != archive_copy.resolve():
                     shutil.copy2(path, archive_copy)
                 stored.append(str(archive_copy))
-                with zipfile.ZipFile(path) as archive:
-                    for member in archive.infolist():
-                        if member.is_dir() or Path(member.filename).suffix.lower() not in VIDEO_EXTS:
-                            continue
-                        target = _unique_path(material_dir, member.filename)
-                        with archive.open(member) as source, target.open("wb") as destination:
-                            shutil.copyfileobj(source, destination)
-                        videos.append(str(target))
+                _extract_archive_videos(path, material_dir, videos)
                 if delete_archive and archive_copy.exists():
                     archive_copy.unlink()
                     deleted.append(str(archive_copy))
