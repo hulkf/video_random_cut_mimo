@@ -1,5 +1,6 @@
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton,
@@ -35,64 +36,98 @@ class KaipaiWorker(BaseWorker):
         "视频画质修复": "hdvideoallinone",
     }
 
-    def __init__(self, files, task_name, params=None):
+    def __init__(self, files, task_name, params=None, batch_mode=True, max_workers=9):
         super().__init__()
         self.files = files
         self.task_name = task_name
         self.params = params or {}
+        # 开拍任务是远端异步任务。多文件时默认采用有界并发，让任务尽快完成提交，
+        # 同时避免一次性并发过高触发接口限流。
+        self.batch_mode = bool(batch_mode)
+        self.max_workers = max(1, int(max_workers or 1))
 
     def run(self):
         try:
             client = get_skill_client()
             self.log.emit("SDK 客户端初始化成功")
 
-            results = []
             total = len(self.files)
 
-            for idx, file_path in enumerate(self.files):
-                if self.stopped():
-                    self.log.emit("用户停止")
-                    break
-
-                file_name = os.path.basename(file_path)
-                self.progress.emit(idx, total, f"正在处理: {file_name}")
-                self.log.emit(f"[{idx+1}/{total}] 处理: {file_name}")
-
-                try:
-                    api_task_name = self.TASK_MAP.get(self.task_name, self.task_name)
-                    result = client.execute(
-                        task_name=api_task_name,
-                        source=file_path,
-                        params=self.params if self.params else None
-                    )
-
-                    output_urls = result.get("output_urls", [])
-                    task_id = result.get("task_id", "")
-
-                    results.append({
-                        "file": file_name,
-                        "path": file_path,
-                        "status": "成功",
-                        "task_id": task_id,
-                        "output_url": output_urls[0] if output_urls else "",
-                    })
-                    self.log.emit(f"  ✓ 成功: {output_urls[0] if output_urls else 'N/A'}")
-                except Exception as e:
-                    results.append({
-                        "file": file_name,
-                        "path": file_path,
-                        "status": "失败",
-                        "task_id": "",
-                        "output_url": "",
-                        "error": str(e),
-                    })
-                    self.log.emit(f"  ✗ 失败: {e}")
-
-                self.progress.emit(idx + 1, total, f"完成 {idx+1}/{total}")
+            if self.batch_mode and total > 1:
+                results = self._run_batch(client, total)
+            else:
+                results = []
+                for idx, file_path in enumerate(self.files):
+                    if self.stopped():
+                        self.log.emit("用户停止")
+                        break
+                    result = self._process_one(client, file_path, idx, total)
+                    results.append(result)
 
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
+
+    def _process_one(self, client, file_path, idx, total):
+        """提交并等待单个远端任务，保留单文件结果结构。"""
+        file_name = os.path.basename(file_path)
+        self.progress.emit(idx, total, f"正在处理: {file_name}")
+        self.log.emit(f"[{idx+1}/{total}] 提交并处理: {file_name}")
+        try:
+            api_task_name = self.TASK_MAP.get(self.task_name, self.task_name)
+            result = client.execute(
+                task_name=api_task_name,
+                source=file_path,
+                params=self.params if self.params else None
+            )
+            output_urls = result.get("output_urls", [])
+            task_id = result.get("task_id", "")
+            item = {
+                "file": file_name,
+                "path": file_path,
+                "status": "成功",
+                "task_id": task_id,
+                "output_url": output_urls[0] if output_urls else "",
+            }
+            self.log.emit(f"  ✓ 完成: {file_name}")
+        except Exception as e:
+            item = {
+                "file": file_name,
+                "path": file_path,
+                "status": "失败",
+                "task_id": "",
+                "output_url": "",
+                "error": str(e),
+            }
+            self.log.emit(f"  ✗ 失败: {file_name}: {e}")
+        self.progress.emit(idx + 1, total, f"完成 {idx+1}/{total}")
+        return item
+
+    def _run_batch(self, client, total):
+        """有界并发提交多个开拍任务，并分别等待各自结果。"""
+        workers = min(self.max_workers, total)
+        self.log.emit(f"批量提交 {total} 个文件，并发数: {workers}")
+        results = [None] * total
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kaipai") as pool:
+            futures = {
+                pool.submit(self._process_one, client, file_path, idx, total): idx
+                for idx, file_path in enumerate(self.files)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:  # 防止单个线程异常中断整批
+                    file_path = self.files[idx]
+                    results[idx] = {
+                        "file": os.path.basename(file_path),
+                        "path": file_path,
+                        "status": "失败",
+                        "task_id": "",
+                        "output_url": "",
+                        "error": str(exc),
+                    }
+        return results
 
 
 class KaipaiCloudTab(BaseTab):

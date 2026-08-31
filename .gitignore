@@ -18,6 +18,7 @@ _whisper_transcribe.py
 .codegraph/
 
 # 运行时产物
+.task_control/
 downloads/
 models/
 Users/

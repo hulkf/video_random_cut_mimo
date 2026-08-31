@@ -45,6 +45,7 @@ class VideoConcatenatorEngine:
                 self.cover_duration_min,
             )
         self.cover_mode = config.get("cover_mode", "front")  # front, back, both
+        self.resume_existing = bool(config.get("resume_existing", False))
 
     def get_videos(self, folder):
         return collect_videos(normalize_path(folder))
@@ -422,6 +423,16 @@ class VideoConcatenatorEngine:
             name_b = os.path.splitext(os.path.basename(vb))[0]
             output_name = f"{name_a}+{name_b}.mp4"
             output_path = os.path.join(self.output_folder, output_name)
+
+            if self.resume_existing and os.path.isfile(output_path):
+                try:
+                    if self._probe_video(output_path).get("duration", 0) > 0:
+                        results.append(output_path)
+                        if callback:
+                            callback(i + 1, total, f"跳过已完成: {name_a} + {name_b}", 100)
+                        continue
+                except Exception:
+                    pass
 
             if self.cover_source == "video_b_frame":
                 cover_img = None

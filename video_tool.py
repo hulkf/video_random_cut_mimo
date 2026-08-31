@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.3.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -55,6 +55,11 @@ CAPABILITIES = {
         "validate": {
             "description": "检查视频是否可解析、时长是否大于 0，并返回媒体信息",
             "required": ["path"],
+        },
+        "task_control": {
+            "description": "查询、暂停、继续或取消一个已登记的视频任务",
+            "required": ["task_id", "action"],
+            "action_values": ["status", "pause", "resume", "cancel"],
         },
     },
     "constraints": {
@@ -93,6 +98,10 @@ for _name, _spec in CAPABILITIES["operations"].items():
             "outputs": {"type": "array", "items": {"type": "string"}},
         },
     })
+
+# 开拍目录任务默认使用 9 路并发；其他 operation
+# 的 max_workers 默认仍由各自的通用 schema 决定。
+CAPABILITIES["operations"]["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
 
 for _operation_name in ("video_concat", "qianchuan_concat"):
     _properties = CAPABILITIES["operations"][_operation_name]["option_schema"]["properties"]
@@ -206,11 +215,14 @@ def _validate_request(request: Dict[str, Any]) -> None:
     missing = [key for key in required if not inputs.get(key)]
     if missing:
         raise ValueError("缺少必要参数: {}".format(", ".join(missing)))
+    if operation == "task_control" and inputs.get("action") not in ("status", "pause", "resume", "cancel"):
+        raise ValueError("task_control.action 必须是 status、pause、resume 或 cancel")
     options = request.get("options") or {}
     spec = CAPABILITIES["operations"][operation]
     authorization_required = bool(spec.get("external_service"))
     authorization_required = authorization_required or operation in {
         "voice_profile_delete", "settings_update", "settings_secret_set", "download_login",
+        "material_organize",
     }
     if operation == "video_screenshot":
         authorization_required = authorization_required or bool(
@@ -258,10 +270,15 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         "cover_mode": options.get("cover_mode", "front"),
         "cover_duration_min": options.get("cover_duration_min", 0.2),
         "cover_duration_max": options.get("cover_duration_max", 0.5),
+        "resume_existing": bool(request.get("resume_existing", False)),
     }
     os.makedirs(config["output_folder"], exist_ok=True)
     engine = VideoConcatenatorEngine(config)
-    outputs = engine.run()
+    controller = request.get("_task_controller")
+    if controller:
+        outputs = engine.run(lambda *_args: controller.check())
+    else:
+        outputs = engine.run()
     require_9x16 = options.get("require_9x16", True)
     require_cover = options.get("require_cover", True)
     if require_cover and not config["cover_enabled"]:
@@ -379,6 +396,9 @@ def _run_qianchuan_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         inputs["folder_a"], inputs["folder_b"], inputs.get("output_folder", "")
     )
     with tempfile.TemporaryDirectory(prefix="video_tool_qianchuan_") as work_folder:
+        controller = request.get("_task_controller")
+        if controller:
+            controller.check()
         folder_a = os.path.join(work_folder, "a_9x16")
         folder_b = os.path.join(work_folder, "b_9x16")
         blur_strength = int(options.pop("blur_strength", 6))
@@ -396,6 +416,10 @@ def _run_qianchuan_concat(request: Dict[str, Any]) -> Dict[str, Any]:
             },
             "options": options,
         }
+        if request.get("resume_existing"):
+            concat_request["resume_existing"] = True
+        if controller:
+            concat_request["_task_controller"] = controller
         result = _run_concat(concat_request)
         result["operation"] = "qianchuan_concat"
         result["output_folder"] = output_folder
@@ -412,14 +436,44 @@ def _run_validate(request: Dict[str, Any]) -> Dict[str, Any]:
 def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
     _validate_request(request)
     operation = request["operation"]
-    if operation == "video_concat":
-        result = _run_concat(request)
-    elif operation == "qianchuan_concat":
-        result = _run_qianchuan_concat(request)
-    elif operation == "validate":
-        result = _run_validate(request)
-    else:
-        result = run_tab_operation(operation, request)
+    if operation == "task_control":
+        from core.task_control import task_command
+        inputs = request.get("inputs") or request
+        result = task_command(inputs["task_id"], inputs["action"])
+        return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
+                "operation": operation, **result}
+
+    from core.task_control import TaskController, TaskControlSignal
+    task_id = request.get("task_id") or (request.get("inputs") or {}).get("task_id")
+    controller = TaskController(task_id) if task_id else None
+    if controller:
+        stored_request = {key: value for key, value in request.items() if key != "_task_controller"}
+        controller.start({"operation": operation}, stored_request)
+        request = dict(request)
+        request["_task_controller"] = controller
+    try:
+        if operation == "video_concat":
+            result = _run_concat(request)
+        elif operation == "qianchuan_concat":
+            result = _run_qianchuan_concat(request)
+        elif operation == "validate":
+            result = _run_validate(request)
+        else:
+            result = run_tab_operation(operation, request)
+    except TaskControlSignal as exc:
+        if controller:
+            controller.set_status(exc.status)
+        return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
+                "operation": operation, "task_id": task_id, "status": exc.status,
+                "outputs": []}
+    except Exception:
+        if controller:
+            controller.set_status("failed")
+        raise
+    if controller:
+        controller.set_status("completed")
+        result["task_id"] = task_id
+        result["status"] = "completed"
     return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION, **result}
 
 

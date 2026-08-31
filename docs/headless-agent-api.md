@@ -26,14 +26,16 @@ python video_tool.py run --request REQUEST.json
 | 视频优化 | `video_enhance` | 调用 Wink 云端增强 |
 | 去关键词 | `keyword_remove` | ASR 定位关键词并删除对应时间段 |
 | 视频字幕 | `subtitle_generate` | ASR 生成字幕并烧录 |
-| 开拍云端 | `kaipai_process` | 擦除/画质修复等开拍任务 |
+| 开拍云端 | `kaipai_process` | 擦除/画质修复等开拍任务；目录多文件默认有界批量提交 |
 | 开拍云端 | `kaipai_download`、`kaipai_quota` | 下载结果、查询配置/额度信息 |
 | 视频裂变 | `video_fission` | 一个视频生成多个不同指纹版本 |
 | 音色复刻 | `voice_profile_list/create/delete` | 管理本地音色 |
 | 音色复刻 | `voice_clone_apply`、`voice_synthesize` | 批量换音或合成试听音频 |
 | 视频下载 | `video_download`、`download_auth_status`、`download_login` | 下载淘宝/抖音视频及管理登录态 |
 | 设置 | `settings_get`、`settings_update`、`settings_secret_set` | 管理普通配置和密钥 |
+| 素材归档 | `material_organize` | 解压/收集视频并按货号归入模特素材或平铺素材 |
 | 通用校验 | `validate` | 返回媒体尺寸、时长和可解析状态 |
+| 任务控制 | `task_control` | 查询、暂停、继续或取消已登记的长任务 |
 
 ## 示例：转为 9:16
 
@@ -60,12 +62,29 @@ python video_tool.py run --request REQUEST.json
 
 ## 外部服务与高风险动作
 
+`material_organize` 接受本地 ZIP、视频、目录或可直接下载的 HTTP(S) 地址。默认从文件名中“视频”之前识别货号，在 `D:\千川素材\<货号>\模特素材` 下归档；指定 `material_type=flat` 时使用 `平铺素材`。ZIP 只提取视频文件，成功提取后默认删除已复制到货号目录的压缩包；`delete_archive=false` 可保留。该 operation 会移动/写入/删除素材，必须携带 `authorization.confirmed=true` 且 scope 为 `material_organize`。
+
+平铺归档只负责落盘和分类；后续智能全消、画质修复仍由 Agent 按确认卡分别调用 `kaipai_process` 与 `kaipai_download`，两个结果应保存到独立目录。
+
+`kaipai_process` 的目录输入默认启用批量模式，并发数为 9。可通过 `options.batch_mode`（已启用/未启用）和 `options.max_workers` 调整；这是多个独立开拍任务的有界并发，结果按输入文件顺序返回，单个文件失败不会丢弃同批结果。
+
+长任务请求可在顶层增加 `task_id`，工具会在 `.task_control/<task_id>.json` 保存状态。控制示例：
+
+```json
+{
+  "operation": "task_control",
+  "inputs": {"task_id": "QC-20260822-001", "action": "pause"}
+}
+```
+
+本地拼接会在当前视频对完成后停止后续处理；继续会重新启动原请求并跳过已完成且可解析的本地输出。已提交的开拍云端任务无法由本地工具撤回。
+
 - `video_enhance` 依赖 Wink 登录态并可能消耗云端额度。
 - `kaipai_*` 依赖开拍凭据并可能产生付费任务。
 - `video_download` 可能依赖淘宝登录态。
 - `download_login` 会打开交互式登录流程。
 - `voice_*` 依赖本机 CosyVoice/ASR 模型环境。
-- `delete_face_images`、`delete_face_videos`、`auto_delete`、`voice_profile_delete`、`settings_update` 和 `settings_secret_set` 可能删除或改变本地状态。
+- `material_organize`、`delete_face_images`、`delete_face_videos`、`auto_delete`、`voice_profile_delete`、`settings_update` 和 `settings_secret_set` 可能删除或改变本地状态。
 
 Agent 必须在用户明确授权相应外部调用、付费动作、登录动作或删除动作后才执行。工具本身也会拒绝缺少授权凭证的请求；授权格式如下：
 

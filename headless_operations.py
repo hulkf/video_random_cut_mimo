@@ -36,6 +36,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "settings_get": {"tab": "设置", "required": []},
     "settings_update": {"tab": "设置", "required": ["section", "values"]},
     "settings_secret_set": {"tab": "设置", "required": ["section", "key", "value"]},
+    "material_organize": {"tab": "素材归档", "required": ["source_path"]},
 }
 
 OPERATION_OPTIONS = {
@@ -49,7 +50,8 @@ OPERATION_OPTIONS = {
     "video_enhance": ["level", "wink_exe", "include_images", "skip_existing", "retry", "timeout"],
     "keyword_remove": ["padding", "match_mode", "estimate_min_duration", "model_type"],
     "subtitle_generate": ["font_name", "font_size", "font_color", "outline_color", "outline_width", "position", "model_type", "enable_correction", "keep_srt"],
-    "kaipai_process": ["params"],
+    "kaipai_process": ["params", "batch_mode", "max_workers"],
+    "material_organize": ["material_type", "cargo_number", "output_root", "delete_archive"],
     "video_fission": ["count", "intensity", "preset", "crf", "seed", "separate_folder", "max_workers"],
     "voice_profile_list": ["voices_dir"],
     "voice_profile_create": ["voices_dir"],
@@ -69,14 +71,14 @@ for _operation_name in (
 
 for _operation_name in (
     "video_screenshot", "face_detection", "voice_profile_delete",
-    "settings_update", "settings_secret_set",
+    "settings_update", "settings_secret_set", "material_organize",
 ):
     OPERATIONS[_operation_name]["supports_destructive_action"] = True
 
 for _operation_name in (
     "video_enhance", "kaipai_process", "kaipai_download", "kaipai_quota",
     "video_download", "download_login", "voice_profile_delete",
-    "settings_update", "settings_secret_set",
+    "settings_update", "settings_secret_set", "material_organize",
 ):
     OPERATIONS[_operation_name]["authorization_requirement"] = "always"
 
@@ -95,6 +97,7 @@ def operation_field_schema(name: str) -> Dict[str, Any]:
         "delete_face_videos", "auto_delete", "cover_enabled", "head_tail",
         "include_images", "skip_existing",
         "enable_correction", "keep_srt", "separate_folder",
+        "batch_mode", "delete_archive",
     }
     integer_fields = {
         "frame_count", "max_workers", "sample_count", "level", "retry", "timeout",
@@ -119,6 +122,7 @@ def operation_field_schema(name: str) -> Dict[str, Any]:
         "asr_type": ["FireRedASR", "FunASR"],
         "text_source": ["auto", "subtitle", "asr"],
         "intensity": ["mild", "medium", "strong"],
+        "material_type": ["model", "flat", "模特", "平铺", "模特素材", "平铺素材"],
     }
     defaults = {
         "target_ratio": "9:16", "process_mode": "all", "blur_strength": 6,
@@ -126,7 +130,7 @@ def operation_field_schema(name: str) -> Dict[str, Any]:
         "delete_face_images": False, "delete_face_videos": False,
         "auto_delete": False, "cover_enabled": False, "cover_duration_min": 0.5,
         "cover_duration_max": 1.0, "skip_existing": True, "speed": 1.0,
-        "max_workers": 4,
+        "max_workers": 4, "batch_mode": True, "delete_archive": True,
     }
     schema: Dict[str, Any] = {"type": "string"}
     if name in boolean_fields:
@@ -164,6 +168,8 @@ for _operation_name, _spec in OPERATIONS.items():
             "outputs": {"type": "array", "items": {"type": "string"}},
         },
     }
+
+OPERATIONS["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
 
 
 def _inputs(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -367,7 +373,13 @@ def _kaipai_process(request):
     files = _collect_input_files(data["input_path"], extensions)
     if not files:
         raise ValueError("输入路径中没有找到任务支持的文件")
-    return _run_worker(KaipaiWorker(files, data["task_name"], opts.get("params") or {}))
+    return _run_worker(KaipaiWorker(
+        files,
+        data["task_name"],
+        opts.get("params") or {},
+        batch_mode=opts.get("batch_mode", True),
+        max_workers=opts.get("max_workers", 9),
+    ))
 
 
 def _kaipai_download(request):
@@ -549,6 +561,21 @@ def _settings_secret_set(request):
     return {"results": [{"section": data["section"], "key": data["key"], "updated": True}]}
 
 
+def _material_organize(request):
+    from core.material_organizer import organize_materials
+
+    data = _inputs(request)
+    options = _options(request)
+    result = organize_materials(
+        data["source_path"],
+        material_type=options.get("material_type", "model"),
+        cargo_number=options.get("cargo_number", ""),
+        output_root=options.get("output_root", r"D:\千川素材"),
+        delete_archive=options.get("delete_archive", True),
+    )
+    return {"results": [result], "outputs": result["videos"]}
+
+
 HANDLERS = {
     "video_slice": _video_slice, "video_screenshot": _video_screenshot,
     "text_recognition": _text_recognition, "face_detection": _face_detection,
@@ -562,6 +589,7 @@ HANDLERS = {
     "video_download": _video_download, "download_auth_status": _download_auth_status,
     "download_login": _download_login, "settings_get": _settings_get,
     "settings_update": _settings_update, "settings_secret_set": _settings_secret_set,
+    "material_organize": _material_organize,
 }
 
 

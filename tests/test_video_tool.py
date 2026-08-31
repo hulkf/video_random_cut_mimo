@@ -3,7 +3,11 @@ import importlib
 import os
 import subprocess
 import sys
+import threading
+import time
 import unittest
+import tempfile
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 import video_tool
 import headless_operations
+from gui.kaipai_cloud_tab import KaipaiWorker
 
 
 class VideoToolTests(unittest.TestCase):
@@ -27,6 +32,7 @@ class VideoToolTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertIn("video_concat", payload["operations"])
         self.assertFalse(payload["constraints"]["direct_ffmpeg_from_agent"])
+        self.assertIn("task_control", payload["operations"])
 
     def test_every_business_tab_has_a_headless_operation(self):
         exposed_tabs = {
@@ -37,7 +43,45 @@ class VideoToolTests(unittest.TestCase):
             "视频切片", "视频截图", "文字识别", "人脸识别", "音频混剪",
             "视频混剪", "视频拼接", "视频尺寸", "视频优化", "去关键词", "视频字幕",
             "开拍云端", "视频裂变", "音色复刻", "视频下载", "设置",
+            "素材归档",
         })
+
+    def test_material_organize_archives_videos_and_requires_authorization(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            archive = temp_path / "8819视频01.zip"
+            payload = temp_path / "clip.mp4"
+            payload.write_bytes(b"video")
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.write(payload, "nested/clip.mp4")
+                bundle.writestr("notes.txt", "ignored")
+            request = {
+                "operation": "material_organize",
+                "inputs": {"source_path": str(archive)},
+                "options": {"output_root": str(temp_path / "out")},
+            }
+            with self.assertRaises(PermissionError):
+                video_tool.run_request(request)
+            request["authorization"] = {"confirmed": True, "scope": "material_organize"}
+            result = video_tool.run_request(request)
+            data = result["results"][0]
+            self.assertEqual(data["cargo_number"], "8819")
+            self.assertEqual(data["material_type"], "模特素材")
+            self.assertEqual(data["video_count"], 1)
+            self.assertEqual(len(list((temp_path / "out" / "8819" / "模特素材").glob("*.mp4"))), 1)
+            self.assertTrue(data["archive_deleted"])
+
+    def test_material_organize_flat_marks_kaipai_follow_up(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "7788视频平铺.mp4"
+            source.write_bytes(b"video")
+            result = video_tool.run_request({
+                "operation": "material_organize",
+                "inputs": {"source_path": str(source)},
+                "options": {"material_type": "flat", "output_root": str(Path(temp) / "out")},
+                "authorization": {"confirmed": True, "scope": "material_organize"},
+            })
+            self.assertTrue(result["results"][0]["optimization_required"])
 
     def test_every_operation_publishes_a_complete_contract(self):
         for name, spec in video_tool.CAPABILITIES["operations"].items():
@@ -209,6 +253,65 @@ class VideoToolTests(unittest.TestCase):
         with patch("requests.get", return_value=response), patch("builtins.open", MagicMock()), patch("headless_operations.os.makedirs"):
             result = headless_operations._kaipai_download({"inputs": {"items": [{"url": "https://x/a.mp4"}], "output_folder": "out"}})
             self.assertTrue(result["results"][0]["success"])
+
+    def test_kaipai_batch_runs_files_concurrently_and_preserves_order(self):
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def execute(**kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            name = Path(kwargs["source"]).stem
+            return {"task_id": f"task-{name}", "output_urls": [f"https://out/{name}.mp4"]}
+
+        client = MagicMock()
+        client.execute.side_effect = execute
+        worker = KaipaiWorker(["a.mp4", "b.mp4", "c.mp4"], "视频智能全消", max_workers=3)
+
+        results = worker._run_batch(client, 3)
+
+        self.assertGreaterEqual(peak, 2)
+        self.assertEqual([item["file"] for item in results], ["a.mp4", "b.mp4", "c.mp4"])
+        self.assertEqual([item["status"] for item in results], ["成功", "成功", "成功"])
+        self.assertEqual(client.execute.call_count, 3)
+
+    def test_task_control_pause_resume_cancel(self):
+        task_id = "test-control-001"
+        state_dir = ROOT / ".task_control"
+        state_dir.mkdir(exist_ok=True)
+        state_path = state_dir / (task_id + ".json")
+        try:
+            from core.task_control import TaskController
+            TaskController(task_id).start({"operation": "video_concat"}, {
+                "operation": "video_concat",
+                "task_id": task_id,
+                "inputs": {"folder_a": "a", "folder_b": "b", "output_folder": "out"},
+            })
+            paused = video_tool.run_request({
+                "operation": "task_control",
+                "inputs": {"task_id": task_id, "action": "pause"},
+            })
+            self.assertEqual(paused["status"], "paused")
+            with patch("core.task_control.subprocess.Popen"):
+                resumed = video_tool.run_request({
+                    "operation": "task_control",
+                    "inputs": {"task_id": task_id, "action": "resume"},
+                })
+            self.assertEqual(resumed["status"], "running")
+            cancelled = video_tool.run_request({
+                "operation": "task_control",
+                "inputs": {"task_id": task_id, "action": "cancel"},
+            })
+            self.assertEqual(cancelled["status"], "cancelled")
+        finally:
+            if state_path.exists():
+                state_path.unlink()
 
     def test_voice_download_and_settings_adapters_accept_contracts(self):
         library = MagicMock()
