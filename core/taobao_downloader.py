@@ -8,6 +8,8 @@
   3. 抖音链接 (商品页 + 普通视频页) → 解析页面提取视频URL
      - 商品页: v.douyin.com 短链 / haohuo.jinritemai.com 等
      - 普通视频页: www.douyin.com/video/{id} / v.douyin.com 短链
+  4. 小红书视频笔记 (xhslink.cn 分享短链 + xiaohongshu.com 笔记链接)
+     → 无登录读取公开页面 SSR 视频流
 """
 
 import os
@@ -16,6 +18,7 @@ import time
 import json
 import atexit
 import threading
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -33,12 +36,25 @@ GENERIC_URL = "https://cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/{vid}.mp4"
 LINK_TYPE_TAOBAO_DIRECT = "taobao_direct"      # 淘宝视频直链
 LINK_TYPE_TAOBAO_PRODUCT = "taobao_product"     # 淘宝/天猫商品页链接
 LINK_TYPE_DOUYIN = "douyin"                     # 抖音商品链接
+LINK_TYPE_XIAOHONGSHU = "xiaohongshu"           # 小红书视频笔记
 LINK_TYPE_UNKNOWN = "unknown"
+
+XIAOHONGSHU_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+)
 
 
 def detect_link_type(url):
     """识别链接类型"""
     url_lower = url.lower()
+    try:
+        parsed_url = urllib.parse.urlsplit(url)
+        hostname = (parsed_url.hostname or '').lower()
+        path = parsed_url.path.lower()
+    except (TypeError, ValueError):
+        hostname = ''
+        path = ''
 
     # 淘宝视频直链: cloud.video.taobao.com/play/u/.../xxx.mp4
     if re.search(r'cloud\.video\.taobao\.com/play/u/\d+/p/\d+/e/\d+/t/\d+/(\d+)\.mp4', url_lower):
@@ -49,6 +65,15 @@ def detect_link_type(url):
                                      'fenbi.jinritemai.com', 'buyin.jinritemai.com',
                                      'dy.com', 'jinritemai.com']):
         return LINK_TYPE_DOUYIN
+
+    # 小红书分享短链 + 网页端笔记链接（只接受合法主机与笔记路径）
+    is_xhs_short = hostname in {'xhslink.cn', 'www.xhslink.cn'} and path.startswith('/o/')
+    is_xhs_note = (
+        (hostname == 'xiaohongshu.com' or hostname.endswith('.xiaohongshu.com'))
+        and re.match(r'^/(?:explore/|discovery/item/)[0-9a-f]+(?:/|$)', path)
+    )
+    if is_xhs_short or is_xhs_note:
+        return LINK_TYPE_XIAOHONGSHU
 
     # 淘宝/天猫商品链接
     if any(k in url_lower for k in ['taobao.com', 'tmall.com', 'tb.cn', 'e.tb.cn',
@@ -137,13 +162,14 @@ def format_size(size_bytes):
         return f"{size_bytes / 1024 / 1024:.2f} MB"
 
 
-def download_file(url, filepath, progress_callback=None, referer=None, retries=3):
+def download_file(url, filepath, progress_callback=None, referer=None, retries=3,
+                  user_agent=None):
     """
     下载文件，带重试。
     返回 (success, error_msg)，error_msg 为 None 表示成功。
     """
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     if referer:
         headers['Referer'] = referer
@@ -1257,6 +1283,112 @@ def extract_douyin_video(url, log_callback=None):
     return video_urls, None, referer
 
 
+# === 小红书公开视频笔记解析 ===
+
+def _decode_xiaohongshu_url(raw_url):
+    """解码小红书 SSR JSON 中的 ``\u002F`` / ``\u0026`` URL。"""
+    try:
+        value = json.loads(f'"{raw_url}"')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = str(raw_url).replace(r'\u002F', '/').replace(r'\u0026', '&')
+        value = value.replace(r'\/', '/')
+    if value.startswith('http://'):
+        value = 'https://' + value[len('http://'):]
+    return value
+
+
+def _extract_xiaohongshu_video_urls(html):
+    """
+    从小红书公开笔记页 SSR 数据提取视频候选地址。
+
+    优先 H.264（Windows/PyQt/剪辑工具兼容性更好），随后保留 H.265 和
+    backupUrls 作为下载失败时的换源候选。页面中 mediaV2 会重复同一组地址，
+    因此返回前按出现顺序去重。
+    """
+    if not html:
+        return []
+
+    normalized = html.replace(r'\"', '"')
+    regions = []
+    h264_match = re.search(r'"h264"\s*:\s*\[', normalized, re.IGNORECASE)
+    if h264_match:
+        h265_match = re.search(
+            r'"h265"\s*:\s*\[', normalized[h264_match.end():], re.IGNORECASE
+        )
+        end = h264_match.end() + h265_match.start() if h265_match else len(normalized)
+        regions.append(normalized[h264_match.start():end])
+    regions.append(normalized)
+
+    candidates = []
+
+    def add_candidate(raw_url):
+        url = _decode_xiaohongshu_url(raw_url)
+        if url.startswith(('http://', 'https://')) and url not in candidates:
+            candidates.append(url)
+
+    master_pattern = re.compile(
+        r'"(?:masterUrl|master_url)"\s*:\s*"((?:\\.|[^"\\])*)"',
+        re.IGNORECASE,
+    )
+    backup_pattern = re.compile(
+        r'"(?:backupUrls|backup_urls)"\s*:\s*\[(.*?)\]',
+        re.IGNORECASE | re.DOTALL,
+    )
+    quoted_value_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+
+    for region in regions:
+        for match in master_pattern.finditer(region):
+            add_candidate(match.group(1))
+        for list_match in backup_pattern.finditer(region):
+            for value_match in quoted_value_pattern.finditer(list_match.group(1)):
+                add_candidate(value_match.group(1))
+
+    return candidates
+
+
+def _extract_xiaohongshu_note_id(url):
+    match = re.search(r'/(?:explore|discovery/item)/([0-9a-f]+)', url, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def extract_xiaohongshu_video(url, log_callback=None):
+    """
+    无登录解析小红书公开视频笔记。
+
+    urllib 默认跟随 xhslink.cn 302，因此分享短链和 explore/discovery 直链共用
+    同一条 SSR 提取路径。返回 (url_list, note_id, err, referer)。
+    """
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    headers = {
+        'User-Agent': XIAOHONGSHU_USER_AGENT,
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    }
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            final_url = response.geturl()
+            html = response.read().decode('utf-8', errors='ignore')
+    except Exception as exc:
+        return [], None, f"小红书页面访问失败: {type(exc).__name__}: {exc}", None
+
+    note_id = _extract_xiaohongshu_note_id(final_url) or _extract_xiaohongshu_note_id(url)
+    log(f"小红书落地页: {final_url[:100]}")
+    video_urls = _extract_xiaohongshu_video_urls(html)
+    if video_urls:
+        log(f"从公开页面提取到 {len(video_urls)} 个视频候选地址（无需登录）")
+        return video_urls, note_id, None, final_url
+
+    if 'IP存在风险' in html or '安全限制' in html:
+        error = "小红书公开页面触发 IP 风控，请稍后重试或更换可靠网络"
+    else:
+        error = "未找到公开视频（笔记可能已删除、设为私密、受地区限制或页面结构已变化）"
+    return [], note_id, error, final_url
+
+
 # === 下载入口函数 ===
 
 def _download_direct_taobao(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
@@ -1414,6 +1546,48 @@ def _download_douyin(url, output_dir, log_callback=None, progress_callback=None,
     return False, f"下载失败: {last_err}"
 
 
+def _download_xiaohongshu(url, output_dir, log_callback=None, progress_callback=None,
+                          info_callback=None):
+    """处理小红书分享短链和网页笔记直链，无需登录态。"""
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    log("链接类型: 小红书")
+    log("读取公开笔记页视频信息（无需登录）...")
+    video_urls, note_id, err, referer = extract_xiaohongshu_video(url, log_callback=log)
+    if err:
+        return False, err
+    if not video_urls:
+        return False, "未提取到小红书视频URL"
+
+    os.makedirs(output_dir, exist_ok=True)
+    filename_id = note_id or str(int(time.time()))
+    filepath = os.path.join(output_dir, f"xiaohongshu_video_{filename_id}.mp4")
+
+    last_err = None
+    for index, video_url in enumerate(video_urls):
+        if index:
+            log(f"换用第 {index + 1} 个小红书候选地址重试...")
+        success, download_err = download_file(
+            video_url,
+            filepath,
+            progress_callback=progress_callback,
+            referer=referer or 'https://www.xiaohongshu.com/',
+            user_agent=XIAOHONGSHU_USER_AGENT,
+        )
+        if success:
+            if info_callback:
+                info_callback("video_url", video_url)
+            size = os.path.getsize(filepath)
+            log(f"下载完成! 大小: {format_size(size)}")
+            return True, filepath
+        last_err = download_err
+        log(f"该地址下载失败: {download_err}")
+
+    return False, f"下载失败: {last_err}"
+
+
 def download_video(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
     """
     综合视频下载入口
@@ -1432,6 +1606,8 @@ def download_video(url, output_dir, log_callback=None, progress_callback=None, i
         return _download_taobao_product(url, output_dir, log_callback, progress_callback, info_callback)
     elif link_type == LINK_TYPE_DOUYIN:
         return _download_douyin(url, output_dir, log_callback, progress_callback, info_callback)
+    elif link_type == LINK_TYPE_XIAOHONGSHU:
+        return _download_xiaohongshu(url, output_dir, log_callback, progress_callback, info_callback)
     else:
         log(f"未知链接类型: {url[:80]}")
-        return False, "不支持的链接类型，目前支持淘宝/天猫商品链接、淘宝视频直链和抖音商品链接"
+        return False, "不支持的链接类型，目前支持淘宝/天猫、抖音和小红书视频链接"

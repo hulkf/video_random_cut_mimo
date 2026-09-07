@@ -19,7 +19,7 @@ from gui.common.base_worker import BaseWorker
 def extract_urls_from_text(text):
     """
     从粘贴的杂乱文本中提取所有URL，自动过滤无关文字。
-    支持从淘宝/抖音APP分享文本中提取链接。
+    支持从淘宝/抖音/小红书 APP 分享文本中提取链接。
     """
     # 匹配 https:// 或 http:// 开头，到空白/中文/中文标点为止
     pattern = r'https?://[^\s\u4e00-\u9fff\uff00-\uffef\u3000-\u303f\u2018-\u201f]+'
@@ -160,7 +160,7 @@ class VideoDownloadTab(BaseTab):
         layout.setSpacing(8)
 
         # === 登录区域 ===
-        login_group = QGroupBox("淘宝登录（淘宝商品页解析需要，抖音不需要登录）")
+        login_group = QGroupBox("淘宝登录（仅淘宝商品页需要，抖音/小红书无需登录）")
         login_layout = QHBoxLayout(login_group)
         self.btn_login = QPushButton("登录淘宝")
         self.btn_login.clicked.connect(self._on_login)
@@ -195,10 +195,13 @@ class VideoDownloadTab(BaseTab):
             "3. 淘宝视频直链: https://cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/1234567890.mp4\n"
             "4. 抖音商品链接: https://v.douyin.com/xxxxx/\n"
             "5. 抖音视频链接: https://www.douyin.com/video/7634032388893858545\n"
+            "6. 小红书分享短链: https://xhslink.cn/o/xxxxx\n"
+            "7. 小红书笔记链接: https://www.xiaohongshu.com/explore/笔记ID\n"
             "\n"
             "可直接粘贴如下格式文本，会自动识别链接:\n"
             "【淘宝】https://e.tb.cn/h.xxx 点击链接直接打开\n"
-            "【抖音商城】https://v.douyin.com/xxx/ 长按复制此条消息"
+            "【抖音商城】https://v.douyin.com/xxx/ 长按复制此条消息\n"
+            "【小红书】https://xhslink.cn/o/xxx 复制后打开小红书"
         )
         self.txt_links.setMinimumHeight(120)
         link_layout.addWidget(self.txt_links)
@@ -286,7 +289,8 @@ class VideoDownloadTab(BaseTab):
             "  1. 淘宝/天猫商品链接（短链接和完整链接）— 需登录淘宝\n"
             "  2. 淘宝视频直链: cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/{contentId}.mp4 — 无需登录\n"
             "  3. 抖音商品链接: v.douyin.com 短链 / haohuo.jinritemai.com 链接 — 无需登录\n"
-            "  4. 抖音视频链接: www.douyin.com/video/{id} — 无需登录"
+            "  4. 抖音视频链接: www.douyin.com/video/{id} — 无需登录\n"
+            "  5. 小红书视频: xhslink.cn 分享短链 / xiaohongshu.com/explore/{id} — 无需登录"
         )
         help_text.setStyleSheet("color: #999; font-size: 12px;")
         help_layout.addWidget(help_text)
@@ -374,7 +378,7 @@ class VideoDownloadTab(BaseTab):
                 if not valid:
                     reply = QMessageBox.question(
                         self, "淘宝登录过期",
-                        f"{auth_msg}\n\n淘宝商品链接将全部失败，抖音链接不受影响。\n是否继续下载（仅抖音链接）？",
+                        f"{auth_msg}\n\n淘宝商品链接将全部失败，抖音/小红书链接不受影响。\n是否继续下载？",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No
                     )
                     if reply == QMessageBox.No:
@@ -515,11 +519,13 @@ class VideoDownloadTab(BaseTab):
             from core.taobao_downloader import (
                 detect_link_type, LINK_TYPE_TAOBAO_DIRECT,
                 LINK_TYPE_TAOBAO_PRODUCT, LINK_TYPE_DOUYIN,
+                LINK_TYPE_XIAOHONGSHU,
             )
             mapping = {
                 LINK_TYPE_TAOBAO_DIRECT: "淘宝直链",
                 LINK_TYPE_TAOBAO_PRODUCT: "淘宝商品",
                 LINK_TYPE_DOUYIN: "抖音",
+                LINK_TYPE_XIAOHONGSHU: "小红书",
             }
         except ImportError:
             mapping = {}
