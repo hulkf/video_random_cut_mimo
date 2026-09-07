@@ -16,6 +16,7 @@ import os
 import re
 import time
 import json
+import html as html_lib
 import atexit
 import threading
 import urllib.parse
@@ -34,6 +35,7 @@ GENERIC_URL = "https://cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/{vid}.mp4"
 
 # === 链接类型常量 ===
 LINK_TYPE_TAOBAO_DIRECT = "taobao_direct"      # 淘宝视频直链
+LINK_TYPE_TAOBAO_SHARE = "taobao_share"        # 淘宝分享短链（商品或逛逛视频）
 LINK_TYPE_TAOBAO_PRODUCT = "taobao_product"     # 淘宝/天猫商品页链接
 LINK_TYPE_DOUYIN = "douyin"                     # 抖音商品链接
 LINK_TYPE_XIAOHONGSHU = "xiaohongshu"           # 小红书视频笔记
@@ -75,6 +77,10 @@ def detect_link_type(url):
     if is_xhs_short or is_xhs_note:
         return LINK_TYPE_XIAOHONGSHU
 
+    # 淘宝分享短链需先解析落地目标，之后再区分商品与逛逛视频
+    if hostname in {'e.tb.cn', 'tb.cn', 'm.tb.cn', 't.cn'}:
+        return LINK_TYPE_TAOBAO_SHARE
+
     # 淘宝/天猫商品链接
     if any(k in url_lower for k in ['taobao.com', 'tmall.com', 'tb.cn', 'e.tb.cn',
                                      'm.tb.cn', 't.cn', 'a.m.taobao.com']):
@@ -93,12 +99,20 @@ def extract_direct_video_id(url):
 
 def _extract_target_from_short_page(html):
     """
-    从短链落地页 HTML 中提取目标商品 URL。
-    覆盖三种格式:
-      1. itemIds=123456          (跳转参数式)
-      2. var url = 'https://item.taobao.com/item.htm?id=123456...'  (直写目标地址式)
-      3. 任意 ?id=1234567890     (兜底，要求至少10位数字，避免误匹配短参数)
+    从淘宝短链落地页 HTML 中提取目标 URL。
+    优先读取页面声明的 var url，兼容商品详情和淘宝逛逛视频分享。
     """
+    m = re.search(r"\bvar\s+url\s*=\s*(['\"])(https?://.*?)\1", html, re.DOTALL)
+    if m:
+        target = html_lib.unescape(m.group(2).strip())
+        try:
+            hostname = (urllib.parse.urlsplit(target).hostname or '').lower()
+        except ValueError:
+            hostname = ''
+        if hostname == 'taobao.com' or hostname.endswith('.taobao.com') \
+                or hostname == 'tmall.com' or hostname.endswith('.tmall.com'):
+            return target
+
     m = re.search(r'itemIds=(\d+)', html)
     if m:
         return f"https://detail.tmall.com/item.htm?id={m.group(1)}"
@@ -149,6 +163,95 @@ def extract_item_id(url):
         if m:
             return m.group(1)
     return None
+
+
+def extract_taobao_guangguang_content_id(url):
+    """从淘宝逛逛落地 URL 的 extParams 中提取数字 contentId。"""
+    try:
+        parsed_url = urllib.parse.urlsplit(url)
+        query = urllib.parse.parse_qs(parsed_url.query)
+        route_is_guangguang = (
+            query.get('tnode', [''])[0] == 'page_guangguanghome'
+            and query.get('tabid', [''])[0] == 'video'
+        )
+        for raw_value in query.get('extParams', []):
+            try:
+                data = json.loads(raw_value)
+            except (TypeError, ValueError):
+                data = None
+            scene_is_guangguang = (
+                isinstance(data, dict)
+                and data.get('sceneSource') == 'guang_share_shipin'
+            )
+            if not route_is_guangguang and not scene_is_guangguang:
+                continue
+            content_id = data.get('contentId') if isinstance(data, dict) else None
+            if content_id and str(content_id).isdigit():
+                return str(content_id)
+    except (TypeError, ValueError):
+        pass
+
+    decoded = urllib.parse.unquote(str(url))
+    if 'page_guangguanghome' not in decoded and 'guang_share_shipin' not in decoded:
+        return None
+    match = re.search(r'["\']?contentId["\']?\s*[:=]\s*["\']?(\d+)', decoded)
+    return match.group(1) if match else None
+
+
+def resolve_taobao_share_target(url):
+    """解析淘宝分享链接，返回落地 URL、类型和对应业务 ID。"""
+    final_url = resolve_short_url(url)
+    content_id = extract_taobao_guangguang_content_id(final_url)
+    if content_id:
+        return {
+            'kind': 'guangguang',
+            'url': final_url,
+            'content_id': content_id,
+            'item_id': None,
+        }
+    item_id = extract_item_id(final_url)
+    return {
+        'kind': 'product' if item_id else 'unknown',
+        'url': final_url,
+        'content_id': None,
+        'item_id': item_id,
+    }
+
+
+def taobao_url_requires_login(url):
+    """供 UI 预检：普通商品需登录，逛逛视频和其他平台无需淘宝登录。"""
+    link_type = detect_link_type(url)
+    if link_type == LINK_TYPE_TAOBAO_PRODUCT:
+        return extract_taobao_guangguang_content_id(url) is None
+    if link_type == LINK_TYPE_TAOBAO_SHARE:
+        return resolve_taobao_share_target(url)['kind'] != 'guangguang'
+    return False
+
+
+def prepare_download_links(links, should_stop=None):
+    """在后台预解析分享短链，返回可复用的落地链接和淘宝登录需求。"""
+    prepared_links = []
+    requires_taobao_login = False
+
+    for url in links:
+        if should_stop and should_stop():
+            break
+        link_type = detect_link_type(url)
+        if link_type == LINK_TYPE_TAOBAO_SHARE:
+            target = resolve_taobao_share_target(url)
+            prepared_links.append(target['url'])
+            requires_taobao_login = (
+                requires_taobao_login or target['kind'] != 'guangguang'
+            )
+        else:
+            prepared_links.append(url)
+            if link_type == LINK_TYPE_TAOBAO_PRODUCT:
+                requires_taobao_login = (
+                    requires_taobao_login
+                    or extract_taobao_guangguang_content_id(url) is None
+                )
+
+    return prepared_links, requires_taobao_login
 
 
 def format_size(size_bytes):
@@ -1391,17 +1494,13 @@ def extract_xiaohongshu_video(url, log_callback=None):
 
 # === 下载入口函数 ===
 
-def _download_direct_taobao(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
-    """处理淘宝视频直链: 直接提取contentId并下载"""
+def _download_taobao_content_id(video_id, output_dir, log_callback=None,
+                                progress_callback=None, info_callback=None):
+    """使用淘宝公开 cloud.video 接口按 contentId 下载视频。"""
     def log(msg):
         if log_callback:
             log_callback(msg)
 
-    video_id = extract_direct_video_id(url)
-    if not video_id:
-        return False, "无法从直链中提取视频ID"
-
-    log(f"链接类型: 淘宝视频直链")
     log(f"contentId: {video_id}")
 
     download_url = GENERIC_URL.replace('{vid}', video_id)
@@ -1420,14 +1519,34 @@ def _download_direct_taobao(url, output_dir, log_callback=None, progress_callbac
         return False, f"下载失败: {err}"
 
 
+def _download_direct_taobao(url, output_dir, log_callback=None, progress_callback=None,
+                            info_callback=None):
+    """处理淘宝视频直链: 直接提取 contentId 并下载。"""
+    video_id = extract_direct_video_id(url)
+    if not video_id:
+        return False, "无法从直链中提取视频ID"
+    if log_callback:
+        log_callback("链接类型: 淘宝视频直链")
+    return _download_taobao_content_id(
+        video_id, output_dir, log_callback, progress_callback, info_callback
+    )
+
+
 def _download_taobao_product(url, output_dir, log_callback=None, progress_callback=None, info_callback=None):
-    """处理淘宝/天猫商品链接: 解析页面提取videoId后下载"""
+    """处理淘宝分享、淘宝/天猫商品链接，并识别免登录逛逛视频。"""
     def log(msg):
         if log_callback:
             log_callback(msg)
 
-    final_url = resolve_short_url(url)
-    item_id = extract_item_id(final_url)
+    target = resolve_taobao_share_target(url)
+    final_url = target['url']
+    if target['kind'] == 'guangguang':
+        log("链接类型: 淘宝逛逛视频（无需登录）")
+        return _download_taobao_content_id(
+            target['content_id'], output_dir, log_callback, progress_callback, info_callback
+        )
+
+    item_id = target['item_id']
     if item_id:
         log(f"链接类型: 淘宝商品页")
         log(f"商品ID: {item_id}")
@@ -1602,7 +1721,7 @@ def download_video(url, output_dir, log_callback=None, progress_callback=None, i
 
     if link_type == LINK_TYPE_TAOBAO_DIRECT:
         return _download_direct_taobao(url, output_dir, log_callback, progress_callback, info_callback)
-    elif link_type == LINK_TYPE_TAOBAO_PRODUCT:
+    elif link_type in (LINK_TYPE_TAOBAO_SHARE, LINK_TYPE_TAOBAO_PRODUCT):
         return _download_taobao_product(url, output_dir, log_callback, progress_callback, info_callback)
     elif link_type == LINK_TYPE_DOUYIN:
         return _download_douyin(url, output_dir, log_callback, progress_callback, info_callback)

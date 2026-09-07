@@ -35,6 +35,36 @@ def extract_urls_from_text(text):
     return cleaned
 
 
+class LinkPreflightWorker(QThread):
+    """后台解析分享短链并检查淘宝商品页登录状态。"""
+    done = pyqtSignal(list, bool, bool, str)
+    error = pyqtSignal(str)
+
+    def __init__(self, links, parent=None):
+        super().__init__(parent)
+        self.links = links
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            from core.taobao_downloader import check_auth_file, prepare_download_links
+            prepared_links, requires_login = prepare_download_links(
+                self.links, should_stop=lambda: self._stop
+            )
+            if self._stop:
+                self.done.emit([], False, True, "已停止")
+                return
+            auth_valid, auth_msg = (True, "")
+            if requires_login:
+                auth_valid, auth_msg = check_auth_file()
+            self.done.emit(prepared_links, requires_login, auth_valid, auth_msg)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class DownloadWorker(BaseWorker):
     """视频下载后台线程"""
     log = pyqtSignal(str)
@@ -43,9 +73,10 @@ class DownloadWorker(BaseWorker):
     item_done = pyqtSignal(int, bool, str, str)  # index, success, message, video_url
     all_done = pyqtSignal(int, int)  # success_count, fail_count
 
-    def __init__(self, links, output_dir):
+    def __init__(self, links, output_dir, download_links=None):
         super().__init__()
         self.links = links
+        self.download_links = download_links or links
         self.output_dir = output_dir
         self.current_index = -1  # 当前处理下标（UI on_percent 读取）
         self.total = len(links)
@@ -63,7 +94,7 @@ class DownloadWorker(BaseWorker):
         fail_count = 0
         total = len(self.links)
 
-        for i, url in enumerate(self.links):
+        for i, url in enumerate(self.download_links):
             if self.stopped():
                 break
             self.current_index = i
@@ -149,6 +180,8 @@ class VideoDownloadTab(BaseTab):
     def __init__(self):
         super().__init__()
         self.login_worker = None
+        self.preflight_worker = None
+        self._pending_download = None
         self._link_rows = {}   # index -> 表格行号
         self._start_ts = None  # 本次下载开始时间
         self._init_ui()
@@ -193,10 +226,11 @@ class VideoDownloadTab(BaseTab):
             "1. 淘宝/天猫短链接: https://e.tb.cn/h.xxx\n"
             "2. 淘宝/天猫完整链接: https://detail.tmall.com/item.htm?id=123456\n"
             "3. 淘宝视频直链: https://cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/1234567890.mp4\n"
-            "4. 抖音商品链接: https://v.douyin.com/xxxxx/\n"
-            "5. 抖音视频链接: https://www.douyin.com/video/7634032388893858545\n"
-            "6. 小红书分享短链: https://xhslink.cn/o/xxxxx\n"
-            "7. 小红书笔记链接: https://www.xiaohongshu.com/explore/笔记ID\n"
+            "4. 淘宝逛逛分享短链: https://e.tb.cn/h.xxxxx（无需登录）\n"
+            "5. 抖音商品链接: https://v.douyin.com/xxxxx/\n"
+            "6. 抖音视频链接: https://www.douyin.com/video/7634032388893858545\n"
+            "7. 小红书分享短链: https://xhslink.cn/o/xxxxx\n"
+            "8. 小红书笔记链接: https://www.xiaohongshu.com/explore/笔记ID\n"
             "\n"
             "可直接粘贴如下格式文本，会自动识别链接:\n"
             "【淘宝】https://e.tb.cn/h.xxx 点击链接直接打开\n"
@@ -288,9 +322,10 @@ class VideoDownloadTab(BaseTab):
         help_text = QLabel(
             "  1. 淘宝/天猫商品链接（短链接和完整链接）— 需登录淘宝\n"
             "  2. 淘宝视频直链: cloud.video.taobao.com/play/u/0/p/1/e/6/t/1/{contentId}.mp4 — 无需登录\n"
-            "  3. 抖音商品链接: v.douyin.com 短链 / haohuo.jinritemai.com 链接 — 无需登录\n"
-            "  4. 抖音视频链接: www.douyin.com/video/{id} — 无需登录\n"
-            "  5. 小红书视频: xhslink.cn 分享短链 / xiaohongshu.com/explore/{id} — 无需登录"
+            "  3. 淘宝逛逛视频: e.tb.cn 分享短链 — 自动提取 contentId，无需登录\n"
+            "  4. 抖音商品链接: v.douyin.com 短链 / haohuo.jinritemai.com 链接 — 无需登录\n"
+            "  5. 抖音视频链接: www.douyin.com/video/{id} — 无需登录\n"
+            "  6. 小红书视频: xhslink.cn 分享短链 / xiaohongshu.com/explore/{id} — 无需登录"
         )
         help_text.setStyleSheet("color: #999; font-size: 12px;")
         help_layout.addWidget(help_text)
@@ -369,28 +404,61 @@ class VideoDownloadTab(BaseTab):
             for i, link in enumerate(links):
                 self._log(f"  [{i+1}] {link[:80]}")
 
-        # 预检查: 如果包含淘宝商品链接，检查登录状态
-        try:
-            from core.taobao_downloader import detect_link_type, LINK_TYPE_TAOBAO_PRODUCT, check_auth_file
-            has_taobao = any(detect_link_type(url) == LINK_TYPE_TAOBAO_PRODUCT for url in links)
-            if has_taobao:
-                valid, auth_msg = check_auth_file()
-                if not valid:
-                    reply = QMessageBox.question(
-                        self, "淘宝登录过期",
-                        f"{auth_msg}\n\n淘宝商品链接将全部失败，抖音/小红书链接不受影响。\n是否继续下载？",
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                    )
-                    if reply == QMessageBox.No:
-                        return
-                    self._log(f"警告: {auth_msg}，淘宝链接将跳过")
-        except ImportError:
-            pass
-
         self.save_config()
         os.makedirs(output_dir, exist_ok=True)
 
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("正在解析分享链接...")
+        self.lbl_status.setText("正在后台解析分享链接")
+        self.set_busy(True)
+
+        self._pending_download = (links, output_dir)
+        worker = LinkPreflightWorker(links, self)
+        self.preflight_worker = worker
+        worker.done.connect(self._on_preflight_done)
+        worker.error.connect(self._on_preflight_error)
+        worker.start()
+
+    def _on_preflight_done(self, prepared_links, requires_login, auth_valid, auth_msg):
+        worker = self.preflight_worker
+        self.preflight_worker = None
+        pending = self._pending_download
+        self._pending_download = None
+
+        if worker and worker._stop:
+            self.set_busy(False)
+            self.progress_bar.setFormat("已停止")
+            self.lbl_status.setText("已停止")
+            return
+        if not pending:
+            self.set_busy(False)
+            return
+
+        links, output_dir = pending
+        if requires_login and not auth_valid:
+            reply = QMessageBox.question(
+                self, "淘宝登录过期",
+                f"{auth_msg}\n\n淘宝商品链接将全部失败，抖音/小红书链接不受影响。\n是否继续下载？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                self.set_busy(False)
+                self.progress_bar.setFormat("已取消")
+                self.lbl_status.setText("已取消")
+                return
+            self._log(f"警告: {auth_msg}，淘宝商品链接可能失败")
+
+        self._start_download(links, prepared_links, output_dir)
+
+    def _on_preflight_error(self, message):
+        self.preflight_worker = None
+        self._pending_download = None
+        self.set_busy(False)
+        self.progress_bar.setFormat("解析失败")
+        self.lbl_status.setText("分享链接解析失败")
+        QMessageBox.critical(self, "解析失败", message)
+
+    def _start_download(self, links, prepared_links, output_dir):
         self.progress_bar.setFormat("准备中...")
 
         # === 结果表格: 清除旧数据，重建本次下载记录 ===
@@ -408,7 +476,7 @@ class VideoDownloadTab(BaseTab):
             self._link_rows[i] = row
         self.table_result.scrollToTop()
 
-        worker = DownloadWorker(links, output_dir)
+        worker = DownloadWorker(links, output_dir, download_links=prepared_links)
         worker.log.connect(self._log)
         worker.percent.connect(self.on_percent)
         worker.item_done.connect(self._on_item_done)
@@ -421,6 +489,10 @@ class VideoDownloadTab(BaseTab):
         self.btn_stop.setEnabled(busy)
 
     def _on_stop(self):
+        if self.preflight_worker and self.preflight_worker.isRunning():
+            self.preflight_worker.stop()
+            self._log("正在停止链接解析...")
+            return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self._log("正在停止...")
@@ -518,11 +590,12 @@ class VideoDownloadTab(BaseTab):
         try:
             from core.taobao_downloader import (
                 detect_link_type, LINK_TYPE_TAOBAO_DIRECT,
-                LINK_TYPE_TAOBAO_PRODUCT, LINK_TYPE_DOUYIN,
+                LINK_TYPE_TAOBAO_SHARE, LINK_TYPE_TAOBAO_PRODUCT, LINK_TYPE_DOUYIN,
                 LINK_TYPE_XIAOHONGSHU,
             )
             mapping = {
                 LINK_TYPE_TAOBAO_DIRECT: "淘宝直链",
+                LINK_TYPE_TAOBAO_SHARE: "淘宝分享",
                 LINK_TYPE_TAOBAO_PRODUCT: "淘宝商品",
                 LINK_TYPE_DOUYIN: "抖音",
                 LINK_TYPE_XIAOHONGSHU: "小红书",
