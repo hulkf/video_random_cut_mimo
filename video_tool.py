@@ -229,6 +229,21 @@ def _is_9x16(width: int, height: int) -> bool:
     return width > 0 and height > 0 and width * 16 == height * 9
 
 
+def _authorization_required(request: Dict[str, Any]) -> bool:
+    operation = request.get("operation")
+    options = request.get("options") or {}
+    spec = CAPABILITIES["operations"].get(operation, {})
+    required = bool(spec.get("external_service")) or operation in {
+        "voice_profile_delete", "settings_update", "settings_secret_set", "download_login",
+        "material_organize",
+    }
+    if operation == "video_screenshot":
+        required = required or bool(options.get("delete_face_images") or options.get("delete_face_videos"))
+    if operation == "face_detection":
+        required = required or bool(options.get("auto_delete"))
+    return required
+
+
 def _validate_request(request: Dict[str, Any]) -> None:
     if not isinstance(request, dict):
         raise ValueError("request 必须是 JSON 对象")
@@ -245,18 +260,7 @@ def _validate_request(request: Dict[str, Any]) -> None:
     if operation == "task_center_control" and inputs.get("action") not in ("pause", "resume", "cancel"):
         raise ValueError("task_center_control.action 必须是 pause、resume 或 cancel")
     options = request.get("options") or {}
-    spec = CAPABILITIES["operations"][operation]
-    authorization_required = bool(spec.get("external_service"))
-    authorization_required = authorization_required or operation in {
-        "voice_profile_delete", "settings_update", "settings_secret_set", "download_login",
-        "material_organize", "task_center_confirm",
-    }
-    if operation == "video_screenshot":
-        authorization_required = authorization_required or bool(
-            options.get("delete_face_images") or options.get("delete_face_videos")
-        )
-    if operation == "face_detection":
-        authorization_required = authorization_required or bool(options.get("auto_delete"))
+    authorization_required = _authorization_required(request) or operation == "task_center_confirm"
     if authorization_required:
         authorization = request.get("authorization") or {}
         scope = authorization.get("scope")
@@ -475,29 +479,60 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
         inputs = request.get("inputs") or request
         center = TaskCenter()
         if operation == "task_center_plan":
+            declared_authorizations = {str(value) for value in inputs.get("authorized_operations") or []}
+            required_authorizations = set()
             for index, step in enumerate(inputs["steps"]):
                 inner = dict(step.get("request") or {}) if isinstance(step, dict) else {}
                 inner_operation = str(inner.get("operation") or "")
                 if not inner_operation or inner_operation == "task_control" or inner_operation.startswith("task_center_"):
                     raise ValueError("步骤 {} 不是可执行的视频业务操作".format(index + 1))
+                if inner_operation in {"settings_secret_set", "settings_update", "download_login"}:
+                    raise ValueError("{} 不允许进入持久化视频任务计划，请使用专用交互流程".format(inner_operation))
                 validation_request = dict(inner)
+                if step.get("items_from_step"):
+                    target_key = str(step.get("input_key") or ("items" if inner_operation == "kaipai_download" else "input_path"))
+                    if target_key not in CAPABILITIES["operations"][inner_operation]["required"]:
+                        raise ValueError("步骤 {} 的 input_key={} 不是该 operation 的必要输入".format(index + 1, target_key))
+                    placeholder = [{"url": "https://placeholder.invalid/result.mp4"}] if target_key == "items" else "D:/derived-input"
+                    if isinstance(validation_request.get("inputs"), dict):
+                        validation_request["inputs"] = {**validation_request["inputs"], target_key: placeholder}
+                    else:
+                        validation_request[target_key] = placeholder
                 validation_request["authorization"] = {"confirmed": True, "scope": inner_operation}
                 _validate_request(validation_request)
+                if _authorization_required(inner):
+                    required_authorizations.add(inner_operation)
+            missing_authorizations = sorted(required_authorizations - declared_authorizations)
+            if missing_authorizations:
+                raise PermissionError("计划包含需单独披露的风险操作但未声明授权范围: {}".format(", ".join(missing_authorizations)))
+            if required_authorizations and not str(inputs.get("risk_note") or "").strip():
+                raise ValueError("计划包含外部服务或删除操作，risk_note 不能为空")
+            if not [line for line in inputs.get("parameter_lines") or [] if str(line).strip()]:
+                raise ValueError("parameter_lines 必须完整列出实际参数")
             result = center.create_plan(
                 inputs["task_id"], inputs["title"], inputs["steps"],
                 cargo_number=inputs.get("cargo_number", ""),
                 chat_id=inputs.get("chat_id", ""),
                 card_message_id=inputs.get("card_message_id", ""),
+                parameter_lines=inputs.get("parameter_lines") or [],
+                risk_note=inputs.get("risk_note", ""),
+                authorized_operations=inputs.get("authorized_operations") or [],
             )
         elif operation == "task_center_confirm":
-            result = center.confirm(inputs["task_id"], int(inputs["plan_version"]))
+            result = center.confirm(
+                inputs["task_id"], int(inputs["plan_version"]),
+                confirmed_by=inputs.get("confirmed_by", ""),
+                confirmation_message_id=inputs.get("confirmation_message_id", ""),
+            )
         elif operation == "task_center_list":
             result = center.list_tasks(
                 status=inputs.get("status", ""),
                 cargo_number=inputs.get("cargo_number", ""),
                 limit=int(inputs.get("limit", 20)),
+                offset=int(inputs.get("offset", 0)),
             )
         elif operation == "task_center_status":
+            center.reconcile_workers(inputs["task_id"])
             result = center.get(inputs["task_id"])
         elif operation == "task_center_control":
             result = center.control(inputs["task_id"], inputs["action"])
@@ -556,6 +591,7 @@ def main(argv=None) -> int:
     run_parser.add_argument("--request", required=True, help="JSON 文件路径，或 - 表示 stdin")
     worker_parser = subparsers.add_parser("task-worker")
     worker_parser.add_argument("--task-id", required=True)
+    worker_parser.add_argument("--worker-token", default="")
     args = parser.parse_args(argv)
     try:
         if args.command == "health":
@@ -567,7 +603,7 @@ def main(argv=None) -> int:
             from core.video_task_center import run_task_worker
 
             with contextlib.redirect_stdout(sys.stderr):
-                result = run_task_worker(args.task_id)
+                result = run_task_worker(args.task_id, worker_token=args.worker_token)
             return _emit({"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
                           "operation": "task-worker", "task": result})
         # 旧 core/worker 中仍有少量 print；统一转到 stderr，保证 stdout

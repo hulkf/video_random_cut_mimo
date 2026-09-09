@@ -89,7 +89,6 @@ class KaipaiWorker(BaseWorker):
             else:
                 if self.task_context:
                     self.task_context.before_cloud_submit(file_path)
-                    self.task_context.cloud_item(file_path, state="submitting")
                     submission_started = True
 
                 def _submitted(cloud_task_id):
