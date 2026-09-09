@@ -379,6 +379,7 @@ def _kaipai_process(request):
         opts.get("params") or {},
         batch_mode=opts.get("batch_mode", True),
         max_workers=opts.get("max_workers", 9),
+        task_context=request.get("_task_center_context"),
     ))
 
 

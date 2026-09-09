@@ -36,7 +36,7 @@ class KaipaiWorker(BaseWorker):
         "视频画质修复": "hdvideoallinone",
     }
 
-    def __init__(self, files, task_name, params=None, batch_mode=True, max_workers=9):
+    def __init__(self, files, task_name, params=None, batch_mode=True, max_workers=9, task_context=None):
         super().__init__()
         self.files = files
         self.task_name = task_name
@@ -45,6 +45,7 @@ class KaipaiWorker(BaseWorker):
         # 同时避免一次性并发过高触发接口限流。
         self.batch_mode = bool(batch_mode)
         self.max_workers = max(1, int(max_workers or 1))
+        self.task_context = task_context
 
     def run(self):
         try:
@@ -71,15 +72,40 @@ class KaipaiWorker(BaseWorker):
     def _process_one(self, client, file_path, idx, total):
         """提交并等待单个远端任务，保留单文件结果结构。"""
         file_name = os.path.basename(file_path)
+        resume = self.task_context.resume_items().get(file_path, {}) if self.task_context else {}
+        submission_started = False
+        submitted_id = ""
         self.progress.emit(idx, total, f"正在处理: {file_name}")
         self.log.emit(f"[{idx+1}/{total}] 提交并处理: {file_name}")
         try:
             api_task_name = self.TASK_MAP.get(self.task_name, self.task_name)
-            result = client.execute(
-                task_name=api_task_name,
-                source=file_path,
-                params=self.params if self.params else None
-            )
+            if resume.get("state") == "completed" and resume.get("output_url"):
+                result = {"task_id": resume.get("cloud_task_id", ""), "output_urls": [resume["output_url"]]}
+            elif resume.get("cloud_task_id"):
+                result = client.query(resume["cloud_task_id"])
+                result.setdefault("task_id", resume["cloud_task_id"])
+            elif resume.get("state") in {"submitting", "submission_unknown"}:
+                raise RuntimeError("上次提交结果未知且没有云端任务编号，已停止自动重提，请人工核对开拍后台")
+            else:
+                if self.task_context:
+                    self.task_context.before_cloud_submit(file_path)
+                    self.task_context.cloud_item(file_path, state="submitting")
+                    submission_started = True
+
+                def _submitted(cloud_task_id):
+                    nonlocal submitted_id
+                    submitted_id = str(cloud_task_id or "")
+                    if self.task_context:
+                        self.task_context.cloud_item(
+                            file_path, state="submitted", cloud_task_id=submitted_id
+                        )
+
+                result = client.execute(
+                    task_name=api_task_name,
+                    source=file_path,
+                    params=self.params if self.params else None,
+                    on_async_submitted=_submitted,
+                )
             output_urls = result.get("output_urls", [])
             task_id = result.get("task_id", "")
             item = {
@@ -89,8 +115,27 @@ class KaipaiWorker(BaseWorker):
                 "task_id": task_id,
                 "output_url": output_urls[0] if output_urls else "",
             }
+            if self.task_context:
+                self.task_context.cloud_item(
+                    file_path,
+                    state="completed",
+                    cloud_task_id=task_id,
+                    output_url=item["output_url"],
+                )
             self.log.emit(f"  ✓ 完成: {file_name}")
         except Exception as e:
+            from core.task_control import TaskControlSignal
+
+            if isinstance(e, TaskControlSignal):
+                item = {
+                    "file": file_name,
+                    "path": file_path,
+                    "status": "已暂停" if e.status == "paused" else "已取消",
+                    "task_id": str(resume.get("cloud_task_id") or ""),
+                    "output_url": str(resume.get("output_url") or ""),
+                }
+                self.progress.emit(idx + 1, total, f"停止 {idx+1}/{total}")
+                return item
             item = {
                 "file": file_name,
                 "path": file_path,
@@ -99,6 +144,18 @@ class KaipaiWorker(BaseWorker):
                 "output_url": "",
                 "error": str(e),
             }
+            if self.task_context:
+                checkpoint_state = (
+                    "submission_unknown"
+                    if (submission_started and not submitted_id) or resume.get("state") in {"submitting", "submission_unknown"}
+                    else "failed"
+                )
+                self.task_context.cloud_item(
+                    file_path,
+                    state=checkpoint_state,
+                    cloud_task_id=str(submitted_id or resume.get("cloud_task_id") or ""),
+                    error=str(e),
+                )
             self.log.emit(f"  ✗ 失败: {file_name}: {e}")
         self.progress.emit(idx + 1, total, f"完成 {idx+1}/{total}")
         return item

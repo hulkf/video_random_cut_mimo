@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.3.0"
+TOOL_VERSION = "0.4.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -60,6 +60,31 @@ CAPABILITIES = {
             "description": "查询、暂停、继续或取消一个已登记的视频任务",
             "required": ["task_id", "action"],
             "action_values": ["status", "pause", "resume", "cancel"],
+        },
+        "task_center_plan": {
+            "description": "创建或更新一个等待确认的视频任务计划，不执行视频操作",
+            "required": ["task_id", "title", "steps"],
+        },
+        "task_center_confirm": {
+            "description": "确认指定计划版本并启动独立后台执行器",
+            "required": ["task_id", "plan_version"],
+        },
+        "task_center_list": {
+            "description": "查询本地、云端和混合视频任务总览及当日开拍额度台账",
+            "required": [],
+        },
+        "task_center_status": {
+            "description": "查询一个视频任务及各步骤、逐文件云端进度",
+            "required": ["task_id"],
+        },
+        "task_center_control": {
+            "description": "暂停、继续或取消一个视频任务，不影响其他任务",
+            "required": ["task_id", "action"],
+            "action_values": ["pause", "resume", "cancel"],
+        },
+        "task_center_bind_card": {
+            "description": "绑定任务的飞书 Card 2.0 消息，用于无模型进度更新",
+            "required": ["task_id", "chat_id", "card_message_id"],
         },
     },
     "constraints": {
@@ -217,12 +242,14 @@ def _validate_request(request: Dict[str, Any]) -> None:
         raise ValueError("缺少必要参数: {}".format(", ".join(missing)))
     if operation == "task_control" and inputs.get("action") not in ("status", "pause", "resume", "cancel"):
         raise ValueError("task_control.action 必须是 status、pause、resume 或 cancel")
+    if operation == "task_center_control" and inputs.get("action") not in ("pause", "resume", "cancel"):
+        raise ValueError("task_center_control.action 必须是 pause、resume 或 cancel")
     options = request.get("options") or {}
     spec = CAPABILITIES["operations"][operation]
     authorization_required = bool(spec.get("external_service"))
     authorization_required = authorization_required or operation in {
         "voice_profile_delete", "settings_update", "settings_secret_set", "download_login",
-        "material_organize",
+        "material_organize", "task_center_confirm",
     }
     if operation == "video_screenshot":
         authorization_required = authorization_required or bool(
@@ -442,6 +469,42 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
         result = task_command(inputs["task_id"], inputs["action"])
         return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
                 "operation": operation, **result}
+    if operation.startswith("task_center_"):
+        from core.video_task_center import TaskCenter
+
+        inputs = request.get("inputs") or request
+        center = TaskCenter()
+        if operation == "task_center_plan":
+            for index, step in enumerate(inputs["steps"]):
+                inner = dict(step.get("request") or {}) if isinstance(step, dict) else {}
+                inner_operation = str(inner.get("operation") or "")
+                if not inner_operation or inner_operation == "task_control" or inner_operation.startswith("task_center_"):
+                    raise ValueError("步骤 {} 不是可执行的视频业务操作".format(index + 1))
+                validation_request = dict(inner)
+                validation_request["authorization"] = {"confirmed": True, "scope": inner_operation}
+                _validate_request(validation_request)
+            result = center.create_plan(
+                inputs["task_id"], inputs["title"], inputs["steps"],
+                cargo_number=inputs.get("cargo_number", ""),
+                chat_id=inputs.get("chat_id", ""),
+                card_message_id=inputs.get("card_message_id", ""),
+            )
+        elif operation == "task_center_confirm":
+            result = center.confirm(inputs["task_id"], int(inputs["plan_version"]))
+        elif operation == "task_center_list":
+            result = center.list_tasks(
+                status=inputs.get("status", ""),
+                cargo_number=inputs.get("cargo_number", ""),
+                limit=int(inputs.get("limit", 20)),
+            )
+        elif operation == "task_center_status":
+            result = center.get(inputs["task_id"])
+        elif operation == "task_center_control":
+            result = center.control(inputs["task_id"], inputs["action"])
+        else:
+            result = center.bind_card(inputs["task_id"], inputs["chat_id"], inputs["card_message_id"])
+        return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
+                "operation": operation, "task": result}
 
     from core.task_control import TaskController, TaskControlSignal
     task_id = request.get("task_id") or (request.get("inputs") or {}).get("task_id")
@@ -491,6 +554,8 @@ def main(argv=None) -> int:
     subparsers.add_parser("capabilities")
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--request", required=True, help="JSON 文件路径，或 - 表示 stdin")
+    worker_parser = subparsers.add_parser("task-worker")
+    worker_parser.add_argument("--task-id", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "health":
@@ -498,6 +563,13 @@ def main(argv=None) -> int:
             return _emit(result, 0 if result["success"] else 3)
         if args.command == "capabilities":
             return _emit({"success": True, **CAPABILITIES})
+        if args.command == "task-worker":
+            from core.video_task_center import run_task_worker
+
+            with contextlib.redirect_stdout(sys.stderr):
+                result = run_task_worker(args.task_id)
+            return _emit({"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
+                          "operation": "task-worker", "task": result})
         # 旧 core/worker 中仍有少量 print；统一转到 stderr，保证 stdout
         # 始终只有一个可解析 JSON，便于其他 Agent 稳定调用。
         with contextlib.redirect_stdout(sys.stderr):

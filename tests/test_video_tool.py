@@ -33,6 +33,9 @@ class VideoToolTests(unittest.TestCase):
         self.assertIn("video_concat", payload["operations"])
         self.assertFalse(payload["constraints"]["direct_ffmpeg_from_agent"])
         self.assertIn("task_control", payload["operations"])
+        self.assertIn("task_center_plan", payload["operations"])
+        self.assertIn("task_center_confirm", payload["operations"])
+        self.assertIn("task_center_list", payload["operations"])
 
     def test_every_business_tab_has_a_headless_operation(self):
         exposed_tabs = {
@@ -306,6 +309,39 @@ class VideoToolTests(unittest.TestCase):
         self.assertEqual([item["file"] for item in results], ["a.mp4", "b.mp4", "c.mp4"])
         self.assertEqual([item["status"] for item in results], ["成功", "成功", "成功"])
         self.assertEqual(client.execute.call_count, 3)
+
+    def test_kaipai_reuses_persisted_cloud_task_without_resubmitting(self):
+        context = MagicMock()
+        context.resume_items.return_value = {
+            "a.mp4": {"state": "submitted", "cloud_task_id": "cloud-a", "output_url": ""}
+        }
+        client = MagicMock()
+        client.query.return_value = {"output_urls": ["https://out/a.mp4"]}
+        worker = KaipaiWorker(["a.mp4"], "视频智能全消", task_context=context)
+
+        result = worker._process_one(client, "a.mp4", 0, 1)
+
+        client.execute.assert_not_called()
+        client.query.assert_called_once_with("cloud-a")
+        self.assertEqual(result["task_id"], "cloud-a")
+        context.cloud_item.assert_called_with(
+            "a.mp4", state="completed", cloud_task_id="cloud-a", output_url="https://out/a.mp4"
+        )
+
+    def test_kaipai_does_not_resubmit_an_unknown_previous_submission(self):
+        context = MagicMock()
+        context.resume_items.return_value = {
+            "a.mp4": {"state": "submission_unknown", "cloud_task_id": "", "output_url": ""}
+        }
+        client = MagicMock()
+        worker = KaipaiWorker(["a.mp4"], "视频智能全消", task_context=context)
+
+        result = worker._process_one(client, "a.mp4", 0, 1)
+
+        client.execute.assert_not_called()
+        client.query.assert_not_called()
+        self.assertEqual(result["status"], "失败")
+        self.assertIn("停止自动重提", result["error"])
 
     def test_task_control_pause_resume_cancel(self):
         task_id = "test-control-001"
