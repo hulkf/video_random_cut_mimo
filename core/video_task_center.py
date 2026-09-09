@@ -75,7 +75,13 @@ def _request_input(request: dict[str, Any], key: str, default: Any = None) -> An
 
 def _estimate_items(step: dict[str, Any]) -> int:
     explicit = step.get("item_count")
-    path = str(_request_input(step["request"], "input_path", "") or "")
+    request = step["request"]
+    path = ""
+    for key in ("input_path", "source_path", "path"):
+        candidate = _request_input(request, key, "")
+        if isinstance(candidate, str) and candidate.strip():
+            path = candidate
+            break
     actual: int | None = None
     if os.path.isfile(path):
         suffix = Path(path).suffix.lower()
