@@ -234,6 +234,23 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(calls[1]["input_path"], r"D:\mid")
 
+    def test_cardinality_changing_upstream_requires_explicit_cloud_count(self):
+        archive = Path(self.temp.name) / "8819视频.zip"
+        archive.write_bytes(b"archive")
+        steps = [
+            {"id": "organize", "request": {
+                "operation": "material_organize", "source_path": str(archive)
+            }},
+            {"id": "clear", "items_from_step": "organize", "request": {
+                "operation": "kaipai_process", "task_name": "videoscreenclear"
+            }},
+        ]
+        with self.assertRaisesRegex(ValueError, "必须声明准确 item_count"):
+            self.center.create_plan("VT-ARCHIVE", "归档后全消", steps)
+        steps[1]["item_count"] = 10
+        task = self.center.create_plan("VT-ARCHIVE", "归档后全消", steps)
+        self.assertEqual(task["quota_estimate"], {"videoscreenclear": 10})
+
     def test_validation_failure_marks_task_partial_failed(self):
         self.center.create_plan("VT-INVALID", "校验失败", [{
             "id": "validate", "request": {"operation": "validate", "path": "D:/bad.mp4"}

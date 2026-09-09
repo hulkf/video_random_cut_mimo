@@ -20,6 +20,7 @@ DEFAULT_DB = Path(__file__).resolve().parents[1] / ".task_center" / "tasks.db"
 DAILY_LIMITS = {"videoscreenclear": 50, "hdvideoallinone": 50}
 CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance"}
 RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process"}
+CARDINALITY_CHANGING_OPERATIONS = {"material_organize", "video_fission", "video_concat", "video_mix", "audio_mix"}
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".ts", ".mts", ".m2ts"}
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,79}$")
 TERMINAL_STATES = {"completed", "partial_failed", "failed", "cancelled", "stopped_unknown"}
@@ -353,9 +354,22 @@ class TaskCenter:
             if source_step_id and not source_step:
                 raise ValueError("items_from_step 必须引用前面的步骤: {}".format(source_step_id))
             if source_step:
-                item_count = int(source_step["item_count"])
-                if raw.get("item_count") is not None and int(raw["item_count"]) != item_count:
-                    raise ValueError("派生步骤 item_count 必须与上游步骤一致")
+                declared_count = raw.get("item_count")
+                source_operation = str(source_step["request"].get("operation") or "")
+                if source_operation in CARDINALITY_CHANGING_OPERATIONS:
+                    if declared_count is None:
+                        raise ValueError(
+                            "上游步骤 {} 可能改变视频数量；派生步骤 {} 必须声明准确 item_count".format(
+                                source_step_id, step_id
+                            )
+                        )
+                    item_count = int(declared_count)
+                    if item_count <= 0:
+                        raise ValueError("派生步骤 item_count 必须大于 0")
+                else:
+                    item_count = int(source_step["item_count"])
+                    if declared_count is not None and int(declared_count) != item_count:
+                        raise ValueError("派生步骤 item_count 必须与上游步骤一致")
             else:
                 item_count = _estimate_items({**raw, "request": request})
             capability = _cloud_capability(request)
