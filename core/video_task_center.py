@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ DEFAULT_DB = Path(__file__).resolve().parents[1] / ".task_center" / "tasks.db"
 DAILY_LIMITS = {"videoscreenclear": 50, "hdvideoallinone": 50}
 CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance"}
 RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process"}
-CARDINALITY_CHANGING_OPERATIONS = {"material_organize", "video_fission", "video_concat", "video_mix", "audio_mix"}
+CARDINALITY_CHANGING_OPERATIONS = {"video_fission", "video_concat", "video_mix", "audio_mix"}
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".ts", ".mts", ".m2ts"}
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,79}$")
 TERMINAL_STATES = {"completed", "partial_failed", "failed", "cancelled", "stopped_unknown"}
@@ -77,7 +78,38 @@ def _estimate_items(step: dict[str, Any]) -> int:
     path = str(_request_input(step["request"], "input_path", "") or "")
     actual: int | None = None
     if os.path.isfile(path):
-        actual = 1
+        suffix = Path(path).suffix.lower()
+        if suffix == ".zip":
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    actual = sum(
+                        1 for item in archive.infolist()
+                        if not item.is_dir() and Path(item.filename).suffix.lower() in VIDEO_SUFFIXES
+                    )
+            except (OSError, zipfile.BadZipFile) as exc:
+                raise ValueError("无法读取 ZIP 中的视频清单: {}".format(path)) from exc
+        elif suffix in {".rar", ".7z"}:
+            try:
+                from core.material_organizer import _find_7zip
+
+                executable = _find_7zip()
+                if not executable:
+                    raise ValueError("未找到 7-Zip，无法核定压缩包内视频数量")
+                completed = subprocess.run(
+                    [executable, "l", "-slt", path], capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=30,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if completed.returncode:
+                    raise ValueError("7-Zip 无法读取压缩包视频清单")
+                actual = sum(
+                    1 for line in completed.stdout.splitlines()
+                    if line.startswith("Path = ") and Path(line[7:].strip()).suffix.lower() in VIDEO_SUFFIXES
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError("读取压缩包视频清单超时") from exc
+        else:
+            actual = 1
     if os.path.isdir(path):
         actual = sum(1 for item in Path(path).rglob("*") if item.is_file() and item.suffix.lower() in VIDEO_SUFFIXES)
     if explicit is not None:

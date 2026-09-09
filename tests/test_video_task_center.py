@@ -2,8 +2,9 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core.video_task_center import QuotaExceeded, TaskCenter
 
@@ -234,9 +235,12 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(calls[1]["input_path"], r"D:\mid")
 
-    def test_cardinality_changing_upstream_requires_explicit_cloud_count(self):
+    def test_archive_video_members_determine_downstream_cloud_count(self):
         archive = Path(self.temp.name) / "8819视频.zip"
-        archive.write_bytes(b"archive")
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("a.mp4", b"video")
+            bundle.writestr("nested/b.mov", b"video")
+            bundle.writestr("readme.txt", b"ignored")
         steps = [
             {"id": "organize", "request": {
                 "operation": "material_organize", "source_path": str(archive)
@@ -245,11 +249,24 @@ class VideoTaskCenterTests(unittest.TestCase):
                 "operation": "kaipai_process", "task_name": "videoscreenclear"
             }},
         ]
-        with self.assertRaisesRegex(ValueError, "必须声明准确 item_count"):
-            self.center.create_plan("VT-ARCHIVE", "归档后全消", steps)
-        steps[1]["item_count"] = 10
         task = self.center.create_plan("VT-ARCHIVE", "归档后全消", steps)
-        self.assertEqual(task["quota_estimate"], {"videoscreenclear": 10})
+        self.assertEqual(task["quota_estimate"], {"videoscreenclear": 2})
+
+    def test_rar_member_list_is_counted_without_extracting(self):
+        archive = Path(self.temp.name) / "8819视频.rar"
+        archive.write_bytes(b"rar")
+        listing = "Path = a.mp4\nPath = nested\\b.mov\nPath = readme.txt\n"
+        with patch("core.material_organizer._find_7zip", return_value="7z.exe"), patch(
+            "core.video_task_center.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=listing),
+        ) as run:
+            task = self.center.create_plan("VT-RAR", "RAR 归档", [{
+                "id": "organize", "request": {
+                    "operation": "material_organize", "source_path": str(archive)
+                }
+            }])
+        self.assertEqual(task["steps"][0]["item_count"], 2)
+        self.assertIn("-slt", run.call_args.args[0])
 
     def test_validation_failure_marks_task_partial_failed(self):
         self.center.create_plan("VT-INVALID", "校验失败", [{
