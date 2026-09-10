@@ -387,6 +387,7 @@ def _kaipai_process(request):
 def _kaipai_download(request):
     import requests
     from core.task_control import TaskControlSignal
+    from utils.media_utils import probe_video
 
     data = _inputs(request)
     context = request.get("_task_center_context")
@@ -421,8 +422,16 @@ def _kaipai_download(request):
                 and os.path.isfile(output)
                 and os.path.getsize(output) > 0
             ):
-                results.append({"url": url, "output": output, "success": True, "reused": True})
-                continue
+                try:
+                    resumed_info = probe_video(output)
+                except Exception:
+                    resumed_info = {}
+                if float(resumed_info.get("duration") or 0) > 0:
+                    results.append({
+                        "url": url, "output": output, "success": True, "reused": True,
+                        "validation": {"decodable": True, "duration": resumed_info.get("duration")},
+                    })
+                    continue
             if context:
                 context.download_item(url, state="downloading")
             response = requests.get(url, timeout=120, stream=True)
@@ -440,10 +449,18 @@ def _kaipai_download(request):
                 response.close()
             if written <= 0:
                 raise RuntimeError("开拍下载结果为空")
+            if context:
+                context.download_item(url, state="validating")
+            media_info = probe_video(temporary)
+            if float(media_info.get("duration") or 0) <= 0:
+                raise RuntimeError("开拍下载结果不是可解码的视频")
             os.replace(temporary, output)
             if context:
                 context.download_item(url, state="completed", output_path=output)
-            results.append({"url": url, "output": output, "success": True, "reused": False})
+            results.append({
+                "url": url, "output": output, "success": True, "reused": False,
+                "validation": {"decodable": True, "duration": media_info.get("duration")},
+            })
         except TaskControlSignal:
             try:
                 if os.path.isfile(temporary):

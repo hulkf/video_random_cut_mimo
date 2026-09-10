@@ -34,7 +34,7 @@ class QuotaExceeded(ValueError):
 
 
 def _now() -> str:
-    return datetime.now().astimezone().replace(microsecond=0).isoformat()
+    return datetime.now().astimezone().isoformat(timespec="microseconds")
 
 
 def _today() -> str:
@@ -278,6 +278,16 @@ class TaskCenter:
                     confirmed_by TEXT NOT NULL DEFAULT '',
                     confirmation_message_id TEXT NOT NULL DEFAULT '',
                     card_delivered_updated_at TEXT NOT NULL DEFAULT '',
+                    state_revision INTEGER NOT NULL DEFAULT 1,
+                    card_delivered_revision INTEGER NOT NULL DEFAULT 0,
+                    pending_card_kind TEXT NOT NULL DEFAULT '',
+                    pending_card_revision INTEGER NOT NULL DEFAULT 0,
+                    pending_card_uuid TEXT NOT NULL DEFAULT '',
+                    pending_card_json TEXT NOT NULL DEFAULT '',
+                    pending_card_updated_at TEXT NOT NULL DEFAULT '',
+                    pending_card_mode TEXT NOT NULL DEFAULT '',
+                    pending_card_target_message_id TEXT NOT NULL DEFAULT '',
+                    card_next_delivery_mode TEXT NOT NULL DEFAULT 'reply',
                     created_at TEXT NOT NULL,
                     confirmed_at TEXT,
                     updated_at TEXT NOT NULL
@@ -348,6 +358,16 @@ class TaskCenter:
                 "confirmed_by": "TEXT NOT NULL DEFAULT ''",
                 "confirmation_message_id": "TEXT NOT NULL DEFAULT ''",
                 "card_delivered_updated_at": "TEXT NOT NULL DEFAULT ''",
+                "state_revision": "INTEGER NOT NULL DEFAULT 1",
+                "card_delivered_revision": "INTEGER NOT NULL DEFAULT 0",
+                "pending_card_kind": "TEXT NOT NULL DEFAULT ''",
+                "pending_card_revision": "INTEGER NOT NULL DEFAULT 0",
+                "pending_card_uuid": "TEXT NOT NULL DEFAULT ''",
+                "pending_card_json": "TEXT NOT NULL DEFAULT ''",
+                "pending_card_updated_at": "TEXT NOT NULL DEFAULT ''",
+                "pending_card_mode": "TEXT NOT NULL DEFAULT ''",
+                "pending_card_target_message_id": "TEXT NOT NULL DEFAULT ''",
+                "card_next_delivery_mode": "TEXT NOT NULL DEFAULT 'reply'",
                 "worker_token": "TEXT NOT NULL DEFAULT ''",
             }
             for name, definition in migrations.items():
@@ -364,6 +384,14 @@ class TaskCenter:
                     "AND status IN ('completed','partial_failed','failed','cancelled','stopped_unknown')"
                 )
                 db.execute("PRAGMA user_version=5")
+            if schema_version < 6:
+                db.execute("UPDATE tasks SET state_revision=MAX(state_revision,1)")
+                db.execute(
+                    "UPDATE tasks SET card_delivered_revision=CASE "
+                    "WHEN card_delivered_updated_at<>'' AND card_delivered_updated_at=updated_at "
+                    "THEN state_revision ELSE 0 END"
+                )
+                db.execute("PRAGMA user_version=6")
             lock_columns = {row["name"] for row in db.execute("PRAGMA table_info(resource_locks)").fetchall()}
             if "owner_token" not in lock_columns:
                 db.execute("ALTER TABLE resource_locks ADD COLUMN owner_token TEXT NOT NULL DEFAULT ''")
@@ -449,6 +477,22 @@ class TaskCenter:
                 "input_snapshot": [] if raw.get("items_from_step") else _input_snapshot(request),
             })
         execution_type = "mixed" if len(types) > 1 else next(iter(types))
+        # Agent-facing plans always carry the fully disclosed parameter list.
+        # Low-level internal plans may intentionally exercise one cloud step.
+        for index, step in enumerate(normalized if parameter_lines else []):
+            if step["request"].get("operation") != "kaipai_process":
+                continue
+            has_download = any(
+                later["request"].get("operation") == "kaipai_download"
+                and later.get("items_from_step") == step["id"]
+                for later in normalized[index + 1:]
+            )
+            if not has_download:
+                raise ValueError(
+                    "开拍处理步骤 {} 必须连接后续 kaipai_download，不能把临时云端地址当作最终交付".format(
+                        step["id"]
+                    )
+                )
         now = _now()
         plan = {
             "steps": normalized, "quota_estimate": quota,
@@ -524,7 +568,7 @@ class TaskCenter:
                         (today, capability, task_id, step["id"], count, now),
                     )
             db.execute(
-                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',confirmed_at=?,confirmed_by=?,confirmation_message_id=?,updated_at=? WHERE task_id=?",
+                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',confirmed_at=?,confirmed_by=?,confirmation_message_id=?,updated_at=?,state_revision=state_revision+1 WHERE task_id=?",
                 (now, str(confirmed_by or ""), str(confirmation_message_id or ""), now, task_id),
             )
             self._event(db, task_id, "confirmed", {
@@ -546,8 +590,8 @@ class TaskCenter:
         worker_token = uuid.uuid4().hex
         with closing(self._connect()) as db:
             claimed = db.execute(
-                "UPDATE tasks SET worker_token=?,updated_at=? WHERE task_id=? AND worker_pid=-1 AND worker_token=''",
-                (worker_token, _now(), task_id),
+                "UPDATE tasks SET worker_token=? WHERE task_id=? AND worker_pid=-1 AND worker_token=''",
+                (worker_token, task_id),
             )
             db.commit()
         if claimed.rowcount != 1:
@@ -565,7 +609,7 @@ class TaskCenter:
         except Exception:
             with closing(self._connect()) as db:
                 db.execute(
-                    "UPDATE tasks SET status='failed',worker_pid=NULL,worker_token='',error='执行器启动失败',updated_at=? WHERE task_id=? AND worker_token=?",
+                    "UPDATE tasks SET status='failed',worker_pid=NULL,worker_token='',error='执行器启动失败',updated_at=?,state_revision=state_revision+1 WHERE task_id=? AND worker_token=?",
                     (_now(), task_id, worker_token),
                 )
                 db.commit()
@@ -573,8 +617,8 @@ class TaskCenter:
             raise
         with closing(self._connect()) as db:
             db.execute(
-                "UPDATE tasks SET worker_pid=?, updated_at=? WHERE task_id=? AND worker_pid=-1 AND worker_token=?",
-                (process.pid, _now(), task_id, worker_token),
+                "UPDATE tasks SET worker_pid=? WHERE task_id=? AND worker_pid=-1 AND worker_token=?",
+                (process.pid, task_id, worker_token),
             )
             db.commit()
         return int(process.pid)
@@ -598,25 +642,34 @@ class TaskCenter:
         if pid and alive():
             raise RuntimeError("原任务执行器尚未退出，请稍后再继续")
 
-    def _worker_process_alive(self, task_id: str, pid: int, worker_token: str) -> bool:
-        """Verify that a live PID is the worker recorded for this exact task."""
-        if not self._pid_alive(pid) or not worker_token:
-            return False
+    def _worker_process_state(self, task_id: str, pid: int, worker_token: str) -> str:
+        """Return alive, dead, or unknown for the worker recorded for this task."""
+        if not self._pid_alive(pid):
+            return "dead"
+        if not worker_token:
+            return "unknown"
         try:
             import psutil
 
             command = psutil.Process(pid).cmdline()
-        except (ImportError, OSError):
-            return False
-        except psutil.Error:
-            return False
-        return (
+        except ImportError:
+            return "unknown"
+        except (OSError, psutil.AccessDenied):
+            return "unknown"
+        except psutil.NoSuchProcess:
+            return "dead"
+        matches = (
             "task-worker" in command
             and "--task-id" in command
             and task_id in command
             and "--worker-token" in command
             and worker_token in command
         )
+        return "alive" if matches else "dead"
+
+    def _worker_process_alive(self, task_id: str, pid: int, worker_token: str) -> bool:
+        # Unknown must fail closed: callers must not start a replacement worker.
+        return self._worker_process_state(task_id, pid, worker_token) != "dead"
 
     def execute(
         self,
@@ -643,7 +696,7 @@ class TaskCenter:
                 db.commit()
                 return self.get(task_id)
             claimed = db.execute(
-                "UPDATE tasks SET status='running',worker_pid=?,updated_at=? WHERE task_id=? AND status='queued' AND worker_pid IN (-1,?)",
+                "UPDATE tasks SET status='running',worker_pid=?,updated_at=?,state_revision=state_revision+1 WHERE task_id=? AND status='queued' AND worker_pid IN (-1,?)",
                 (current_pid, _now(), task_id, current_pid),
             )
             if claimed.rowcount != 1:
@@ -874,9 +927,9 @@ class TaskCenter:
                 raise ValueError("不支持的任务控制动作: {}".format(action))
             next_pid = -1 if target == "queued" else previous_pid
             if target == "queued":
-                db.execute("UPDATE tasks SET status=?,worker_pid=?,worker_token='',updated_at=? WHERE task_id=?", (target, next_pid, _now(), task_id))
+                db.execute("UPDATE tasks SET status=?,worker_pid=?,worker_token='',updated_at=?,state_revision=state_revision+1 WHERE task_id=?", (target, next_pid, _now(), task_id))
             else:
-                db.execute("UPDATE tasks SET status=?,worker_pid=?,updated_at=? WHERE task_id=?", (target, next_pid, _now(), task_id))
+                db.execute("UPDATE tasks SET status=?,worker_pid=?,updated_at=?,state_revision=state_revision+1 WHERE task_id=?", (target, next_pid, _now(), task_id))
             self._event(db, task_id, "control_" + action, {"from": status, "to": target})
             db.commit()
         if target == "cancelled":
@@ -900,7 +953,7 @@ class TaskCenter:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             claimed = db.execute(
-                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',updated_at=? "
+                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',updated_at=?,state_revision=state_revision+1 "
                 "WHERE task_id=? AND status='paused' AND worker_pid=?",
                 (_now(), task_id, previous_pid),
             )
@@ -919,20 +972,92 @@ class TaskCenter:
         card_message_id: str,
         *,
         delivered_updated_at: str = "",
+        delivered_revision: int | None = None,
+        pending_kind: str | None = None,
+        pending_revision: int | None = None,
+        pending_uuid: str | None = None,
+        pending_card_json: str | None = None,
+        pending_updated_at: str | None = None,
+        pending_mode: str | None = None,
+        pending_target_message_id: str | None = None,
+        ack_pending_revision: int | None = None,
+        ack_pending_uuid: str | None = None,
+        next_delivery_mode: str | None = None,
     ) -> dict[str, Any]:
-        if not str(chat_id or "").strip() or not str(card_message_id or "").strip():
-            raise ValueError("chat_id 和 card_message_id 不能为空")
+        if not str(chat_id or "").strip():
+            raise ValueError("chat_id 不能为空")
+        if delivered_revision is not None and not str(card_message_id or "").strip():
+            raise ValueError("确认卡片送达时 card_message_id 不能为空")
         with closing(self._connect()) as db:
-            cursor = db.execute(
-                "UPDATE tasks SET chat_id=?,card_message_id=?,card_delivered_updated_at="
-                "CASE WHEN ?<>'' THEN ? ELSE card_delivered_updated_at END WHERE task_id=?",
-                (
-                    chat_id.strip(), card_message_id.strip(),
-                    delivered_updated_at.strip(), delivered_updated_at.strip(), task_id,
-                ),
-            )
-            if cursor.rowcount != 1:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not row:
                 raise ValueError("任务不存在: {}".format(task_id))
+            fields: list[str] = []
+            values: list[Any] = []
+            if delivered_revision is None and not pending_kind:
+                fields.extend(["chat_id=?", "card_message_id=?"])
+                values.extend([chat_id.strip(), card_message_id.strip()])
+                if delivered_updated_at:
+                    fields.append("card_delivered_updated_at=?")
+                    values.append(delivered_updated_at.strip())
+            ack_matches_pending = (
+                ack_pending_revision is not None
+                and int(row["pending_card_revision"]) == int(ack_pending_revision)
+                and bool(str(row["pending_card_uuid"]))
+                and str(row["pending_card_uuid"]) == str(ack_pending_uuid or "")
+            )
+            delivery_advances = (
+                delivered_revision is not None
+                and (
+                    int(delivered_revision) > int(row["card_delivered_revision"])
+                    or (
+                        int(delivered_revision) == int(row["card_delivered_revision"])
+                        and ack_matches_pending
+                    )
+                )
+                and (ack_pending_revision is None or ack_matches_pending)
+            )
+            if delivery_advances:
+                fields.extend(["chat_id=?", "card_message_id=?", "card_delivered_revision=?"])
+                values.extend([chat_id.strip(), card_message_id.strip(), max(0, int(delivered_revision))])
+                if delivered_updated_at:
+                    fields.append("card_delivered_updated_at=?")
+                    values.append(delivered_updated_at.strip())
+                if next_delivery_mode in {"reply", "update"}:
+                    fields.append("card_next_delivery_mode=?")
+                    values.append(str(next_delivery_mode))
+            if pending_kind:
+                same_pending = (
+                    int(row["pending_card_revision"]) == int(pending_revision or 0)
+                    and str(row["pending_card_uuid"]) == str(pending_uuid or "")
+                )
+                if (
+                    int(pending_revision or 0) > int(row["card_delivered_revision"])
+                    and (not row["pending_card_kind"] or same_pending)
+                ):
+                    fields.extend([
+                        "pending_card_kind=?", "pending_card_revision=?", "pending_card_uuid=?",
+                        "pending_card_json=?", "pending_card_updated_at=?", "pending_card_mode=?",
+                        "pending_card_target_message_id=?",
+                    ])
+                    values.extend([
+                        str(pending_kind), max(0, int(pending_revision or 0)), str(pending_uuid or ""),
+                        str(pending_card_json or ""), str(pending_updated_at or ""),
+                        str(pending_mode or ""), str(pending_target_message_id or ""),
+                    ])
+            if (
+                ack_matches_pending
+                and delivery_advances
+            ):
+                fields.extend([
+                    "pending_card_kind=''", "pending_card_revision=0", "pending_card_uuid=''",
+                    "pending_card_json=''", "pending_card_updated_at=''", "pending_card_mode=''",
+                    "pending_card_target_message_id=''",
+                ])
+            if fields:
+                values.append(task_id)
+                db.execute("UPDATE tasks SET " + ",".join(fields) + " WHERE task_id=?", values)
             db.commit()
         return self.get(task_id)
 
@@ -956,7 +1081,16 @@ class TaskCenter:
             submitted = db.execute("SELECT COUNT(*) FROM cloud_items WHERE task_id=? AND step_id=? AND cloud_task_id<>''", (task_id, step_id)).fetchone()[0]
             db.execute("UPDATE quota_reservations SET submitted_count=?, updated_at=? WHERE task_id=? AND step_id=?", (submitted, now, task_id, step_id))
             if state == "submitted":
-                db.execute("UPDATE tasks SET status='waiting_cloud', updated_at=? WHERE task_id=? AND status NOT IN ('pausing','cancelling')", (now, task_id))
+                db.execute(
+                    "UPDATE tasks SET status='waiting_cloud',updated_at=?,state_revision=state_revision+1 "
+                    "WHERE task_id=? AND status IN ('running','waiting_cloud')",
+                    (now, task_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE tasks SET updated_at=?,state_revision=state_revision+1 WHERE task_id=?",
+                    (now, task_id),
+                )
             self._event(db, task_id, "cloud_item_" + state, {"step_id": step_id, "source_path": source_path, "cloud_task_id": cloud_task_id})
             db.commit()
 
@@ -988,6 +1122,10 @@ class TaskCenter:
                 "INSERT INTO cloud_items(task_id,step_id,source_path,state,updated_at) VALUES(?,?,?,?,?)",
                 (task_id, step_id, source_path, "submitting", now),
             )
+            db.execute(
+                "UPDATE tasks SET updated_at=?,state_revision=state_revision+1 WHERE task_id=?",
+                (now, task_id),
+            )
             self._event(db, task_id, "cloud_item_submitting", {"step_id": step_id, "source_path": source_path})
             db.commit()
 
@@ -1016,6 +1154,10 @@ class TaskCenter:
                 "ELSE cloud_items.output_url END,error=excluded.error,updated_at=excluded.updated_at",
                 (task_id, step_id, source_url, state, output_path, error, now),
             )
+            db.execute(
+                "UPDATE tasks SET updated_at=?,state_revision=state_revision+1 WHERE task_id=?",
+                (now, task_id),
+            )
             self._event(db, task_id, "download_item_" + state, {
                 "step_id": step_id, "source_url": source_url, "output_path": output_path,
             })
@@ -1033,7 +1175,18 @@ class TaskCenter:
             values.append(cargo_number)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as db:
-            status_rows = db.execute("SELECT status,updated_at FROM tasks" + where, values).fetchall()
+            status_counts = {
+                str(row["status"]): int(row["task_count"])
+                for row in db.execute(
+                    "SELECT status,COUNT(*) AS task_count FROM tasks" + where + " GROUP BY status",
+                    values,
+                ).fetchall()
+            }
+            completed_where = where + (" AND " if where else " WHERE ") + "status='completed' AND updated_at LIKE ?"
+            completed_today = int(db.execute(
+                "SELECT COUNT(*) FROM tasks" + completed_where,
+                (*values, _today() + "%"),
+            ).fetchone()[0])
             page_limit = max(1, min(int(limit), 500))
             page_offset = max(0, int(offset))
             rows = db.execute("SELECT * FROM tasks" + where + " ORDER BY updated_at DESC LIMIT ? OFFSET ?", (*values, page_limit, page_offset)).fetchall()
@@ -1065,24 +1218,23 @@ class TaskCenter:
             )
             for row in rows
         ]
-        statuses = [str(item["status"]) for item in status_rows]
-        today = _today()
+        def count(*states: str) -> int:
+            return sum(status_counts.get(state, 0) for state in states)
+
+        total = sum(status_counts.values())
         return {
             "counts": {
-                "in_progress": sum(value in {"running", "waiting_cloud", "pausing", "cancelling"} for value in statuses),
-                "executing": sum(value in {"running", "pausing", "cancelling"} for value in statuses),
-                "waiting_cloud": statuses.count("waiting_cloud"),
-                "queued": statuses.count("queued"),
-                "awaiting_confirmation": statuses.count("awaiting_confirmation"),
-                "paused": statuses.count("paused"),
-                "needs_attention": sum(value in {"failed", "partial_failed", "stopped_unknown"} for value in statuses),
-                "completed_today": sum(
-                    str(item["status"]) == "completed" and str(item["updated_at"]).startswith(today)
-                    for item in status_rows
-                ),
+                "in_progress": count("running", "waiting_cloud", "pausing", "cancelling"),
+                "executing": count("running", "pausing", "cancelling"),
+                "waiting_cloud": count("waiting_cloud"),
+                "queued": count("queued"),
+                "awaiting_confirmation": count("awaiting_confirmation"),
+                "paused": count("paused"),
+                "needs_attention": count("failed", "partial_failed", "stopped_unknown"),
+                "completed_today": completed_today,
             },
             "tasks": tasks,
-            "total": len(status_rows),
+            "total": total,
             "shown": len(tasks),
             "offset": page_offset,
             "limit": page_limit,
@@ -1108,7 +1260,19 @@ class TaskCenter:
                 if pid == -1 and str(row["status"]) == "queued":
                     recover.append(str(row["task_id"]))
                     continue
-                if self._worker_process_alive(str(row["task_id"]), pid, str(row["worker_token"] or "")):
+                process_state = self._worker_process_state(
+                    str(row["task_id"]), pid, str(row["worker_token"] or "")
+                )
+                if process_state == "alive":
+                    continue
+                if process_state == "unknown":
+                    reason = "无法确认原执行器身份，已停止自动恢复以防重复执行"
+                    db.execute(
+                        "UPDATE tasks SET status='stopped_unknown',error=?,updated_at=?,"
+                        "state_revision=state_revision+1 WHERE task_id=?",
+                        (reason, now, row["task_id"]),
+                    )
+                    self._event(db, str(row["task_id"]), "worker_identity_unknown", {"reason": reason})
                     continue
                 pending = db.execute(
                     "SELECT step_id,operation,execution_type FROM steps WHERE task_id=? AND status<>'completed' ORDER BY step_index LIMIT 1",
@@ -1120,14 +1284,14 @@ class TaskCenter:
                 ).fetchone()[0]
                 if pending and pending["operation"] in RECOVERABLE_CLOUD_OPERATIONS and int(uncertain) == 0 and row["status"] not in {"pausing", "cancelling"}:
                     db.execute(
-                        "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',error='执行器重启，正在按已保存云端编号恢复',updated_at=? WHERE task_id=?",
+                        "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',error='执行器重启，正在按已保存云端编号恢复',updated_at=?,state_revision=state_revision+1 WHERE task_id=?",
                         (now, row["task_id"]),
                     )
                     recover.append(str(row["task_id"]))
                 else:
                     reason = "存在没有云端编号的提交结果，已停止自动重提" if uncertain else "本地步骤执行器已中断，需创建新任务确认后重试"
                     db.execute(
-                        "UPDATE tasks SET status='stopped_unknown',error=?,updated_at=? WHERE task_id=?",
+                        "UPDATE tasks SET status='stopped_unknown',error=?,updated_at=?,state_revision=state_revision+1 WHERE task_id=?",
                         (reason, now, row["task_id"]),
                     )
                     self._event(db, str(row["task_id"]), "worker_lost", {"reason": reason})
@@ -1228,6 +1392,16 @@ class TaskCenter:
             "authorized_operations": _decode(row["authorized_operations_json"], []),
             "confirmed_by": row["confirmed_by"], "confirmation_message_id": row["confirmation_message_id"],
             "card_delivered_updated_at": row["card_delivered_updated_at"],
+            "state_revision": int(row["state_revision"]),
+            "card_delivered_revision": int(row["card_delivered_revision"]),
+            "pending_card_kind": row["pending_card_kind"],
+            "pending_card_revision": int(row["pending_card_revision"]),
+            "pending_card_uuid": row["pending_card_uuid"],
+            "pending_card_json": row["pending_card_json"],
+            "pending_card_updated_at": row["pending_card_updated_at"],
+            "pending_card_mode": row["pending_card_mode"],
+            "pending_card_target_message_id": row["pending_card_target_message_id"],
+            "card_next_delivery_mode": row["card_next_delivery_mode"],
         }
 
     def _step_summary(self, row: sqlite3.Row, *, item_counts: dict[str, int] | None = None) -> dict[str, Any]:
@@ -1258,7 +1432,7 @@ class TaskCenter:
             return db.execute("SELECT * FROM steps WHERE task_id=? ORDER BY step_index", (task_id,)).fetchall()
 
     def _set_task_status(self, task_id: str, status: str, *, current_step: int | None = None, error: str = "") -> None:
-        fields, values = ["status=?", "updated_at=?", "error=?"], [status, _now(), error]
+        fields, values = ["status=?", "updated_at=?", "error=?", "state_revision=state_revision+1"], [status, _now(), error]
         if current_step is not None:
             fields.append("current_step=?")
             values.append(current_step)

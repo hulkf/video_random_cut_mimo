@@ -280,7 +280,7 @@ class VideoToolTests(unittest.TestCase):
             self.assertEqual(headless_operations._kaipai_quota({})["results"], [{"quota": 1}])
         response = MagicMock(content=b"data")
         response.iter_content.return_value = [b"data"]
-        with patch("requests.get", return_value=response), patch("builtins.open", MagicMock()), \
+        with patch("requests.get", return_value=response), patch("utils.media_utils.probe_video", return_value={"duration": 1.0}), patch("builtins.open", MagicMock()), \
                 patch("headless_operations.os.makedirs"), patch("headless_operations.os.replace"):
             result = headless_operations._kaipai_download({"inputs": {"items": [{"url": "https://x/a.mp4"}], "output_folder": "out"}})
             self.assertTrue(result["results"][0]["success"])
@@ -293,7 +293,8 @@ class VideoToolTests(unittest.TestCase):
             context.resume_items.return_value = {
                 "https://x/a.mp4": {"state": "completed", "output_url": str(output)}
             }
-            with patch("requests.get") as get:
+            with patch("requests.get") as get, \
+                    patch("utils.media_utils.probe_video", return_value={"duration": 1.0}):
                 result = headless_operations._kaipai_download({"inputs": {
                     "items": [{"url": "https://x/a.mp4", "filename": "a.mp4"}],
                     "output_folder": temp,
@@ -301,6 +302,27 @@ class VideoToolTests(unittest.TestCase):
             get.assert_not_called()
             self.assertEqual(result["outputs"], [str(output)])
             self.assertTrue(result["results"][0]["reused"])
+
+    def test_kaipai_download_redownloads_corrupted_completed_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "a.mp4"
+            output.write_bytes(b"corrupted")
+            context = MagicMock()
+            context.resume_items.return_value = {
+                "https://x/a.mp4": {"state": "completed", "output_url": str(output)}
+            }
+            response = MagicMock()
+            response.iter_content.return_value = [b"replacement"]
+            probes = iter([{"duration": 0}, {"duration": 1.0}])
+            with patch("requests.get", return_value=response) as get, \
+                    patch("utils.media_utils.probe_video", side_effect=lambda _path: next(probes)):
+                result = headless_operations._kaipai_download({"inputs": {
+                    "items": [{"url": "https://x/a.mp4", "filename": "a.mp4"}],
+                    "output_folder": temp,
+                }, "_task_center_context": context})
+            get.assert_called_once()
+            self.assertEqual(output.read_bytes(), b"replacement")
+            self.assertFalse(result["results"][0]["reused"])
 
     def test_kaipai_download_gives_distinct_urls_with_same_name_stable_paths(self):
         urls = ["https://x/one/a.mp4", "https://y/two/a.mp4"]
@@ -313,7 +335,8 @@ class VideoToolTests(unittest.TestCase):
             response.iter_content.return_value = [content]
             responses.append(response)
 
-        with tempfile.TemporaryDirectory() as temp, patch("requests.get", side_effect=responses):
+        with tempfile.TemporaryDirectory() as temp, patch("requests.get", side_effect=responses), \
+                patch("utils.media_utils.probe_video", return_value={"duration": 1.0}):
             first = headless_operations._kaipai_download({
                 "inputs": {"items": items, "output_folder": temp},
                 "_task_center_context": context,
@@ -345,12 +368,28 @@ class VideoToolTests(unittest.TestCase):
         context.check.side_effect = [None, TaskControlSignal("paused")]
         response = MagicMock()
         response.iter_content.return_value = [b"partial"]
-        with tempfile.TemporaryDirectory() as temp, patch("requests.get", return_value=response):
+        with tempfile.TemporaryDirectory() as temp, patch("requests.get", return_value=response), \
+                patch("utils.media_utils.probe_video", return_value={"duration": 1.0}):
             with self.assertRaises(TaskControlSignal):
                 headless_operations._kaipai_download({"inputs": {
                     "items": [{"url": "https://x/a.mp4", "filename": "a.mp4"}],
                     "output_folder": temp,
                 }, "_task_center_context": context})
+            self.assertFalse((Path(temp) / "a.mp4.part").exists())
+
+    def test_kaipai_download_rejects_non_decodable_content(self):
+        response = MagicMock()
+        response.iter_content.return_value = [b"not-a-video"]
+        with tempfile.TemporaryDirectory() as temp, \
+                patch("requests.get", return_value=response), \
+                patch("utils.media_utils.probe_video", return_value={"duration": 0}):
+            result = headless_operations._kaipai_download({"inputs": {
+                "items": [{"url": "https://x/a.mp4", "filename": "a.mp4"}],
+                "output_folder": temp,
+            }})
+            self.assertFalse(result["results"][0]["success"])
+            self.assertIn("可解码", result["results"][0]["error"])
+            self.assertFalse((Path(temp) / "a.mp4").exists())
             self.assertFalse((Path(temp) / "a.mp4.part").exists())
 
     def test_kaipai_batch_runs_files_concurrently_and_preserves_order(self):
@@ -518,19 +557,24 @@ class VideoToolTests(unittest.TestCase):
                 "inputs": {
                     "task_id": "VT-RISK", "title": "云端处理",
                     "parameter_lines": ["批量提交：已启用", "并发数：9"],
-                    "steps": [{"id": "clear", "request": {
-                        "operation": "kaipai_process", "input_path": str(source),
-                        "task_name": "videoscreenclear",
-                    }}],
+                    "steps": [
+                        {"id": "clear", "request": {
+                            "operation": "kaipai_process", "input_path": str(source),
+                            "task_name": "videoscreenclear",
+                        }},
+                        {"id": "download", "items_from_step": "clear", "request": {
+                            "operation": "kaipai_download", "output_folder": str(Path(temp) / "out"),
+                        }},
+                    ],
                 },
             }
             with patch.dict(os.environ, {"VIDEO_TASK_CENTER_DB": str(Path(temp) / "tasks.db")}):
                 with self.assertRaisesRegex(PermissionError, "未声明授权范围"):
                     video_tool.run_request(request)
-                request["inputs"]["authorized_operations"] = ["kaipai_process"]
+                request["inputs"]["authorized_operations"] = ["kaipai_process", "kaipai_download"]
                 request["inputs"]["risk_note"] = "将提交 1 个视频到开拍智能全消"
                 result = video_tool.run_request(request)
-            self.assertEqual(result["task"]["authorized_operations"], ["kaipai_process"])
+            self.assertEqual(result["task"]["authorized_operations"], ["kaipai_download", "kaipai_process"])
             self.assertEqual(result["task"]["risk_note"], "将提交 1 个视频到开拍智能全消")
 
     def test_task_plan_refuses_to_persist_secret_or_login_operations(self):

@@ -459,6 +459,23 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(quota["committed"], 1)
         self.assertEqual(quota["available"], 49)
 
+    def test_late_cloud_callback_cannot_revive_cancelled_task(self):
+        self.center.create_plan("VT-LATE-CLOUD", "迟到回调", [{
+            "id": "clear", "request": {
+                "operation": "kaipai_process", "input_path": self.video_dir("late-cloud", 1),
+                "task_name": "videoscreenclear",
+            }, "item_count": 1,
+        }])
+        self.center.confirm("VT-LATE-CLOUD", 1, start_worker=False)
+        self.center._set_task_status("VT-LATE-CLOUD", "running")
+        self.center.begin_cloud_submission("VT-LATE-CLOUD", "clear", "D:/cloud/a.mp4")
+        self.center._set_task_status("VT-LATE-CLOUD", "cancelled")
+        self.center.checkpoint_cloud_item(
+            "VT-LATE-CLOUD", "clear", "D:/cloud/a.mp4",
+            state="submitted", cloud_task_id="cloud-late",
+        )
+        self.assertEqual(self.center.get("VT-LATE-CLOUD")["status"], "cancelled")
+
     def test_reconcile_fences_cloud_submission_without_task_id(self):
         self.center.create_plan("VT-UNKNOWN-LOST", "未知提交", [{
             "id": "clear", "request": {
@@ -498,6 +515,116 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(task["card_delivered_updated_at"], before)
         self.assertEqual(task["updated_at"], before)
 
+    def test_state_revision_changes_even_when_wall_clock_does_not(self):
+        fixed = "2026-09-10T12:00:00.000000+08:00"
+        with patch("core.video_task_center._now", return_value=fixed):
+            created = self.center.create_plan("VT-REVISION", "快速任务", [{
+                "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+            }])
+            self.center.bind_card(
+                "VT-REVISION", "oc_chat", "om_plan",
+                delivered_updated_at=fixed, delivered_revision=created["state_revision"],
+            )
+            confirmed = self.center.confirm("VT-REVISION", 1, start_worker=False)
+        self.assertEqual(confirmed["updated_at"], fixed)
+        self.assertGreater(confirmed["state_revision"], confirmed["card_delivered_revision"])
+
+    def test_card_delivery_ack_cannot_move_revision_or_message_backward(self):
+        task = self.center.create_plan("VT-CARD-CAS", "卡片并发", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.bind_card(
+            task["task_id"], "oc_chat", "om_new",
+            delivered_updated_at="new", delivered_revision=3,
+        )
+        stale = self.center.bind_card(
+            task["task_id"], "oc_chat", "om_old",
+            delivered_updated_at="old", delivered_revision=2,
+        )
+        self.assertEqual(stale["card_message_id"], "om_new")
+        self.assertEqual(stale["card_delivered_revision"], 3)
+        self.assertEqual(stale["card_delivered_updated_at"], "new")
+
+    def test_pending_card_claim_preserves_older_unknown_delivery_until_ack(self):
+        task = self.center.create_plan("VT-OUTBOX-CAS", "待发送卡片", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        first = self.center.bind_card(
+            task["task_id"], "oc_chat", "om_parent",
+            pending_kind="confirm", pending_revision=2, pending_uuid="uuid-2",
+            pending_card_json='{"revision":2}', pending_updated_at="time-2",
+        )
+        self.assertEqual(first["pending_card_uuid"], "uuid-2")
+        blocked = self.center.bind_card(
+            task["task_id"], "oc_chat", "om_parent",
+            pending_kind="progress", pending_revision=3, pending_uuid="uuid-3",
+            pending_card_json='{"revision":3}', pending_updated_at="time-3",
+        )
+        self.assertEqual(blocked["pending_card_uuid"], "uuid-2")
+        acknowledged = self.center.bind_card(
+            task["task_id"], "oc_chat", "om_reply",
+            delivered_revision=2, delivered_updated_at="time-2", ack_pending_revision=2,
+            ack_pending_uuid="uuid-2",
+        )
+        self.assertEqual(acknowledged["pending_card_kind"], "")
+
+    def test_unmatched_newer_delivery_cannot_clear_an_older_pending_card(self):
+        task = self.center.create_plan("VT-OUTBOX-SUPERSEDE", "新卡超越旧卡", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.bind_card(
+            task["task_id"], "oc_chat", "om_parent",
+            pending_kind="progress", pending_revision=2, pending_uuid="uuid-2",
+            pending_card_json='{"revision":2}', pending_updated_at="time-2",
+        )
+        current = self.center.bind_card(
+            task["task_id"], "oc_chat", "om_new",
+            delivered_revision=3, delivered_updated_at="time-3", ack_pending_revision=3,
+            ack_pending_uuid="uuid-3",
+        )
+        self.assertEqual(current["card_delivered_revision"], 0)
+        self.assertNotEqual(current["card_message_id"], "om_new")
+        self.assertEqual(current["pending_card_uuid"], "uuid-2")
+
+    def test_same_revision_wrong_uuid_cannot_ack_or_rebind_card(self):
+        task = self.center.create_plan("VT-OUTBOX-UUID", "同版本乱序回执", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.bind_card(
+            task["task_id"], "oc_chat", "om_parent",
+            pending_kind="progress", pending_revision=2, pending_uuid="uuid-good",
+            pending_card_json='{"revision":2}', pending_updated_at="time-2",
+        )
+        rejected = self.center.bind_card(
+            task["task_id"], "oc_chat", "om-wrong", delivered_revision=2,
+            delivered_updated_at="wrong", ack_pending_revision=2, ack_pending_uuid="uuid-wrong",
+        )
+        self.assertEqual(rejected["card_delivered_revision"], 0)
+        self.assertEqual(rejected["pending_card_uuid"], "uuid-good")
+
+    def test_agent_cloud_plan_requires_a_download_step(self):
+        process = {
+            "id": "clear", "request": {
+                "operation": "kaipai_process", "input_path": self.video_dir("delivery", 1),
+                "task_name": "videoscreenclear",
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "kaipai_download"):
+            self.center.create_plan(
+                "VT-REMOTE-ONLY", "不能只交付云端地址", [process],
+                parameter_lines=["处理：智能全消"],
+            )
+        accepted = self.center.create_plan(
+            "VT-LOCAL-RESULT", "下载结果", [
+                process,
+                {"id": "download", "items_from_step": "clear", "request": {
+                    "operation": "kaipai_download", "output_folder": str(Path(self.temp.name) / "out")
+                }},
+            ],
+            parameter_lines=["处理：智能全消后下载"],
+        )
+        self.assertEqual(len(accepted["steps"]), 2)
+
     def test_delivery_tracking_migration_does_not_replay_historical_terminal_cards(self):
         self.center.create_plan("VT-LEGACY-CARD", "历史任务", [{
             "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
@@ -532,6 +659,25 @@ class VideoTaskCenterTests(unittest.TestCase):
             recovered = self.center.reconcile_workers("VT-DOWNLOAD-LOST")
         self.assertEqual(recovered, ["VT-DOWNLOAD-LOST"])
         spawn.assert_called_once_with("VT-DOWNLOAD-LOST")
+
+    def test_reconcile_fails_closed_when_worker_identity_is_unknown(self):
+        self.center.create_plan("VT-WORKER-UNKNOWN", "身份未知", [{
+            "id": "download", "request": {
+                "operation": "kaipai_download",
+                "items": [{"url": "https://out/a.mp4", "filename": "a.mp4"}],
+                "output_folder": str(Path(self.temp.name) / "unknown"),
+            },
+        }])
+        self.center.confirm("VT-WORKER-UNKNOWN", 1, start_worker=False)
+        self.mark_worker_lost("VT-WORKER-UNKNOWN")
+        with patch.object(self.center, "_worker_process_state", return_value="unknown"), \
+                patch.object(self.center, "_spawn_worker") as spawn:
+            recovered = self.center.reconcile_workers("VT-WORKER-UNKNOWN")
+        self.assertEqual(recovered, [])
+        spawn.assert_not_called()
+        task = self.center.get("VT-WORKER-UNKNOWN")
+        self.assertEqual(task["status"], "stopped_unknown")
+        self.assertIn("重复执行", task["error"])
 
 
 if __name__ == "__main__":

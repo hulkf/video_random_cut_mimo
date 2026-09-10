@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.5.0"
+TOOL_VERSION = "0.6.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -85,7 +85,12 @@ CAPABILITIES = {
         "task_center_bind_card": {
             "description": "绑定任务的飞书 Card 2.0 消息，用于无模型进度更新",
             "required": ["task_id", "chat_id", "card_message_id"],
-            "options": ["delivered_updated_at"],
+            "options": [
+                "delivered_updated_at", "delivered_revision", "pending_card_kind", "pending_card_revision",
+                "pending_card_uuid", "pending_card_json", "pending_card_updated_at", "pending_card_mode",
+                "pending_card_target_message_id", "ack_pending_revision", "ack_pending_uuid",
+                "next_delivery_mode",
+            ],
         },
     },
     "constraints": {
@@ -541,6 +546,17 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
             result = center.bind_card(
                 inputs["task_id"], inputs["chat_id"], inputs["card_message_id"],
                 delivered_updated_at=inputs.get("delivered_updated_at", ""),
+                delivered_revision=inputs.get("delivered_revision"),
+                pending_kind=inputs.get("pending_card_kind"),
+                pending_revision=inputs.get("pending_card_revision"),
+                pending_uuid=inputs.get("pending_card_uuid"),
+                pending_card_json=inputs.get("pending_card_json"),
+                pending_updated_at=inputs.get("pending_card_updated_at"),
+                pending_mode=inputs.get("pending_card_mode"),
+                pending_target_message_id=inputs.get("pending_card_target_message_id"),
+                ack_pending_revision=inputs.get("ack_pending_revision"),
+                ack_pending_uuid=inputs.get("ack_pending_uuid"),
+                next_delivery_mode=inputs.get("next_delivery_mode"),
             )
         return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
                 "operation": operation, "task": result}
