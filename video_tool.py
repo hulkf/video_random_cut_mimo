@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.7.0"
+TOOL_VERSION = "0.7.1"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -85,8 +85,9 @@ CAPABILITIES = {
         },
         "task_center_bind_card": {
             "description": "绑定任务的飞书 Card 2.0 消息，用于无模型进度更新",
-            "required": ["task_id", "chat_id", "card_message_id"],
+            "required": ["task_id", "chat_id"],
             "options": [
+                "card_message_id",
                 "delivered_updated_at", "delivered_revision", "pending_card_kind", "pending_card_revision",
                 "pending_card_uuid", "pending_card_json", "pending_card_updated_at", "pending_card_mode",
                 "pending_card_target_message_id", "ack_pending_revision", "ack_pending_uuid",
@@ -270,6 +271,13 @@ def _validate_request(request: Dict[str, Any]) -> None:
         for key in ("watchable_only", "reconcile"):
             if key in inputs and not isinstance(inputs[key], bool):
                 raise ValueError("task_center_list.{} 必须是布尔值".format(key))
+    if operation == "task_center_bind_card":
+        initial_send_pending = (
+            inputs.get("pending_card_mode") == "send"
+            and bool(inputs.get("pending_card_kind"))
+        )
+        if not inputs.get("card_message_id") and not initial_send_pending:
+            raise ValueError("缺少必要参数: card_message_id")
     options = request.get("options") or {}
     authorization_required = _authorization_required(request) or operation == "task_center_confirm"
     if authorization_required:

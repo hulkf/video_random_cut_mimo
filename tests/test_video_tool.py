@@ -47,6 +47,51 @@ class VideoToolTests(unittest.TestCase):
                 "inputs": {"watchable_only": "false"},
             })
 
+    def test_initial_card_outbox_can_be_persisted_before_feishu_returns_message_id(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"VIDEO_TASK_CENTER_DB": str(Path(temp) / "tasks.db")}
+        ):
+            planned = video_tool.run_request({
+                "operation": "task_center_plan",
+                "inputs": {
+                    "task_id": "VT-FIRST-CARD",
+                    "title": "首次确认卡",
+                    "parameter_lines": ["目标比例：9:16"],
+                    "steps": [{
+                        "id": "validate",
+                        "request": {"operation": "validate", "path": "input.mp4"},
+                    }],
+                },
+            })["task"]
+
+            pending = video_tool.run_request({
+                "operation": "task_center_bind_card",
+                "inputs": {
+                    "task_id": planned["task_id"],
+                    "chat_id": "oc_chat",
+                    "card_message_id": "",
+                    "pending_card_kind": "plan",
+                    "pending_card_revision": planned["state_revision"],
+                    "pending_card_uuid": "first-card-uuid",
+                    "pending_card_json": json.dumps({"schema": "2.0"}),
+                    "pending_card_updated_at": planned["updated_at"],
+                    "pending_card_mode": "send",
+                    "pending_card_target_message_id": "",
+                },
+            })["task"]
+
+        self.assertEqual(pending["chat_id"], "oc_chat")
+        self.assertEqual(pending["card_message_id"], "")
+        self.assertEqual(pending["pending_card_kind"], "plan")
+        self.assertEqual(pending["pending_card_mode"], "send")
+
+    def test_card_binding_without_initial_send_outbox_still_requires_message_id(self):
+        with self.assertRaisesRegex(ValueError, "card_message_id"):
+            video_tool.run_request({
+                "operation": "task_center_bind_card",
+                "inputs": {"task_id": "VT-NO-CARD", "chat_id": "oc_chat"},
+            })
+
     def test_every_business_tab_has_a_headless_operation(self):
         exposed_tabs = {
             spec.get("tab") for spec in video_tool.CAPABILITIES["operations"].values()
