@@ -7,6 +7,7 @@ JSON-friendly API while reusing the same core engines and workers as the tabs.
 from __future__ import annotations
 
 import os
+import hashlib
 from typing import Any, Dict, Iterable, List
 
 
@@ -385,22 +386,79 @@ def _kaipai_process(request):
 
 def _kaipai_download(request):
     import requests
+    from core.task_control import TaskControlSignal
 
     data = _inputs(request)
+    context = request.get("_task_center_context")
+    resume_items = context.resume_items() if context else {}
     os.makedirs(data["output_folder"], exist_ok=True)
-    results = []
+    prepared_items = []
+    urls_by_filename = {}
     for item in data["items"]:
         url = item["url"] if isinstance(item, dict) else item
         filename = item.get("filename") if isinstance(item, dict) else ""
         filename = os.path.basename(filename or os.path.basename(url.split("?", 1)[0]) or "kaipai_output")
+        prepared_items.append((url, filename))
+        urls_by_filename.setdefault(filename.casefold(), set()).add(url)
+
+    results = []
+    for url, filename in prepared_items:
+        if context:
+            context.check()
+        if len(urls_by_filename[filename.casefold()]) > 1:
+            stem, extension = os.path.splitext(filename)
+            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+            filename = f"{stem}_{digest}{extension}"
         output = os.path.join(data["output_folder"], filename)
+        temporary = output + ".part"
         try:
-            response = requests.get(url, timeout=120)
-            response.raise_for_status()
-            with open(output, "wb") as stream:
-                stream.write(response.content)
-            results.append({"url": url, "output": output, "success": True})
+            resume = resume_items.get(url, {})
+            resume_output = str(resume.get("output_url") or "")
+            if (
+                context
+                and resume.get("state") == "completed"
+                and os.path.normcase(resume_output) == os.path.normcase(output)
+                and os.path.isfile(output)
+                and os.path.getsize(output) > 0
+            ):
+                results.append({"url": url, "output": output, "success": True, "reused": True})
+                continue
+            if context:
+                context.download_item(url, state="downloading")
+            response = requests.get(url, timeout=120, stream=True)
+            try:
+                response.raise_for_status()
+                written = 0
+                with open(temporary, "wb") as stream:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if context:
+                            context.check()
+                        if chunk:
+                            stream.write(chunk)
+                            written += len(chunk)
+            finally:
+                response.close()
+            if written <= 0:
+                raise RuntimeError("开拍下载结果为空")
+            os.replace(temporary, output)
+            if context:
+                context.download_item(url, state="completed", output_path=output)
+            results.append({"url": url, "output": output, "success": True, "reused": False})
+        except TaskControlSignal:
+            try:
+                if os.path.isfile(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+            raise
         except Exception as exc:
+            try:
+                if os.path.isfile(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+            if context:
+                context.download_item(url, state="failed", error=str(exc))
             results.append({"url": url, "output": "", "success": False, "error": str(exc)})
     return {"results": results, "outputs": [item["output"] for item in results if item["success"]]}
 

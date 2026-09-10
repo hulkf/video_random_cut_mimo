@@ -107,6 +107,8 @@ class KaipaiWorker(BaseWorker):
                 )
             output_urls = result.get("output_urls", [])
             task_id = result.get("task_id", "")
+            if not output_urls or not str(output_urls[0] or "").strip():
+                raise RuntimeError("开拍任务未返回可下载的结果地址，不能标记为成功")
             item = {
                 "file": file_name,
                 "path": file_path,

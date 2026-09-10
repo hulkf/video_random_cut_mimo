@@ -16,6 +16,7 @@ qt-material>=2.17
 numpy>=1.24.0
 opencv-python>=4.8.1.78 # cv2：人脸检测、截图
 Pillow>=11.3.0 # PIL：图像处理
+psutil>=5.9 # 校验后台任务进程身份，避免 PID 复用导致任务永久卡住
 
 # —— 语音识别 ASR（字幕 / 去关键词）——
 onnxruntime-directml>=1.20.1  # 提供 onnxruntime，Windows DirectML 加速

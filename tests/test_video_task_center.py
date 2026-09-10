@@ -3,6 +3,7 @@ import threading
 import time
 import unittest
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -132,6 +133,49 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.center.control("VT-1", "resume", start_worker=False)
         self.assertEqual(self.center.get("VT-1")["status"], "queued")
 
+    def test_resume_wait_failure_rolls_task_back_to_paused(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        self.center.create_plan("VT-RESUME", "继续失败", step)
+        self.center.confirm("VT-RESUME", 1, start_worker=False)
+        self.center.control("VT-RESUME", "pause", start_worker=False)
+        with patch.object(self.center, "_wait_previous_worker_exit", side_effect=RuntimeError("still alive")):
+            with self.assertRaisesRegex(RuntimeError, "still alive"):
+                self.center.control("VT-RESUME", "resume")
+        self.assertEqual(self.center.get("VT-RESUME")["status"], "paused")
+
+    def test_resume_does_not_publish_queued_until_previous_worker_exits(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        self.center.create_plan("VT-RESUME-ORDER", "继续顺序", step)
+        self.center.confirm("VT-RESUME-ORDER", 1, start_worker=False)
+        self.center.control("VT-RESUME-ORDER", "pause", start_worker=False)
+        observed = []
+
+        def wait(_pid, **_kwargs):
+            observed.append(self.center.get("VT-RESUME-ORDER")["status"])
+
+        with patch.object(self.center, "_wait_previous_worker_exit", side_effect=wait), \
+                patch.object(self.center, "_spawn_worker", return_value=123):
+            self.center.control("VT-RESUME-ORDER", "resume")
+        self.assertEqual(observed, ["paused"])
+        self.assertEqual(self.center.get("VT-RESUME-ORDER")["status"], "queued")
+
+    def test_resume_ignores_a_reused_pid_that_is_not_the_recorded_worker(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        self.center.create_plan("VT-RESUME-PID", "继续PID复用", step)
+        self.center.confirm("VT-RESUME-PID", 1, start_worker=False)
+        self.center.control("VT-RESUME-PID", "pause", start_worker=False)
+        with closing(self.center._connect()) as db:
+            db.execute(
+                "UPDATE tasks SET worker_pid=?,worker_token=? WHERE task_id=?",
+                (12345, "old-token", "VT-RESUME-PID"),
+            )
+            db.commit()
+        with patch.object(self.center, "_pid_alive", return_value=True), \
+                patch.object(self.center, "_worker_process_alive", return_value=False), \
+                patch.object(self.center, "_spawn_worker", return_value=54321):
+            result = self.center.control("VT-RESUME-PID", "resume")
+        self.assertEqual(result["status"], "queued")
+
     def test_board_counts_waiting_cloud_inside_running_only_once(self):
         step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
         for task_id in ("VT-1", "VT-2", "VT-3"):
@@ -154,6 +198,18 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(board["counts"]["awaiting_confirmation"], 3)
         self.assertEqual(board["total"], 3)
         self.assertEqual(board["shown"], 1)
+
+    def test_board_reads_page_details_without_per_task_connections(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        for index in range(5):
+            task_id = f"VT-BATCH-{index}"
+            self.center.create_plan(task_id, task_id, step)
+            self.center.confirm(task_id, 1, start_worker=False)
+            self.center._set_task_status(task_id, "running", current_step=0)
+        with patch.object(self.center, "_connect", wraps=self.center._connect) as connect:
+            board = self.center.list_tasks(reconcile=False)
+        self.assertEqual(board["shown"], 5)
+        self.assertLessEqual(connect.call_count, 2)
 
     def test_cannot_reuse_finished_task_id_for_a_new_plan(self):
         step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
@@ -360,6 +416,49 @@ class VideoTaskCenterTests(unittest.TestCase):
         spawn.assert_called_once_with("VT-CLOUD-LOST")
         self.assertEqual(self.center.get("VT-LOCAL-LOST")["status"], "stopped_unknown")
 
+    def test_reconcile_starts_a_queued_worker_that_was_never_spawned(self):
+        self.center.create_plan("VT-QUEUED", "待启动", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.confirm("VT-QUEUED", 1, start_worker=False)
+        with patch.object(self.center, "_spawn_worker", return_value=123) as spawn:
+            recovered = self.center.reconcile_workers("VT-QUEUED")
+        self.assertEqual(recovered, ["VT-QUEUED"])
+        spawn.assert_called_once_with("VT-QUEUED")
+
+    def test_worker_spawn_failure_releases_unsubmitted_cloud_quota(self):
+        self.center.create_plan("VT-SPAWN-FAIL", "启动失败", [{
+            "id": "clear", "request": {
+                "operation": "kaipai_process",
+                "input_path": self.video_dir("spawn-fail", 2),
+                "task_name": "videoscreenclear",
+            },
+        }])
+        with patch("core.video_task_center.subprocess.Popen", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                self.center.confirm("VT-SPAWN-FAIL", 1)
+        self.assertEqual(self.center.get("VT-SPAWN-FAIL")["status"], "failed")
+        self.assertEqual(self.center.quota_summary()["videoscreenclear"]["committed"], 0)
+
+    def test_unknown_cloud_submission_keeps_one_quota_committed(self):
+        self.center.create_plan("VT-UNKNOWN-QUOTA", "未知提交", [{
+            "id": "clear", "request": {
+                "operation": "kaipai_process",
+                "input_path": self.video_dir("unknown-quota", 1),
+                "task_name": "videoscreenclear",
+            },
+        }])
+        self.center.confirm("VT-UNKNOWN-QUOTA", 1, start_worker=False)
+        self.center.begin_cloud_submission("VT-UNKNOWN-QUOTA", "clear", "D:/in/a.mp4")
+        self.center.checkpoint_cloud_item(
+            "VT-UNKNOWN-QUOTA", "clear", "D:/in/a.mp4",
+            state="submission_unknown", error="timeout",
+        )
+        self.center._release_unsubmitted_quota("VT-UNKNOWN-QUOTA", final=True)
+        quota = self.center.quota_summary()["videoscreenclear"]
+        self.assertEqual(quota["committed"], 1)
+        self.assertEqual(quota["available"], 49)
+
     def test_reconcile_fences_cloud_submission_without_task_id(self):
         self.center.create_plan("VT-UNKNOWN-LOST", "未知提交", [{
             "id": "clear", "request": {
@@ -376,11 +475,45 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(task["status"], "stopped_unknown")
         self.assertIn("停止自动重提", task["error"])
 
+    def test_reconcile_does_not_trust_a_reused_pid_without_worker_identity(self):
+        self.center.create_plan("VT-PID-REUSED", "PID复用", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.confirm("VT-PID-REUSED", 1, start_worker=False)
+        self.mark_worker_lost("VT-PID-REUSED")
+        with patch.object(self.center, "_worker_process_alive", return_value=False), \
+                patch.object(self.center, "_spawn_worker") as spawn:
+            self.center.reconcile_workers("VT-PID-REUSED")
+        spawn.assert_not_called()
+        self.assertEqual(self.center.get("VT-PID-REUSED")["status"], "stopped_unknown")
+
     def test_card_binding_survives_session_changes(self):
         self.center.create_plan("VT-CARD", "卡片", [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}])
-        task = self.center.bind_card("VT-CARD", "oc_chat", "om_card")
+        before = self.center.get("VT-CARD")["updated_at"]
+        task = self.center.bind_card(
+            "VT-CARD", "oc_chat", "om_card", delivered_updated_at=before,
+        )
         self.assertEqual(task["chat_id"], "oc_chat")
         self.assertEqual(task["card_message_id"], "om_card")
+        self.assertEqual(task["card_delivered_updated_at"], before)
+        self.assertEqual(task["updated_at"], before)
+
+    def test_reconcile_restarts_an_interrupted_download_step(self):
+        output = str(Path(self.temp.name) / "downloads")
+        self.center.create_plan("VT-DOWNLOAD-LOST", "下载恢复", [{
+            "id": "download", "request": {
+                "operation": "kaipai_download",
+                "items": [{"url": "https://out/a.mp4", "filename": "a.mp4"}],
+                "output_folder": output,
+            },
+        }])
+        self.center.confirm("VT-DOWNLOAD-LOST", 1, start_worker=False)
+        self.mark_worker_lost("VT-DOWNLOAD-LOST")
+        with patch.object(self.center, "_worker_process_alive", return_value=False), \
+                patch.object(self.center, "_spawn_worker", return_value=123) as spawn:
+            recovered = self.center.reconcile_workers("VT-DOWNLOAD-LOST")
+        self.assertEqual(recovered, ["VT-DOWNLOAD-LOST"])
+        spawn.assert_called_once_with("VT-DOWNLOAD-LOST")
 
 
 if __name__ == "__main__":

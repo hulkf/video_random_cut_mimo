@@ -279,9 +279,79 @@ class VideoToolTests(unittest.TestCase):
         with patch("gui.kaipai_cloud_tab.get_skill_client", return_value=client):
             self.assertEqual(headless_operations._kaipai_quota({})["results"], [{"quota": 1}])
         response = MagicMock(content=b"data")
-        with patch("requests.get", return_value=response), patch("builtins.open", MagicMock()), patch("headless_operations.os.makedirs"):
+        response.iter_content.return_value = [b"data"]
+        with patch("requests.get", return_value=response), patch("builtins.open", MagicMock()), \
+                patch("headless_operations.os.makedirs"), patch("headless_operations.os.replace"):
             result = headless_operations._kaipai_download({"inputs": {"items": [{"url": "https://x/a.mp4"}], "output_folder": "out"}})
             self.assertTrue(result["results"][0]["success"])
+
+    def test_kaipai_download_reuses_completed_file_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "a.mp4"
+            output.write_bytes(b"complete")
+            context = MagicMock()
+            context.resume_items.return_value = {
+                "https://x/a.mp4": {"state": "completed", "output_url": str(output)}
+            }
+            with patch("requests.get") as get:
+                result = headless_operations._kaipai_download({"inputs": {
+                    "items": [{"url": "https://x/a.mp4", "filename": "a.mp4"}],
+                    "output_folder": temp,
+                }, "_task_center_context": context})
+            get.assert_not_called()
+            self.assertEqual(result["outputs"], [str(output)])
+            self.assertTrue(result["results"][0]["reused"])
+
+    def test_kaipai_download_gives_distinct_urls_with_same_name_stable_paths(self):
+        urls = ["https://x/one/a.mp4", "https://y/two/a.mp4"]
+        items = [{"url": url, "filename": "a.mp4"} for url in urls]
+        context = MagicMock()
+        context.resume_items.return_value = {}
+        responses = []
+        for content in (b"first", b"second"):
+            response = MagicMock()
+            response.iter_content.return_value = [content]
+            responses.append(response)
+
+        with tempfile.TemporaryDirectory() as temp, patch("requests.get", side_effect=responses):
+            first = headless_operations._kaipai_download({
+                "inputs": {"items": items, "output_folder": temp},
+                "_task_center_context": context,
+            })
+            outputs = first["outputs"]
+            self.assertEqual(len(set(outputs)), 2)
+            self.assertEqual([Path(path).read_bytes() for path in outputs], [b"first", b"second"])
+            self.assertTrue(all(Path(path).stem.startswith("a_") for path in outputs))
+
+            restart_context = MagicMock()
+            restart_context.resume_items.return_value = {
+                url: {"state": "completed", "output_url": output}
+                for url, output in zip(urls, outputs)
+            }
+            with patch("requests.get") as get:
+                restarted = headless_operations._kaipai_download({
+                    "inputs": {"items": items, "output_folder": temp},
+                    "_task_center_context": restart_context,
+                })
+            get.assert_not_called()
+            self.assertEqual(restarted["outputs"], outputs)
+            self.assertTrue(all(item["reused"] for item in restarted["results"]))
+
+    def test_kaipai_download_propagates_pause_during_streaming(self):
+        from core.task_control import TaskControlSignal
+
+        context = MagicMock()
+        context.resume_items.return_value = {}
+        context.check.side_effect = [None, TaskControlSignal("paused")]
+        response = MagicMock()
+        response.iter_content.return_value = [b"partial"]
+        with tempfile.TemporaryDirectory() as temp, patch("requests.get", return_value=response):
+            with self.assertRaises(TaskControlSignal):
+                headless_operations._kaipai_download({"inputs": {
+                    "items": [{"url": "https://x/a.mp4", "filename": "a.mp4"}],
+                    "output_folder": temp,
+                }, "_task_center_context": context})
+            self.assertFalse((Path(temp) / "a.mp4.part").exists())
 
     def test_kaipai_batch_runs_files_concurrently_and_preserves_order(self):
         active = 0
@@ -342,6 +412,25 @@ class VideoToolTests(unittest.TestCase):
         client.query.assert_not_called()
         self.assertEqual(result["status"], "失败")
         self.assertIn("停止自动重提", result["error"])
+
+    def test_kaipai_empty_output_url_is_not_reported_as_success(self):
+        context = MagicMock()
+        context.resume_items.return_value = {}
+        client = MagicMock()
+        def execute(**kwargs):
+            kwargs["on_async_submitted"]("cloud-a")
+            return {"task_id": "cloud-a", "output_urls": []}
+        client.execute.side_effect = execute
+        worker = KaipaiWorker(["a.mp4"], "视频智能全消", task_context=context)
+
+        result = worker._process_one(client, "a.mp4", 0, 1)
+
+        self.assertEqual(result["status"], "失败")
+        self.assertIn("未返回可下载的结果地址", result["error"])
+        context.cloud_item.assert_called_with(
+            "a.mp4", state="failed", cloud_task_id="cloud-a",
+            error="开拍任务未返回可下载的结果地址，不能标记为成功",
+        )
 
     def test_task_control_pause_resume_cancel(self):
         task_id = "test-control-001"

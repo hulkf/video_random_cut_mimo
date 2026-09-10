@@ -20,12 +20,13 @@ from typing import Any, Callable
 DEFAULT_DB = Path(__file__).resolve().parents[1] / ".task_center" / "tasks.db"
 DAILY_LIMITS = {"videoscreenclear": 50, "hdvideoallinone": 50}
 CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance"}
-RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process"}
+RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download"}
 CARDINALITY_CHANGING_OPERATIONS = {"video_fission", "video_concat", "video_mix", "audio_mix"}
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".ts", ".mts", ".m2ts"}
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,79}$")
 TERMINAL_STATES = {"completed", "partial_failed", "failed", "cancelled", "stopped_unknown"}
 ACTIVE_STATES = {"queued", "running", "waiting_cloud", "pausing", "cancelling"}
+_UNSET = object()
 
 
 class QuotaExceeded(ValueError):
@@ -231,6 +232,12 @@ class TaskExecutionContext:
     def resume_items(self) -> dict[str, dict[str, Any]]:
         return self.center.cloud_items(self.task_id, self.step_id)
 
+    def download_item(self, source_url: str, *, state: str, output_path: str = "", error: str = "") -> None:
+        self.center.checkpoint_download_item(
+            self.task_id, self.step_id, source_url,
+            state=state, output_path=output_path, error=error,
+        )
+
 
 class TaskCenter:
     def __init__(self, db_path: str | Path | None = None) -> None:
@@ -270,6 +277,7 @@ class TaskCenter:
                     authorized_operations_json TEXT NOT NULL DEFAULT '[]',
                     confirmed_by TEXT NOT NULL DEFAULT '',
                     confirmation_message_id TEXT NOT NULL DEFAULT '',
+                    card_delivered_updated_at TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     confirmed_at TEXT,
                     updated_at TEXT NOT NULL
@@ -339,6 +347,7 @@ class TaskCenter:
                 "authorized_operations_json": "TEXT NOT NULL DEFAULT '[]'",
                 "confirmed_by": "TEXT NOT NULL DEFAULT ''",
                 "confirmation_message_id": "TEXT NOT NULL DEFAULT ''",
+                "card_delivered_updated_at": "TEXT NOT NULL DEFAULT ''",
                 "worker_token": "TEXT NOT NULL DEFAULT ''",
             }
             for name, definition in migrations.items():
@@ -549,6 +558,7 @@ class TaskCenter:
                     (_now(), task_id, worker_token),
                 )
                 db.commit()
+            self._release_unsubmitted_quota(task_id, final=True)
             raise
         with closing(self._connect()) as db:
             db.execute(
@@ -558,12 +568,44 @@ class TaskCenter:
             db.commit()
         return int(process.pid)
 
-    def _wait_previous_worker_exit(self, pid: int, timeout: float = 6.0) -> None:
+    def _wait_previous_worker_exit(
+        self,
+        pid: int,
+        *,
+        task_id: str = "",
+        worker_token: str = "",
+        timeout: float = 6.0,
+    ) -> None:
+        def alive() -> bool:
+            if task_id and worker_token:
+                return self._worker_process_alive(task_id, pid, worker_token)
+            return self._pid_alive(pid)
+
         deadline = time.monotonic() + timeout
-        while pid and self._pid_alive(pid) and time.monotonic() < deadline:
+        while pid and alive() and time.monotonic() < deadline:
             time.sleep(0.1)
-        if pid and self._pid_alive(pid):
+        if pid and alive():
             raise RuntimeError("原任务执行器尚未退出，请稍后再继续")
+
+    def _worker_process_alive(self, task_id: str, pid: int, worker_token: str) -> bool:
+        """Verify that a live PID is the worker recorded for this exact task."""
+        if not self._pid_alive(pid) or not worker_token:
+            return False
+        try:
+            import psutil
+
+            command = psutil.Process(pid).cmdline()
+        except (ImportError, OSError):
+            return False
+        except psutil.Error:
+            return False
+        return (
+            "task-worker" in command
+            and "--task-id" in command
+            and task_id in command
+            and "--worker-token" in command
+            and worker_token in command
+        )
 
     def execute(
         self,
@@ -742,7 +784,7 @@ class TaskCenter:
                 task = db.execute("SELECT worker_token FROM tasks WHERE task_id=?", (task_id,)).fetchone()
                 owner_token = str(task["worker_token"] or "") if task else ""
                 stale = db.execute(
-                    "SELECT l.resource_key,l.owner_pid,l.owner_token,t.status,t.worker_pid,t.worker_token "
+                    "SELECT l.resource_key,l.task_id,l.owner_pid,l.owner_token,t.status,t.worker_pid,t.worker_token "
                     "FROM resource_locks l LEFT JOIN tasks t ON t.task_id=l.task_id"
                 ).fetchall()
                 for row in stale:
@@ -753,7 +795,15 @@ class TaskCenter:
                              or str(row["worker_token"] or "") != str(row["owner_token"] or ""))
                     )
                     terminal = not task_missing and str(row["status"]) in TERMINAL_STATES
-                    if task_missing or ownership_changed or terminal or not self._pid_alive(int(row["owner_pid"])):
+                    owner_pid = int(row["owner_pid"])
+                    worker_gone = (
+                        not task_missing
+                        and owner_pid != os.getpid()
+                        and not self._worker_process_alive(
+                            str(row["task_id"]), owner_pid, str(row["owner_token"] or "")
+                        )
+                    )
+                    if task_missing or ownership_changed or terminal or worker_gone:
                         db.execute("DELETE FROM resource_locks WHERE resource_key=?", (row["resource_key"],))
                 active_locks = db.execute("SELECT resource_key,task_id,owner_pid,owner_token FROM resource_locks").fetchall()
                 conflicts = [
@@ -784,9 +834,11 @@ class TaskCenter:
             db.commit()
 
     def control(self, task_id: str, action: str, *, start_worker: bool = True) -> dict[str, Any]:
+        if action == "resume" and start_worker:
+            return self._resume(task_id)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT status,worker_pid FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            row = db.execute("SELECT status,worker_pid,worker_token FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not row:
                 raise ValueError("任务不存在: {}".format(task_id))
             status = str(row["status"])
@@ -816,20 +868,57 @@ class TaskCenter:
                 db.execute("UPDATE tasks SET status=?,worker_pid=?,updated_at=? WHERE task_id=?", (target, next_pid, _now(), task_id))
             self._event(db, task_id, "control_" + action, {"from": status, "to": target})
             db.commit()
-        if target == "queued" and start_worker:
-            self._wait_previous_worker_exit(previous_pid)
-            self._spawn_worker(task_id)
         if target == "cancelled":
             self._release_unsubmitted_quota(task_id, final=True)
         return self.get(task_id)
 
-    def bind_card(self, task_id: str, chat_id: str, card_message_id: str) -> dict[str, Any]:
+    def _resume(self, task_id: str) -> dict[str, Any]:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT status,worker_pid,worker_token FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+        if not row:
+            raise ValueError("任务不存在: {}".format(task_id))
+        if str(row["status"]) != "paused":
+            raise ValueError("任务当前状态为{}，不能继续".format(row["status"]))
+        previous_pid = int(row["worker_pid"] or 0)
+        previous_token = str(row["worker_token"] or "")
+        self._wait_previous_worker_exit(
+            previous_pid, task_id=task_id, worker_token=previous_token,
+        )
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            claimed = db.execute(
+                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',updated_at=? "
+                "WHERE task_id=? AND status='paused' AND worker_pid=?",
+                (_now(), task_id, previous_pid),
+            )
+            if claimed.rowcount != 1:
+                db.rollback()
+                raise RuntimeError("任务状态已变化，请刷新后再继续")
+            self._event(db, task_id, "control_resume", {"from": "paused", "to": "queued"})
+            db.commit()
+        self._spawn_worker(task_id)
+        return self.get(task_id)
+
+    def bind_card(
+        self,
+        task_id: str,
+        chat_id: str,
+        card_message_id: str,
+        *,
+        delivered_updated_at: str = "",
+    ) -> dict[str, Any]:
         if not str(chat_id or "").strip() or not str(card_message_id or "").strip():
             raise ValueError("chat_id 和 card_message_id 不能为空")
         with closing(self._connect()) as db:
             cursor = db.execute(
-                "UPDATE tasks SET chat_id=?,card_message_id=?,updated_at=? WHERE task_id=?",
-                (chat_id.strip(), card_message_id.strip(), _now(), task_id),
+                "UPDATE tasks SET chat_id=?,card_message_id=?,card_delivered_updated_at="
+                "CASE WHEN ?<>'' THEN ? ELSE card_delivered_updated_at END WHERE task_id=?",
+                (
+                    chat_id.strip(), card_message_id.strip(),
+                    delivered_updated_at.strip(), delivered_updated_at.strip(), task_id,
+                ),
             )
             if cursor.rowcount != 1:
                 raise ValueError("任务不存在: {}".format(task_id))
@@ -896,6 +985,31 @@ class TaskCenter:
             rows = db.execute("SELECT * FROM cloud_items WHERE task_id=? AND step_id=?", (task_id, step_id)).fetchall()
         return {str(row["source_path"]): dict(row) for row in rows}
 
+    def checkpoint_download_item(
+        self,
+        task_id: str,
+        step_id: str,
+        source_url: str,
+        *,
+        state: str,
+        output_path: str = "",
+        error: str = "",
+    ) -> None:
+        now = _now()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO cloud_items(task_id,step_id,source_path,state,output_url,error,updated_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(task_id,step_id,source_path) DO UPDATE SET "
+                "state=excluded.state,output_url=CASE WHEN excluded.output_url<>'' THEN excluded.output_url "
+                "ELSE cloud_items.output_url END,error=excluded.error,updated_at=excluded.updated_at",
+                (task_id, step_id, source_url, state, output_path, error, now),
+            )
+            self._event(db, task_id, "download_item_" + state, {
+                "step_id": step_id, "source_url": source_url, "output_path": output_path,
+            })
+            db.commit()
+
     def list_tasks(self, *, status: str = "", cargo_number: str = "", limit: int = 100, offset: int = 0, reconcile: bool = True) -> dict[str, Any]:
         if reconcile:
             self.reconcile_workers()
@@ -912,7 +1026,34 @@ class TaskCenter:
             page_limit = max(1, min(int(limit), 500))
             page_offset = max(0, int(offset))
             rows = db.execute("SELECT * FROM tasks" + where + " ORDER BY updated_at DESC LIMIT ? OFFSET ?", (*values, page_limit, page_offset)).fetchall()
-        tasks = [self._task_summary(row) for row in rows]
+            task_ids = [str(row["task_id"]) for row in rows]
+            current_steps: dict[str, sqlite3.Row] = {}
+            item_counts: dict[tuple[str, str], dict[str, int]] = {}
+            if task_ids:
+                placeholders = ",".join("?" for _ in task_ids)
+                current_steps = {
+                    str(row["task_id"]): row
+                    for row in db.execute(
+                        "SELECT s.* FROM steps s JOIN tasks t ON t.task_id=s.task_id "
+                        f"WHERE s.task_id IN ({placeholders}) AND s.step_index=t.current_step",
+                        task_ids,
+                    ).fetchall()
+                }
+                for item in db.execute(
+                    "SELECT task_id,step_id,state,COUNT(*) AS item_count FROM cloud_items "
+                    f"WHERE task_id IN ({placeholders}) GROUP BY task_id,step_id,state",
+                    task_ids,
+                ).fetchall():
+                    key = (str(item["task_id"]), str(item["step_id"]))
+                    item_counts.setdefault(key, {})[str(item["state"])] = int(item["item_count"])
+        tasks = [
+            self._task_summary(
+                row,
+                current_step=current_steps.get(str(row["task_id"])),
+                current_item_counts=item_counts,
+            )
+            for row in rows
+        ]
         statuses = [str(item["status"]) for item in status_rows]
         today = _today()
         return {
@@ -947,13 +1088,16 @@ class TaskCenter:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             rows = db.execute(
-                "SELECT task_id,status,current_step,worker_pid FROM tasks "
+                "SELECT task_id,status,current_step,worker_pid,worker_token FROM tasks "
                 "WHERE status IN ('queued','running','waiting_cloud','pausing','cancelling')" + clauses,
                 values,
             ).fetchall()
             for row in rows:
                 pid = int(row["worker_pid"] or 0)
-                if pid == -1 or self._pid_alive(pid):
+                if pid == -1 and str(row["status"]) == "queued":
+                    recover.append(str(row["task_id"]))
+                    continue
+                if self._worker_process_alive(str(row["task_id"]), pid, str(row["worker_token"] or "")):
                     continue
                 pending = db.execute(
                     "SELECT step_id,operation,execution_type FROM steps WHERE task_id=? AND status<>'completed' ORDER BY step_index LIMIT 1",
@@ -1045,13 +1189,24 @@ class TaskCenter:
             for capability, limit in DAILY_LIMITS.items()
         }
 
-    def _task_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _task_summary(
+        self,
+        row: sqlite3.Row,
+        *,
+        current_step: sqlite3.Row | None | object = _UNSET,
+        current_item_counts: dict[tuple[str, str], dict[str, int]] | None = None,
+    ) -> dict[str, Any]:
         step = None
-        if int(row["current_step"]) >= 0:
+        if current_step is _UNSET and int(row["current_step"]) >= 0:
             with closing(self._connect()) as db:
                 current = db.execute("SELECT * FROM steps WHERE task_id=? AND step_index=?", (row["task_id"], row["current_step"])).fetchone()
                 if current:
                     step = self._step_summary(current)
+        elif current_step is not None and current_step is not _UNSET:
+            counts = (current_item_counts or {}).get(
+                (str(current_step["task_id"]), str(current_step["step_id"])), {}
+            )
+            step = self._step_summary(current_step, item_counts=counts)
         return {
             "task_id": row["task_id"], "title": row["title"], "cargo_number": row["cargo_number"],
             "plan_version": int(row["plan_version"]), "status": row["status"],
@@ -1061,14 +1216,16 @@ class TaskCenter:
             "parameter_lines": _decode(row["parameter_lines_json"], []), "risk_note": row["risk_note"],
             "authorized_operations": _decode(row["authorized_operations_json"], []),
             "confirmed_by": row["confirmed_by"], "confirmation_message_id": row["confirmation_message_id"],
+            "card_delivered_updated_at": row["card_delivered_updated_at"],
         }
 
-    def _step_summary(self, row: sqlite3.Row) -> dict[str, Any]:
-        items = self.cloud_items(row["task_id"], row["step_id"])
+    def _step_summary(self, row: sqlite3.Row, *, item_counts: dict[str, int] | None = None) -> dict[str, Any]:
         result = _decode(row["result_json"], {})
-        counts: dict[str, int] = {}
-        for item in items.values():
-            counts[item["state"]] = counts.get(item["state"], 0) + 1
+        counts = item_counts
+        if counts is None:
+            counts = {}
+            for item in self.cloud_items(row["task_id"], row["step_id"]).values():
+                counts[item["state"]] = counts.get(item["state"], 0) + 1
         return {
             "index": int(row["step_index"]), "step_id": row["step_id"], "name": row["name"],
             "operation": row["operation"], "execution_type": row["execution_type"],
@@ -1115,7 +1272,13 @@ class TaskCenter:
     def _release_unsubmitted_quota(self, task_id: str, *, final: bool) -> None:
         with closing(self._connect()) as db:
             if final:
-                db.execute("UPDATE quota_reservations SET reserved_count=submitted_count,updated_at=? WHERE task_id=?", (_now(), task_id))
+                db.execute(
+                    "UPDATE quota_reservations SET reserved_count=MAX(submitted_count,("
+                    "SELECT COUNT(*) FROM cloud_items c WHERE c.task_id=quota_reservations.task_id "
+                    "AND c.step_id=quota_reservations.step_id AND (c.cloud_task_id<>'' "
+                    "OR c.state IN ('submitting','submission_unknown')))),updated_at=? WHERE task_id=?",
+                    (_now(), task_id),
+                )
             db.commit()
 
     def _event(self, db: sqlite3.Connection, task_id: str, event_type: str, detail: dict[str, Any]) -> None:
