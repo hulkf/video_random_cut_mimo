@@ -99,6 +99,7 @@ def operation_field_schema(name: str) -> Dict[str, Any]:
         "include_images", "skip_existing",
         "enable_correction", "keep_srt", "separate_folder",
         "batch_mode", "delete_archive",
+        "watchable_only", "reconcile",
     }
     integer_fields = {
         "frame_count", "max_workers", "sample_count", "level", "retry", "timeout",

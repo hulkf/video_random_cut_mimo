@@ -199,6 +199,37 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(board["total"], 3)
         self.assertEqual(board["shown"], 1)
 
+    def test_watchable_list_filters_historical_idle_tasks_in_sql(self):
+        self.center.create_plan("VT-IDLE", "等待确认但没有待发卡", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        queued = self.center.create_plan("VT-ACTIVE", "活动任务", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/b.mp4"}
+        }])
+        self.center.confirm(queued["task_id"], 1, start_worker=False)
+        pending = self.center.create_plan("VT-PENDING-CARD", "待补发卡", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/c.mp4"}
+        }])
+        self.center.bind_card(
+            pending["task_id"], "oc_chat", "", pending_kind="plan",
+            pending_revision=1, pending_uuid="uuid-plan", pending_card_json="{}",
+            pending_mode="send",
+        )
+        board = self.center.list_tasks(reconcile=False, watchable_only=True)
+        self.assertEqual({item["task_id"] for item in board["tasks"]}, {"VT-ACTIVE", "VT-PENDING-CARD"})
+        self.assertEqual(board["total"], 2)
+
+    def test_task_list_indexes_are_installed(self):
+        with closing(self.center._connect()) as db:
+            names = {
+                str(row[0]) for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='tasks'"
+                ).fetchall()
+            }
+        self.assertTrue({
+            "idx_tasks_updated_at", "idx_tasks_status_updated_at", "idx_tasks_cargo_updated_at",
+        }.issubset(names))
+
     def test_board_reads_page_details_without_per_task_connections(self):
         step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
         for index in range(5):
@@ -533,6 +564,8 @@ class VideoTaskCenterTests(unittest.TestCase):
         task = self.center.create_plan("VT-CARD-CAS", "卡片并发", [{
             "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
         }])
+        self.center._set_task_status(task["task_id"], "queued")
+        self.center._set_task_status(task["task_id"], "running")
         self.center.bind_card(
             task["task_id"], "oc_chat", "om_new",
             delivered_updated_at="new", delivered_revision=3,
@@ -549,12 +582,14 @@ class VideoTaskCenterTests(unittest.TestCase):
         task = self.center.create_plan("VT-OUTBOX-CAS", "待发送卡片", [{
             "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
         }])
+        self.center.confirm(task["task_id"], 1, start_worker=False)
         first = self.center.bind_card(
             task["task_id"], "oc_chat", "om_parent",
             pending_kind="confirm", pending_revision=2, pending_uuid="uuid-2",
             pending_card_json='{"revision":2}', pending_updated_at="time-2",
         )
         self.assertEqual(first["pending_card_uuid"], "uuid-2")
+        self.center._set_task_status(task["task_id"], "running")
         blocked = self.center.bind_card(
             task["task_id"], "oc_chat", "om_parent",
             pending_kind="progress", pending_revision=3, pending_uuid="uuid-3",
@@ -568,15 +603,45 @@ class VideoTaskCenterTests(unittest.TestCase):
         )
         self.assertEqual(acknowledged["pending_card_kind"], "")
 
+    def test_initial_send_outbox_persists_chat_for_gateway_recovery(self):
+        task = self.center.create_plan("VT-FIRST-CARD", "首次卡片", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        pending = self.center.bind_card(
+            task["task_id"], "oc_recovery", "",
+            pending_kind="plan", pending_revision=1, pending_uuid="uuid-plan-1",
+            pending_card_json='{"schema":"2.0"}', pending_updated_at="time-1",
+            pending_mode="send",
+        )
+        self.assertEqual(pending["chat_id"], "oc_recovery")
+        self.assertEqual(pending["pending_card_mode"], "send")
+        self.assertEqual(pending["card_message_id"], "")
+
+    def test_task_list_omits_large_pending_card_payload_but_status_keeps_it(self):
+        task = self.center.create_plan("VT-OUTBOX-PAYLOAD", "待发送负载", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.bind_card(
+            task["task_id"], "oc_chat", "",
+            pending_kind="plan", pending_revision=1, pending_uuid="uuid-plan",
+            pending_card_json='{"large":"payload"}', pending_updated_at="time-1",
+            pending_mode="send",
+        )
+        listed = self.center.list_tasks(reconcile=False)["tasks"][0]
+        self.assertEqual(listed["pending_card_json"], "")
+        self.assertEqual(self.center.get(task["task_id"])["pending_card_json"], '{"large":"payload"}')
+
     def test_unmatched_newer_delivery_cannot_clear_an_older_pending_card(self):
         task = self.center.create_plan("VT-OUTBOX-SUPERSEDE", "新卡超越旧卡", [{
             "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
         }])
+        self.center.confirm(task["task_id"], 1, start_worker=False)
         self.center.bind_card(
             task["task_id"], "oc_chat", "om_parent",
             pending_kind="progress", pending_revision=2, pending_uuid="uuid-2",
             pending_card_json='{"revision":2}', pending_updated_at="time-2",
         )
+        self.center._set_task_status(task["task_id"], "running")
         current = self.center.bind_card(
             task["task_id"], "oc_chat", "om_new",
             delivered_revision=3, delivered_updated_at="time-3", ack_pending_revision=3,
@@ -590,6 +655,7 @@ class VideoTaskCenterTests(unittest.TestCase):
         task = self.center.create_plan("VT-OUTBOX-UUID", "同版本乱序回执", [{
             "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
         }])
+        self.center.confirm(task["task_id"], 1, start_worker=False)
         self.center.bind_card(
             task["task_id"], "oc_chat", "om_parent",
             pending_kind="progress", pending_revision=2, pending_uuid="uuid-good",
@@ -601,6 +667,27 @@ class VideoTaskCenterTests(unittest.TestCase):
         )
         self.assertEqual(rejected["card_delivered_revision"], 0)
         self.assertEqual(rejected["pending_card_uuid"], "uuid-good")
+        no_ack = self.center.bind_card(
+            task["task_id"], "oc_chat", "om-no-ack", delivered_revision=2,
+            delivered_updated_at="wrong",
+        )
+        self.assertEqual(no_ack["card_delivered_revision"], 0)
+        self.assertEqual(no_ack["pending_card_uuid"], "uuid-good")
+
+    def test_card_delivery_cannot_claim_a_future_task_revision(self):
+        task = self.center.create_plan("VT-FUTURE-CARD", "超前卡片", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        with self.assertRaisesRegex(ValueError, "不能超前"):
+            self.center.bind_card(
+                task["task_id"], "oc_chat", "om_future", delivered_revision=2,
+            )
+        with self.assertRaisesRegex(ValueError, "已存在的任务状态版本"):
+            self.center.bind_card(
+                task["task_id"], "oc_chat", "", pending_kind="plan",
+                pending_revision=2, pending_uuid="uuid-future", pending_card_json="{}",
+                pending_mode="send",
+            )
 
     def test_agent_cloud_plan_requires_a_download_step(self):
         process = {
@@ -624,6 +711,29 @@ class VideoTaskCenterTests(unittest.TestCase):
             parameter_lines=["处理：智能全消后下载"],
         )
         self.assertEqual(len(accepted["steps"]), 2)
+
+    def test_runner_exception_marks_current_step_failed(self):
+        self.center.create_plan("VT-STEP-FAIL", "步骤失败", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        self.center.confirm("VT-STEP-FAIL", 1, start_worker=False)
+
+        def fail(_request, _context):
+            raise RuntimeError("runner boom")
+
+        result = self.center.execute("VT-STEP-FAIL", fail)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["current_step"]["status"], "failed")
+        self.assertIn("runner boom", result["current_step"]["error"])
+
+    def test_repeated_identical_status_does_not_create_revision_churn(self):
+        task = self.center.create_plan("VT-IDEMPOTENT-STATUS", "稳定状态", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        before = task["state_revision"]
+        self.center._set_task_status(task["task_id"], "awaiting_confirmation")
+        after = self.center.get(task["task_id"])["state_revision"]
+        self.assertEqual(after, before)
 
     def test_delivery_tracking_migration_does_not_replay_historical_terminal_cards(self):
         self.center.create_plan("VT-LEGACY-CARD", "历史任务", [{

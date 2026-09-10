@@ -248,7 +248,6 @@ class TaskCenter:
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.db_path, timeout=10)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.execute("PRAGMA busy_timeout=10000")
         db.execute("PRAGMA foreign_keys=ON")
@@ -256,6 +255,9 @@ class TaskCenter:
 
     def _init_db(self) -> None:
         with closing(self._connect()) as db:
+            # Journal mode is persistent for the database. Reissuing it on every
+            # short-lived connection can contend with active writers.
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -348,6 +350,12 @@ class TaskCenter:
                     owner_token TEXT NOT NULL DEFAULT '',
                     acquired_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_tasks_updated_at
+                    ON tasks(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_tasks_status_updated_at
+                    ON tasks(status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_tasks_cargo_updated_at
+                    ON tasks(cargo_number, updated_at DESC);
                 """
             )
             columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -707,12 +715,14 @@ class TaskCenter:
         with closing(self._connect()) as db:
             task_plan = db.execute("SELECT authorized_operations_json FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         authorized_operations = set(_decode(task_plan["authorized_operations_json"], [])) if task_plan else set()
+        active_step_id = ""
         try:
             for step in steps:
                 if step["status"] == "completed":
                     continue
                 context = self.execution_context(task_id, step["step_id"])
                 context.check()
+                active_step_id = str(step["step_id"])
                 self._set_step_status(task_id, step["step_id"], "running")
                 self._set_task_status(task_id, "running", current_step=int(step["step_index"]))
                 request = self._resolve_request(task_id, step)
@@ -753,9 +763,16 @@ class TaskCenter:
 
             if isinstance(exc, TaskControlSignal):
                 status = "paused" if exc.status == "paused" else "cancelled"
+                if active_step_id:
+                    self._set_step_status(task_id, active_step_id, "pending")
                 self._set_task_status(task_id, status)
                 self._release_unsubmitted_quota(task_id, final=status == "cancelled")
             else:
+                if active_step_id:
+                    self._save_step_result(
+                        task_id, active_step_id,
+                        {"success": False, "error": str(exc)}, "failed", str(exc),
+                    )
                 self._set_task_status(task_id, "failed", error=str(exc))
                 self._release_unsubmitted_quota(task_id, final=True)
         return self.get(task_id)
@@ -993,6 +1010,8 @@ class TaskCenter:
             row = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not row:
                 raise ValueError("任务不存在: {}".format(task_id))
+            if delivered_revision is not None and int(delivered_revision) > int(row["state_revision"]):
+                raise ValueError("卡片送达版本不能超前于任务状态版本")
             fields: list[str] = []
             values: list[Any] = []
             if delivered_revision is None and not pending_kind:
@@ -1016,7 +1035,10 @@ class TaskCenter:
                         and ack_matches_pending
                     )
                 )
-                and (ack_pending_revision is None or ack_matches_pending)
+                and (
+                    (not row["pending_card_kind"] and ack_pending_revision is None)
+                    or ack_matches_pending
+                )
             )
             if delivery_advances:
                 fields.extend(["chat_id=?", "card_message_id=?", "card_delivered_revision=?"])
@@ -1028,23 +1050,36 @@ class TaskCenter:
                     fields.append("card_next_delivery_mode=?")
                     values.append(str(next_delivery_mode))
             if pending_kind:
+                requested_revision = int(pending_revision or 0)
+                if requested_revision <= 0 or requested_revision > int(row["state_revision"]):
+                    raise ValueError("待发送卡片版本必须是已存在的任务状态版本")
+                if not str(pending_uuid or "").strip() or not str(pending_card_json or "").strip():
+                    raise ValueError("待发送卡片必须包含唯一编号和完整卡片内容")
+                normalized_mode = str(pending_mode or ("reply" if card_message_id else "send"))
+                normalized_target = str(pending_target_message_id or card_message_id or "")
+                if normalized_mode not in {"send", "reply", "update"}:
+                    raise ValueError("pending_card_mode 必须为 send、reply 或 update")
+                if normalized_mode in {"reply", "update"} and not normalized_target:
+                    raise ValueError("回复或更新卡片时必须提供目标 message_id")
                 same_pending = (
-                    int(row["pending_card_revision"]) == int(pending_revision or 0)
+                    int(row["pending_card_revision"]) == requested_revision
                     and str(row["pending_card_uuid"]) == str(pending_uuid or "")
                 )
                 if (
-                    int(pending_revision or 0) > int(row["card_delivered_revision"])
+                    requested_revision > int(row["card_delivered_revision"])
                     and (not row["pending_card_kind"] or same_pending)
                 ):
                     fields.extend([
+                        "chat_id=?",
                         "pending_card_kind=?", "pending_card_revision=?", "pending_card_uuid=?",
                         "pending_card_json=?", "pending_card_updated_at=?", "pending_card_mode=?",
                         "pending_card_target_message_id=?",
                     ])
                     values.extend([
-                        str(pending_kind), max(0, int(pending_revision or 0)), str(pending_uuid or ""),
+                        chat_id.strip(),
+                        str(pending_kind), requested_revision, str(pending_uuid or ""),
                         str(pending_card_json or ""), str(pending_updated_at or ""),
-                        str(pending_mode or ""), str(pending_target_message_id or ""),
+                        normalized_mode, normalized_target,
                     ])
             if (
                 ack_matches_pending
@@ -1163,7 +1198,16 @@ class TaskCenter:
             })
             db.commit()
 
-    def list_tasks(self, *, status: str = "", cargo_number: str = "", limit: int = 100, offset: int = 0, reconcile: bool = True) -> dict[str, Any]:
+    def list_tasks(
+        self,
+        *,
+        status: str = "",
+        cargo_number: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        reconcile: bool = True,
+        watchable_only: bool = False,
+    ) -> dict[str, Any]:
         if reconcile:
             self.reconcile_workers()
         clauses, values = [], []
@@ -1173,6 +1217,13 @@ class TaskCenter:
         if cargo_number:
             clauses.append("cargo_number=?")
             values.append(cargo_number)
+        if watchable_only:
+            clauses.append(
+                "(status IN ('queued','running','waiting_cloud','pausing','cancelling') "
+                "OR pending_card_kind<>'' OR (status IN "
+                "('completed','partial_failed','failed','cancelled','stopped_unknown') "
+                "AND state_revision<>card_delivered_revision))"
+            )
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as db:
             status_counts = {
@@ -1215,6 +1266,7 @@ class TaskCenter:
                 row,
                 current_step=current_steps.get(str(row["task_id"])),
                 current_item_counts=item_counts,
+                include_pending_payload=False,
             )
             for row in rows
         ]
@@ -1370,6 +1422,7 @@ class TaskCenter:
         *,
         current_step: sqlite3.Row | None | object = _UNSET,
         current_item_counts: dict[tuple[str, str], dict[str, int]] | None = None,
+        include_pending_payload: bool = True,
     ) -> dict[str, Any]:
         step = None
         if current_step is _UNSET and int(row["current_step"]) >= 0:
@@ -1397,7 +1450,7 @@ class TaskCenter:
             "pending_card_kind": row["pending_card_kind"],
             "pending_card_revision": int(row["pending_card_revision"]),
             "pending_card_uuid": row["pending_card_uuid"],
-            "pending_card_json": row["pending_card_json"],
+            "pending_card_json": row["pending_card_json"] if include_pending_payload else "",
             "pending_card_updated_at": row["pending_card_updated_at"],
             "pending_card_mode": row["pending_card_mode"],
             "pending_card_target_message_id": row["pending_card_target_message_id"],
@@ -1432,12 +1485,23 @@ class TaskCenter:
             return db.execute("SELECT * FROM steps WHERE task_id=? ORDER BY step_index", (task_id,)).fetchall()
 
     def _set_task_status(self, task_id: str, status: str, *, current_step: int | None = None, error: str = "") -> None:
-        fields, values = ["status=?", "updated_at=?", "error=?", "state_revision=state_revision+1"], [status, _now(), error]
-        if current_step is not None:
-            fields.append("current_step=?")
-            values.append(current_step)
-        values.append(task_id)
         with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT status,error,current_step FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if not row:
+                db.rollback()
+                raise ValueError("任务不存在: {}".format(task_id))
+            same_step = current_step is None or int(row["current_step"]) == int(current_step)
+            if str(row["status"]) == status and str(row["error"]) == error and same_step:
+                db.commit()
+                return
+            fields, values = ["status=?", "updated_at=?", "error=?", "state_revision=state_revision+1"], [status, _now(), error]
+            if current_step is not None:
+                fields.append("current_step=?")
+                values.append(current_step)
+            values.append(task_id)
             db.execute("UPDATE tasks SET {} WHERE task_id=?".format(",".join(fields)), values)
             self._event(db, task_id, "status_changed", {"status": status, "error": error})
             db.commit()

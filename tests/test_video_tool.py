@@ -36,6 +36,16 @@ class VideoToolTests(unittest.TestCase):
         self.assertIn("task_center_plan", payload["operations"])
         self.assertIn("task_center_confirm", payload["operations"])
         self.assertIn("task_center_list", payload["operations"])
+        list_options = payload["operations"]["task_center_list"]["option_schema"]["properties"]
+        self.assertEqual(list_options["watchable_only"]["type"], "boolean")
+        self.assertEqual(list_options["reconcile"]["type"], "boolean")
+
+    def test_task_center_list_rejects_string_booleans(self):
+        with self.assertRaisesRegex(ValueError, "必须是布尔值"):
+            video_tool.run_request({
+                "operation": "task_center_list",
+                "inputs": {"watchable_only": "false"},
+            })
 
     def test_every_business_tab_has_a_headless_operation(self):
         exposed_tabs = {

@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.6.0"
+TOOL_VERSION = "0.7.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -72,6 +72,7 @@ CAPABILITIES = {
         "task_center_list": {
             "description": "查询本地、云端和混合视频任务总览及当日开拍额度台账",
             "required": [],
+            "options": ["status", "cargo_number", "limit", "offset", "watchable_only", "reconcile"],
         },
         "task_center_status": {
             "description": "查询一个视频任务及各步骤、逐文件云端进度",
@@ -265,6 +266,10 @@ def _validate_request(request: Dict[str, Any]) -> None:
         raise ValueError("task_control.action 必须是 status、pause、resume 或 cancel")
     if operation == "task_center_control" and inputs.get("action") not in ("pause", "resume", "cancel"):
         raise ValueError("task_center_control.action 必须是 pause、resume 或 cancel")
+    if operation == "task_center_list":
+        for key in ("watchable_only", "reconcile"):
+            if key in inputs and not isinstance(inputs[key], bool):
+                raise ValueError("task_center_list.{} 必须是布尔值".format(key))
     options = request.get("options") or {}
     authorization_required = _authorization_required(request) or operation == "task_center_confirm"
     if authorization_required:
@@ -536,6 +541,8 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 cargo_number=inputs.get("cargo_number", ""),
                 limit=int(inputs.get("limit", 20)),
                 offset=int(inputs.get("offset", 0)),
+                watchable_only=inputs.get("watchable_only", False),
+                reconcile=inputs.get("reconcile", True),
             )
         elif operation == "task_center_status":
             center.reconcile_workers(inputs["task_id"])
