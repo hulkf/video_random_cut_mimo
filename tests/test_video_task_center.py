@@ -498,6 +498,24 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(task["card_delivered_updated_at"], before)
         self.assertEqual(task["updated_at"], before)
 
+    def test_delivery_tracking_migration_does_not_replay_historical_terminal_cards(self):
+        self.center.create_plan("VT-LEGACY-CARD", "历史任务", [{
+            "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
+        }])
+        with closing(self.center._connect()) as db:
+            db.execute(
+                "UPDATE tasks SET status='completed',chat_id='oc_chat',card_message_id='om_card',"
+                "card_delivered_updated_at='' WHERE task_id='VT-LEGACY-CARD'"
+            )
+            expected = db.execute(
+                "SELECT updated_at FROM tasks WHERE task_id='VT-LEGACY-CARD'"
+            ).fetchone()["updated_at"]
+            db.execute("PRAGMA user_version=0")
+            db.commit()
+
+        migrated = TaskCenter(self.center.db_path).get("VT-LEGACY-CARD")
+        self.assertEqual(migrated["card_delivered_updated_at"], expected)
+
     def test_reconcile_restarts_an_interrupted_download_step(self):
         output = str(Path(self.temp.name) / "downloads")
         self.center.create_plan("VT-DOWNLOAD-LOST", "下载恢复", [{

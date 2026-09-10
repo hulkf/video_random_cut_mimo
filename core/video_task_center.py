@@ -353,6 +353,17 @@ class TaskCenter:
             for name, definition in migrations.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+            schema_version = int(db.execute("PRAGMA user_version").fetchone()[0])
+            if schema_version < 5:
+                # Existing terminal tasks predate durable card-delivery tracking.
+                # Treat their already-bound cards as delivered so a gateway restart
+                # does not replay historical completion notifications.
+                db.execute(
+                    "UPDATE tasks SET card_delivered_updated_at=updated_at "
+                    "WHERE card_delivered_updated_at='' AND chat_id<>'' AND card_message_id<>'' "
+                    "AND status IN ('completed','partial_failed','failed','cancelled','stopped_unknown')"
+                )
+                db.execute("PRAGMA user_version=5")
             lock_columns = {row["name"] for row in db.execute("PRAGMA table_info(resource_locks)").fetchall()}
             if "owner_token" not in lock_columns:
                 db.execute("ALTER TABLE resource_locks ADD COLUMN owner_token TEXT NOT NULL DEFAULT ''")
