@@ -71,6 +71,55 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(quota["videoscreenclear"]["reserved_pending"], 40)
         self.assertEqual(quota["hdvideoallinone"]["committed"], 50)
 
+    def test_confirm_rejects_a_stale_card_before_starting_worker(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        self.center.create_plan(
+            "VT-CARD-CONFIRM", "确认卡", step,
+            chat_id="oc_current", card_message_id="om_current",
+        )
+        with self.assertRaisesRegex(ValueError, "最新任务卡"):
+            self.center.confirm(
+                "VT-CARD-CONFIRM", 1, start_worker=False,
+                expected_chat_id="oc_current",
+                expected_card_message_id="om_stale",
+            )
+        self.assertEqual(
+            self.center.get("VT-CARD-CONFIRM")["status"],
+            "awaiting_confirmation",
+        )
+
+    def test_control_rejects_a_card_from_another_chat(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        self.center.create_plan(
+            "VT-CARD-CONTROL", "控制卡", step,
+            chat_id="oc_current", card_message_id="om_current",
+        )
+        self.center.confirm("VT-CARD-CONTROL", 1, start_worker=False)
+        with self.assertRaisesRegex(ValueError, "当前会话"):
+            self.center.control(
+                "VT-CARD-CONTROL", "pause", start_worker=False,
+                expected_chat_id="oc_other",
+                expected_card_message_id="om_current",
+            )
+        self.assertEqual(self.center.get("VT-CARD-CONTROL")["status"], "queued")
+
+    def test_resume_rejects_a_stale_card_before_waiting_for_worker(self):
+        step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
+        self.center.create_plan(
+            "VT-CARD-RESUME", "继续卡", step,
+            chat_id="oc_current", card_message_id="om_current",
+        )
+        self.center.confirm("VT-CARD-RESUME", 1, start_worker=False)
+        self.center.control("VT-CARD-RESUME", "pause", start_worker=False)
+        with patch.object(self.center, "_wait_previous_worker_exit") as wait:
+            with self.assertRaisesRegex(ValueError, "最新任务卡"):
+                self.center.control(
+                    "VT-CARD-RESUME", "resume",
+                    expected_chat_id="oc_current",
+                    expected_card_message_id="om_stale",
+                )
+        wait.assert_not_called()
+
     def test_execute_persists_steps_and_outputs(self):
         self.center.create_plan("VT-RUN", "本地任务", [
             {"id": "resize", "name": "转尺寸", "request": {

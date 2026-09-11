@@ -92,6 +92,36 @@ class VideoToolTests(unittest.TestCase):
                 "inputs": {"task_id": "VT-NO-CARD", "chat_id": "oc_chat"},
             })
 
+    def test_task_center_confirm_forwards_atomic_card_context_validation(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"VIDEO_TASK_CENTER_DB": str(Path(temp) / "tasks.db")}
+        ), patch("core.video_task_center.TaskCenter._spawn_worker", return_value=123):
+            video_tool.run_request({
+                "operation": "task_center_plan",
+                "inputs": {
+                    "task_id": "VT-ATOMIC-CONFIRM",
+                    "title": "原子确认",
+                    "chat_id": "oc_current",
+                    "card_message_id": "om_current",
+                    "parameter_lines": ["输入：D:/a.mp4"],
+                    "steps": [{
+                        "id": "validate",
+                        "request": {"operation": "validate", "path": "D:/a.mp4"},
+                    }],
+                },
+            })
+            with self.assertRaisesRegex(ValueError, "最新任务卡"):
+                video_tool.run_request({
+                    "operation": "task_center_confirm",
+                    "inputs": {
+                        "task_id": "VT-ATOMIC-CONFIRM",
+                        "plan_version": 1,
+                        "expected_chat_id": "oc_current",
+                        "expected_card_message_id": "om_stale",
+                    },
+                    "authorization": {"confirmed": True, "scope": "task_center_confirm"},
+                })
+
     def test_every_business_tab_has_a_headless_operation(self):
         exposed_tabs = {
             spec.get("tab") for spec in video_tool.CAPABILITIES["operations"].values()

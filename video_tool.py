@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.7.1"
+TOOL_VERSION = "0.8.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -68,6 +68,7 @@ CAPABILITIES = {
         "task_center_confirm": {
             "description": "确认指定计划版本并启动独立后台执行器",
             "required": ["task_id", "plan_version"],
+            "options": ["expected_chat_id", "expected_card_message_id"],
         },
         "task_center_list": {
             "description": "查询本地、云端和混合视频任务总览及当日开拍额度台账",
@@ -82,6 +83,7 @@ CAPABILITIES = {
             "description": "暂停、继续或取消一个视频任务，不影响其他任务",
             "required": ["task_id", "action"],
             "action_values": ["pause", "resume", "cancel"],
+            "options": ["expected_chat_id", "expected_card_message_id"],
         },
         "task_center_bind_card": {
             "description": "绑定任务的飞书 Card 2.0 消息，用于无模型进度更新",
@@ -542,6 +544,8 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 inputs["task_id"], int(inputs["plan_version"]),
                 confirmed_by=inputs.get("confirmed_by", ""),
                 confirmation_message_id=inputs.get("confirmation_message_id", ""),
+                expected_chat_id=inputs.get("expected_chat_id", ""),
+                expected_card_message_id=inputs.get("expected_card_message_id", ""),
             )
         elif operation == "task_center_list":
             result = center.list_tasks(
@@ -556,7 +560,11 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
             center.reconcile_workers(inputs["task_id"])
             result = center.get(inputs["task_id"])
         elif operation == "task_center_control":
-            result = center.control(inputs["task_id"], inputs["action"])
+            result = center.control(
+                inputs["task_id"], inputs["action"],
+                expected_chat_id=inputs.get("expected_chat_id", ""),
+                expected_card_message_id=inputs.get("expected_card_message_id", ""),
+            )
         else:
             result = center.bind_card(
                 inputs["task_id"], inputs["chat_id"], inputs["card_message_id"],

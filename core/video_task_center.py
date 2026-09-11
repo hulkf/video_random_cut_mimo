@@ -253,6 +253,21 @@ class TaskCenter:
         db.execute("PRAGMA foreign_keys=ON")
         return db
 
+    @staticmethod
+    def _require_card_context(
+        task: sqlite3.Row,
+        *,
+        expected_chat_id: str = "",
+        expected_card_message_id: str = "",
+    ) -> None:
+        if expected_chat_id and str(task["chat_id"] or "") != expected_chat_id:
+            raise ValueError("任务卡片与当前会话不匹配，未执行操作")
+        if (
+            expected_card_message_id
+            and str(task["card_message_id"] or "") != expected_card_message_id
+        ):
+            raise ValueError("这张卡片已不是当前任务卡，请使用最新任务卡")
+
     def _init_db(self) -> None:
         with closing(self._connect()) as db:
             # Journal mode is persistent for the database. Reissuing it on every
@@ -541,6 +556,8 @@ class TaskCenter:
         start_worker: bool = True,
         confirmed_by: str = "",
         confirmation_message_id: str = "",
+        expected_chat_id: str = "",
+        expected_card_message_id: str = "",
     ) -> dict[str, Any]:
         today = _today()
         now = _now()
@@ -549,6 +566,11 @@ class TaskCenter:
             task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not task:
                 raise ValueError("任务不存在: {}".format(task_id))
+            self._require_card_context(
+                task,
+                expected_chat_id=expected_chat_id,
+                expected_card_message_id=expected_card_message_id,
+            )
             if int(task["plan_version"]) != int(plan_version):
                 raise ValueError("计划版本已变化，请重新确认最新版本")
             if task["status"] != "awaiting_confirmation":
@@ -914,14 +936,34 @@ class TaskCenter:
             db.execute("DELETE FROM resource_locks WHERE task_id=? AND step_id=?", (task_id, step_id))
             db.commit()
 
-    def control(self, task_id: str, action: str, *, start_worker: bool = True) -> dict[str, Any]:
+    def control(
+        self,
+        task_id: str,
+        action: str,
+        *,
+        start_worker: bool = True,
+        expected_chat_id: str = "",
+        expected_card_message_id: str = "",
+    ) -> dict[str, Any]:
         if action == "resume" and start_worker:
-            return self._resume(task_id)
+            return self._resume(
+                task_id,
+                expected_chat_id=expected_chat_id,
+                expected_card_message_id=expected_card_message_id,
+            )
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT status,worker_pid,worker_token FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            row = db.execute(
+                "SELECT status,worker_pid,worker_token,chat_id,card_message_id FROM tasks WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
             if not row:
                 raise ValueError("任务不存在: {}".format(task_id))
+            self._require_card_context(
+                row,
+                expected_chat_id=expected_chat_id,
+                expected_card_message_id=expected_card_message_id,
+            )
             status = str(row["status"])
             previous_pid = int(row["worker_pid"] or 0)
             if action == "pause":
@@ -953,13 +995,25 @@ class TaskCenter:
             self._release_unsubmitted_quota(task_id, final=True)
         return self.get(task_id)
 
-    def _resume(self, task_id: str) -> dict[str, Any]:
+    def _resume(
+        self,
+        task_id: str,
+        *,
+        expected_chat_id: str = "",
+        expected_card_message_id: str = "",
+    ) -> dict[str, Any]:
         with closing(self._connect()) as db:
             row = db.execute(
-                "SELECT status,worker_pid,worker_token FROM tasks WHERE task_id=?", (task_id,)
+                "SELECT status,worker_pid,worker_token,chat_id,card_message_id FROM tasks WHERE task_id=?",
+                (task_id,),
             ).fetchone()
         if not row:
             raise ValueError("任务不存在: {}".format(task_id))
+        self._require_card_context(
+            row,
+            expected_chat_id=expected_chat_id,
+            expected_card_message_id=expected_card_message_id,
+        )
         if str(row["status"]) != "paused":
             raise ValueError("任务当前状态为{}，不能继续".format(row["status"]))
         previous_pid = int(row["worker_pid"] or 0)
@@ -969,6 +1023,17 @@ class TaskCenter:
         )
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT status,worker_pid,chat_id,card_message_id FROM tasks WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if not current:
+                raise ValueError("任务不存在: {}".format(task_id))
+            self._require_card_context(
+                current,
+                expected_chat_id=expected_chat_id,
+                expected_card_message_id=expected_card_message_id,
+            )
             claimed = db.execute(
                 "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',updated_at=?,state_revision=state_revision+1 "
                 "WHERE task_id=? AND status='paused' AND worker_pid=?",
