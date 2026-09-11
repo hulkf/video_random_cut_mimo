@@ -122,6 +122,50 @@ class VideoToolTests(unittest.TestCase):
                     "authorization": {"confirmed": True, "scope": "task_center_confirm"},
                 })
 
+    def test_task_center_plan_can_directly_confirm_and_start(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"VIDEO_TASK_CENTER_DB": str(Path(temp) / "tasks.db")}
+        ), patch("core.video_task_center.TaskCenter._spawn_worker", return_value=123) as spawn:
+            result = video_tool.run_request({
+                "operation": "task_center_plan",
+                "inputs": {
+                    "task_id": "VT-DIRECT",
+                    "title": "直接执行",
+                    "parameter_lines": ["输入：D:/a.mp4"],
+                    "direct_confirmation_phrase": "直接确认",
+                    "confirmed_by": "ou_owner",
+                    "confirmation_message_id": "om_request",
+                    "steps": [{
+                        "id": "validate",
+                        "request": {"operation": "validate", "path": "D:/a.mp4"},
+                    }],
+                },
+                "authorization": {"confirmed": True, "scope": "task_center_confirm"},
+            })
+        self.assertEqual(result["task"]["status"], "queued")
+        self.assertEqual(result["task"]["confirmation_message_id"], "om_request")
+        spawn.assert_called_once_with("VT-DIRECT")
+
+    def test_task_center_direct_plan_requires_exact_phrase_and_authorization(self):
+        base = {
+            "operation": "task_center_plan",
+            "inputs": {
+                "task_id": "VT-DIRECT-AUTH",
+                "title": "直接执行",
+                "parameter_lines": ["输入：D:/a.mp4"],
+                "direct_confirmation_phrase": "不用问我",
+                "steps": [{
+                    "id": "validate",
+                    "request": {"operation": "validate", "path": "D:/a.mp4"},
+                }],
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "直接确认"):
+            video_tool.run_request(base)
+        base["inputs"]["direct_confirmation_phrase"] = "直接执行"
+        with self.assertRaisesRegex(PermissionError, "task_center_confirm"):
+            video_tool.run_request(base)
+
     def test_every_business_tab_has_a_headless_operation(self):
         exposed_tabs = {
             spec.get("tab") for spec in video_tool.CAPABILITIES["operations"].values()

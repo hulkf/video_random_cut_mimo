@@ -25,7 +25,7 @@ from headless_operations import run_operation as run_tab_operation
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.8.0"
+TOOL_VERSION = "0.9.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -62,8 +62,9 @@ CAPABILITIES = {
             "action_values": ["status", "pause", "resume", "cancel"],
         },
         "task_center_plan": {
-            "description": "创建或更新一个等待确认的视频任务计划，不执行视频操作",
+            "description": "创建或更新视频任务计划；仅在用户明确说“直接确认/直接执行”时可同时确认并启动",
             "required": ["task_id", "title", "steps"],
+            "options": ["direct_confirmation_phrase"],
         },
         "task_center_confirm": {
             "description": "确认指定计划版本并启动独立后台执行器",
@@ -269,6 +270,17 @@ def _validate_request(request: Dict[str, Any]) -> None:
         raise ValueError("task_control.action 必须是 status、pause、resume 或 cancel")
     if operation == "task_center_control" and inputs.get("action") not in ("pause", "resume", "cancel"):
         raise ValueError("task_center_control.action 必须是 pause、resume 或 cancel")
+    if operation == "task_center_plan" and inputs.get("direct_confirmation_phrase"):
+        phrase = str(inputs["direct_confirmation_phrase"]).strip()
+        if phrase not in ("直接确认", "直接执行"):
+            raise ValueError("直接启动只接受用户原话“直接确认”或“直接执行”")
+        authorization = request.get("authorization") or {}
+        if authorization.get("confirmed") is not True or authorization.get("scope") not in (
+            "task_center_confirm", "*",
+        ):
+            raise PermissionError(
+                "直接启动需要显式授权：authorization.confirmed=true 且 scope=task_center_confirm（或 *）"
+            )
     if operation == "task_center_list":
         for key in ("watchable_only", "reconcile"):
             if key in inputs and not isinstance(inputs[key], bool):
@@ -539,6 +551,12 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 risk_note=inputs.get("risk_note", ""),
                 authorized_operations=inputs.get("authorized_operations") or [],
             )
+            if inputs.get("direct_confirmation_phrase"):
+                result = center.confirm(
+                    result["task_id"], int(result["plan_version"]),
+                    confirmed_by=inputs.get("confirmed_by", ""),
+                    confirmation_message_id=inputs.get("confirmation_message_id", ""),
+                )
         elif operation == "task_center_confirm":
             result = center.confirm(
                 inputs["task_id"], int(inputs["plan_version"]),
