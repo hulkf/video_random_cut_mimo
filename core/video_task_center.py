@@ -208,6 +208,23 @@ def _result_errors(operation: str, result: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _failure_task_status(
+    operation: str,
+    result: dict[str, Any],
+    completed_step_count: int,
+) -> str:
+    """Distinguish total failure from a task that produced some usable work."""
+    if completed_step_count > 0 or operation == "validate":
+        return "partial_failed"
+    for item in result.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "")).strip().lower()
+        if item.get("success") is True or status in {"成功", "success", "succeeded", "completed"}:
+            return "partial_failed"
+    return "failed"
+
+
 class TaskExecutionContext:
     def __init__(self, center: "TaskCenter", task_id: str, step_id: str) -> None:
         self.center = center
@@ -757,6 +774,7 @@ class TaskCenter:
             task_plan = db.execute("SELECT authorized_operations_json FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         authorized_operations = set(_decode(task_plan["authorized_operations_json"], [])) if task_plan else set()
         active_step_id = ""
+        completed_step_count = sum(step["status"] == "completed" for step in steps)
         try:
             for step in steps:
                 if step["status"] == "completed":
@@ -793,10 +811,14 @@ class TaskCenter:
                 if failures:
                     message = "；".join(failures[:3])
                     self._save_step_result(task_id, step["step_id"], result, "failed", message)
-                    self._set_task_status(task_id, "partial_failed", current_step=int(step["step_index"]), error=message)
+                    failure_status = _failure_task_status(
+                        str(step["operation"]), result, completed_step_count
+                    )
+                    self._set_task_status(task_id, failure_status, current_step=int(step["step_index"]), error=message)
                     self._release_unsubmitted_quota(task_id, final=True)
                     return self.get(task_id)
                 self._save_step_result(task_id, step["step_id"], result, "completed")
+                completed_step_count += 1
             self._set_task_status(task_id, "completed", current_step=len(steps) - 1)
             self._release_unsubmitted_quota(task_id, final=True)
         except Exception as exc:

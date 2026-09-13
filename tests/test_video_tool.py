@@ -600,6 +600,23 @@ class VideoToolTests(unittest.TestCase):
             error="开拍任务未返回可下载的结果地址，不能标记为成功",
         )
 
+    def test_kaipai_image_task_forces_downloadable_url_response(self):
+        client = MagicMock()
+        client.execute.return_value = {
+            "task_id": "image-a",
+            "output_urls": ["https://out/a.jpg"],
+        }
+        original_params = {"parameter": {"target": "watermark"}}
+        worker = KaipaiWorker(["a.jpg"], "图片去水印", params=original_params)
+
+        result = worker._process_one(client, "a.jpg", 0, 1)
+
+        self.assertEqual(result["status"], "成功")
+        submitted_params = client.execute.call_args.kwargs["params"]
+        self.assertEqual(submitted_params["parameter"]["target"], "watermark")
+        self.assertEqual(submitted_params["parameter"]["rsp_media_type"], "url")
+        self.assertEqual(original_params, {"parameter": {"target": "watermark"}})
+
     def test_task_control_pause_resume_cancel(self):
         task_id = "test-control-001"
         state_dir = ROOT / ".task_control"

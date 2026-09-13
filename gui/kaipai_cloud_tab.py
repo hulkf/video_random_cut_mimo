@@ -1,5 +1,6 @@
 import os
 import json
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -35,6 +36,7 @@ class KaipaiWorker(BaseWorker):
         "视频智能全消": "videoscreenclear",
         "视频画质修复": "hdvideoallinone",
     }
+    URL_RESPONSE_TASKS = {"eraser_watermark", "image_restoration"}
 
     def __init__(self, files, task_name, params=None, batch_mode=True, max_workers=9, task_context=None):
         super().__init__()
@@ -99,10 +101,18 @@ class KaipaiWorker(BaseWorker):
                             file_path, state="submitted", cloud_task_id=submitted_id
                         )
 
+                effective_params = deepcopy(self.params)
+                if api_task_name in self.URL_RESPONSE_TASKS:
+                    parameter = effective_params.setdefault("parameter", {})
+                    if not isinstance(parameter, dict):
+                        raise ValueError("开拍图片任务的 parameter 参数必须是对象")
+                    # 后续下载流程需要可下载地址；开拍的动态去水印预设未必包含此项。
+                    parameter["rsp_media_type"] = "url"
+
                 result = client.execute(
                     task_name=api_task_name,
                     source=file_path,
-                    params=self.params if self.params else None,
+                    params=effective_params or None,
                     on_async_submitted=_submitted,
                 )
             output_urls = result.get("output_urls", [])

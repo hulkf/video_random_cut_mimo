@@ -462,6 +462,46 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "partial_failed")
         self.assertEqual(result["steps"][0]["status"], "failed")
 
+    def test_cloud_batch_with_all_items_failed_marks_task_failed(self):
+        self.center.create_plan("VT-ALL-FAILED", "全部失败", [{
+            "id": "clear", "request": {
+                "operation": "kaipai_process",
+                "input_path": self.image_dir("all-failed", 2),
+                "task_name": "eraser_watermark",
+            },
+        }])
+        self.center.confirm("VT-ALL-FAILED", 1, start_worker=False)
+
+        result = self.center.execute("VT-ALL-FAILED", lambda *_: {
+            "success": False,
+            "results": [
+                {"file": "a.jpg", "status": "失败", "error": "no output"},
+                {"file": "b.jpg", "status": "失败", "error": "no output"},
+            ],
+        })
+
+        self.assertEqual(result["status"], "failed")
+
+    def test_cloud_batch_with_mixed_items_marks_task_partial_failed(self):
+        self.center.create_plan("VT-SOME-FAILED", "部分失败", [{
+            "id": "clear", "request": {
+                "operation": "kaipai_process",
+                "input_path": self.image_dir("some-failed", 2),
+                "task_name": "eraser_watermark",
+            },
+        }])
+        self.center.confirm("VT-SOME-FAILED", 1, start_worker=False)
+
+        result = self.center.execute("VT-SOME-FAILED", lambda *_: {
+            "success": False,
+            "results": [
+                {"file": "a.jpg", "status": "成功", "output_url": "https://out/a.jpg"},
+                {"file": "b.jpg", "status": "失败", "error": "no output"},
+            ],
+        })
+
+        self.assertEqual(result["status"], "partial_failed")
+
     def test_only_one_executor_claims_a_queued_task(self):
         self.center.create_plan("VT-CLAIM", "唯一执行器", [{
             "id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}
