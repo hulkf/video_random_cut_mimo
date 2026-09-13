@@ -26,6 +26,61 @@ def get_skill_client():
     return SkillClient()
 
 
+_KAIPAI_ERROR_MESSAGES = {
+    "10025": "图片触发内容安全审核，开拍拒绝处理",
+}
+
+
+def _kaipai_task_id(result):
+    """兼容开拍 SDK 与原始接口的任务编号位置。"""
+    if not isinstance(result, dict):
+        return ""
+    candidates = [result.get("task_id")]
+    data = result.get("data")
+    if isinstance(data, dict):
+        candidates.append(data.get("task_id"))
+        nested_result = data.get("result")
+        if isinstance(nested_result, dict):
+            candidates.extend((nested_result.get("task_id"), nested_result.get("id")))
+    for candidate in candidates:
+        if candidate not in (None, ""):
+            return str(candidate)
+    return ""
+
+
+def _kaipai_failure_message(result):
+    """把 HTTP 200 内的开拍业务错误转换为用户可读的失败原因。"""
+    if not isinstance(result, dict):
+        return ""
+
+    code = result.get("error_code")
+    if code in (None, "", 0, "0"):
+        code = result.get("code")
+    provider_message = result.get("message") or result.get("msg") or result.get("error")
+
+    if code not in (None, "", 0, "0"):
+        readable = _KAIPAI_ERROR_MESSAGES.get(str(code), "开拍处理失败")
+        details = [f"错误码 {code}"]
+        if provider_message:
+            details.append(f"平台信息：{provider_message}")
+        return f"{readable}（{'；'.join(details)}）"
+
+    meta = result.get("meta")
+    if isinstance(meta, dict):
+        meta_code = meta.get("code")
+        if meta_code not in (None, "", 0, "0"):
+            meta_message = meta.get("message") or meta.get("msg") or provider_message
+            details = [f"错误码 {meta_code}"]
+            if meta_message:
+                details.append(f"平台信息：{meta_message}")
+            return f"开拍处理失败（{'；'.join(details)}）"
+
+    if result.get("skill_status") == "failed":
+        detail = result.get("detail") or provider_message or "平台未提供详细原因"
+        return f"开拍处理失败：{detail}"
+    return ""
+
+
 class KaipaiWorker(BaseWorker):
     # progress/finished/error 继承 BaseWorker（progress(int,int,str)）
     log = pyqtSignal(str)  # 日志行（额外专用信号）
@@ -76,6 +131,7 @@ class KaipaiWorker(BaseWorker):
         file_name = os.path.basename(file_path)
         resume = self.task_context.resume_items().get(file_path, {}) if self.task_context else {}
         submission_started = False
+        response_received = False
         submitted_id = ""
         self.progress.emit(idx, total, f"正在处理: {file_name}")
         self.log.emit(f"[{idx+1}/{total}] 提交并处理: {file_name}")
@@ -115,8 +171,14 @@ class KaipaiWorker(BaseWorker):
                     params=effective_params or None,
                     on_async_submitted=_submitted,
                 )
+                response_received = True
+            task_id = _kaipai_task_id(result) or submitted_id or str(resume.get("cloud_task_id") or "")
+            if task_id:
+                submitted_id = task_id
+            provider_error = _kaipai_failure_message(result)
+            if provider_error:
+                raise RuntimeError(provider_error)
             output_urls = result.get("output_urls", [])
-            task_id = result.get("task_id", "")
             if not output_urls or not str(output_urls[0] or "").strip():
                 raise RuntimeError("开拍任务未返回可下载的结果地址，不能标记为成功")
             item = {
@@ -151,14 +213,15 @@ class KaipaiWorker(BaseWorker):
                 "file": file_name,
                 "path": file_path,
                 "status": "失败",
-                "task_id": "",
+                "task_id": str(submitted_id or resume.get("cloud_task_id") or ""),
                 "output_url": "",
                 "error": str(e),
             }
             if self.task_context:
                 checkpoint_state = (
                     "submission_unknown"
-                    if (submission_started and not submitted_id) or resume.get("state") in {"submitting", "submission_unknown"}
+                    if (submission_started and not response_received and not submitted_id)
+                    or resume.get("state") in {"submitting", "submission_unknown"}
                     else "failed"
                 )
                 self.task_context.cloud_item(

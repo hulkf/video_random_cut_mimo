@@ -600,6 +600,38 @@ class VideoToolTests(unittest.TestCase):
             error="开拍任务未返回可下载的结果地址，不能标记为成功",
         )
 
+    def test_kaipai_provider_error_is_preserved_for_task_card(self):
+        context = MagicMock()
+        context.resume_items.return_value = {}
+        client = MagicMock()
+        client.execute.return_value = {
+            "code": 10025,
+            "error_code": 10025,
+            "message": "Image request denied due to inappropriate content",
+            "data": {
+                "status": 2,
+                "result": {"id": "cloud-denied"},
+                "task_id": "cloud-denied",
+            },
+            "task_id": "cloud-denied",
+            "output_urls": [],
+        }
+        worker = KaipaiWorker(["a.jpg"], "图片去水印", task_context=context)
+
+        result = worker._process_one(client, "a.jpg", 0, 1)
+
+        self.assertEqual(result["status"], "失败")
+        self.assertEqual(result["task_id"], "cloud-denied")
+        self.assertIn("内容安全审核", result["error"])
+        self.assertIn("10025", result["error"])
+        self.assertIn("Image request denied", result["error"])
+        context.cloud_item.assert_called_with(
+            "a.jpg",
+            state="failed",
+            cloud_task_id="cloud-denied",
+            error=result["error"],
+        )
+
     def test_kaipai_image_task_forces_downloadable_url_response(self):
         client = MagicMock()
         client.execute.return_value = {
