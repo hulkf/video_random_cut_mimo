@@ -18,11 +18,17 @@ from typing import Any, Callable
 
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / ".task_center" / "tasks.db"
-DAILY_LIMITS = {"videoscreenclear": 50, "hdvideoallinone": 50}
+DAILY_LIMITS = {
+    "eraser_watermark": 50,
+    "image_restoration": 50,
+    "videoscreenclear": 50,
+    "hdvideoallinone": 50,
+}
 CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance"}
 RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download"}
 CARDINALITY_CHANGING_OPERATIONS = {"video_fission", "video_concat", "video_mix", "audio_mix"}
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".ts", ".mts", ".m2ts"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,79}$")
 TERMINAL_STATES = {"completed", "partial_failed", "failed", "cancelled", "stopped_unknown"}
 ACTIVE_STATES = {"queued", "running", "waiting_cloud", "pausing", "cancelling"}
@@ -59,12 +65,22 @@ def _cloud_capability(request: dict[str, Any]) -> str:
         return ""
     raw = str(request.get("task_name") or (request.get("inputs") or {}).get("task_name") or "")
     aliases = {
+        "图片去水印": "eraser_watermark",
+        "eraser_watermark": "eraser_watermark",
+        "图片画质修复": "image_restoration",
+        "image_restoration": "image_restoration",
         "视频智能全消": "videoscreenclear",
         "videoscreenclear": "videoscreenclear",
         "视频画质修复": "hdvideoallinone",
         "hdvideoallinone": "hdvideoallinone",
     }
     return aliases.get(raw, "")
+
+
+def _input_suffixes(request: dict[str, Any]) -> set[str]:
+    return IMAGE_SUFFIXES if _cloud_capability(request) in {
+        "eraser_watermark", "image_restoration",
+    } else VIDEO_SUFFIXES
 
 
 def _request_input(request: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -83,6 +99,7 @@ def _estimate_items(step: dict[str, Any]) -> int:
         if isinstance(candidate, str) and candidate.strip():
             path = candidate
             break
+    suffixes = _input_suffixes(request)
     actual: int | None = None
     if os.path.isfile(path):
         suffix = Path(path).suffix.lower()
@@ -91,7 +108,7 @@ def _estimate_items(step: dict[str, Any]) -> int:
                 with zipfile.ZipFile(path) as archive:
                     actual = sum(
                         1 for item in archive.infolist()
-                        if not item.is_dir() and Path(item.filename).suffix.lower() in VIDEO_SUFFIXES
+                        if not item.is_dir() and Path(item.filename).suffix.lower() in suffixes
                     )
             except (OSError, zipfile.BadZipFile) as exc:
                 raise ValueError("无法读取 ZIP 中的视频清单: {}".format(path)) from exc
@@ -111,14 +128,14 @@ def _estimate_items(step: dict[str, Any]) -> int:
                     raise ValueError("7-Zip 无法读取压缩包视频清单")
                 actual = sum(
                     1 for line in completed.stdout.splitlines()
-                    if line.startswith("Path = ") and Path(line[7:].strip()).suffix.lower() in VIDEO_SUFFIXES
+                    if line.startswith("Path = ") and Path(line[7:].strip()).suffix.lower() in suffixes
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ValueError("读取压缩包视频清单超时") from exc
         else:
-            actual = 1
+            actual = int(Path(path).suffix.lower() in suffixes)
     if os.path.isdir(path):
-        actual = sum(1 for item in Path(path).rglob("*") if item.is_file() and item.suffix.lower() in VIDEO_SUFFIXES)
+        actual = sum(1 for item in Path(path).rglob("*") if item.is_file() and item.suffix.lower() in suffixes)
     if explicit is not None:
         count = int(explicit)
         if count < 0:
@@ -482,6 +499,8 @@ class TaskCenter:
             else:
                 item_count = _estimate_items({**raw, "request": request})
             capability = _cloud_capability(request)
+            if operation == "kaipai_process" and not capability:
+                raise ValueError(f"{step_id} 使用了任务中心尚未登记的开拍功能: {request.get('task_name') or ''}")
             if capability:
                 direct_input = str(_request_input(request, "input_path", "") or "")
                 if not source_step and not (os.path.isfile(direct_input) or os.path.isdir(direct_input)):
@@ -1205,7 +1224,17 @@ class TaskCenter:
                 (today, task_id, step_id),
             ).fetchone()
             if not reservation:
-                raise QuotaExceeded("任务未持有今日额度预留；跨日执行必须重新建立计划并确认")
+                prior = db.execute(
+                    "SELECT day FROM quota_reservations WHERE task_id=? AND step_id=? AND status='active' ORDER BY day DESC LIMIT 1",
+                    (task_id, step_id),
+                ).fetchone()
+                if prior:
+                    raise QuotaExceeded(
+                        "任务额度预留日期为{}，当前日期为{}；跨日执行必须重新建立计划并确认".format(
+                            prior["day"], today,
+                        )
+                    )
+                raise QuotaExceeded("任务确认时未为该开拍功能建立额度预留，请重新建立计划并确认")
             existing = db.execute(
                 "SELECT state FROM cloud_items WHERE task_id=? AND step_id=? AND source_path=?",
                 (task_id, step_id, source_path),

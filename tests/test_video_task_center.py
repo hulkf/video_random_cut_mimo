@@ -25,6 +25,13 @@ class VideoTaskCenterTests(unittest.TestCase):
             (folder / f"{index}.mp4").write_bytes(b"video")
         return str(folder)
 
+    def image_dir(self, name, count):
+        folder = Path(self.temp.name) / name
+        folder.mkdir(exist_ok=True)
+        for index in range(count):
+            (folder / f"{index}.jpg").write_bytes(b"image")
+        return str(folder)
+
     def mark_worker_lost(self, task_id):
         db = self.center._connect()
         try:
@@ -70,6 +77,46 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual(quota["videoscreenclear"]["committed"], 40)
         self.assertEqual(quota["videoscreenclear"]["reserved_pending"], 40)
         self.assertEqual(quota["hdvideoallinone"]["committed"], 50)
+
+    def test_image_cloud_features_have_independent_daily_50_quotas(self):
+        watermark_input = Path(self.image_dir("watermark", 7))
+        (watermark_input / "ignored.mp4").write_bytes(b"video")
+        restoration_input = Path(self.image_dir("restoration", 2))
+        (restoration_input / "nested").mkdir()
+        (restoration_input / "nested" / "extra.png").write_bytes(b"image")
+        task = self.center.create_plan("VT-IMAGE", "图片处理", [
+            {"id": "watermark", "request": {
+                "operation": "kaipai_process", "input_path": str(watermark_input),
+                "task_name": "图片去水印",
+            }},
+            {"id": "restoration", "request": {
+                "operation": "kaipai_process", "input_path": str(restoration_input),
+                "task_name": "image_restoration",
+            }},
+        ])
+        self.assertEqual(task["steps"][0]["item_count"], 7)
+        self.assertEqual(task["steps"][1]["item_count"], 3)
+        self.assertEqual(task["quota_estimate"], {
+            "eraser_watermark": 7,
+            "image_restoration": 3,
+        })
+        self.center.confirm("VT-IMAGE", 1, start_worker=False)
+        quota = self.center.quota_summary()
+        self.assertEqual(quota["eraser_watermark"]["limit"], 50)
+        self.assertEqual(quota["eraser_watermark"]["committed"], 7)
+        self.assertEqual(quota["image_restoration"]["limit"], 50)
+        self.assertEqual(quota["image_restoration"]["committed"], 3)
+        self.center.begin_cloud_submission("VT-IMAGE", "watermark", str(watermark_input / "0.jpg"))
+
+    def test_image_feature_rejects_more_than_its_own_daily_50_quota(self):
+        self.center.create_plan("VT-IMAGE-51", "图片去水印", [{
+            "id": "watermark", "request": {
+                "operation": "kaipai_process", "input_path": self.image_dir("too-many", 51),
+                "task_name": "eraser_watermark",
+            },
+        }])
+        with self.assertRaisesRegex(QuotaExceeded, "eraser_watermark 今日额度不足"):
+            self.center.confirm("VT-IMAGE-51", 1, start_worker=False)
 
     def test_confirm_rejects_a_stale_card_before_starting_worker(self):
         step = [{"id": "one", "request": {"operation": "validate", "path": "D:/a.mp4"}}]
