@@ -519,7 +519,7 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 inner_operation = str(inner.get("operation") or "")
                 if not inner_operation or inner_operation == "task_control" or inner_operation.startswith("task_center_"):
                     raise ValueError("步骤 {} 不是可执行的视频业务操作".format(index + 1))
-                if inner_operation in {"settings_secret_set", "settings_update", "download_login"}:
+                if inner_operation in {"settings_secret_set", "settings_update"}:
                     raise ValueError("{} 不允许进入持久化视频任务计划，请使用专用交互流程".format(inner_operation))
                 validation_request = dict(inner)
                 if step.get("items_from_step"):

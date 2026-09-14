@@ -755,11 +755,11 @@ class VideoToolTests(unittest.TestCase):
             self.assertEqual(result["task"]["authorized_operations"], ["kaipai_download", "kaipai_process"])
             self.assertEqual(result["task"]["risk_note"], "将提交 1 个视频到开拍智能全消")
 
-    def test_task_plan_refuses_to_persist_secret_or_login_operations(self):
+    def test_task_plan_refuses_to_persist_secret_or_settings_operations(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             os.environ, {"VIDEO_TASK_CENTER_DB": str(Path(temp) / "tasks.db")}
         ):
-            for operation in ("settings_secret_set", "settings_update", "download_login"):
+            for operation in ("settings_secret_set", "settings_update"):
                 with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, "不允许进入"):
                     video_tool.run_request({
                         "operation": "task_center_plan",
@@ -769,6 +769,24 @@ class VideoToolTests(unittest.TestCase):
                             "steps": [{"id": "one", "request": {"operation": operation}}],
                         },
                     })
+
+    def test_download_login_can_run_as_an_explicitly_authorized_task(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"VIDEO_TASK_CENTER_DB": str(Path(temp) / "tasks.db")}
+        ):
+            request = {
+                "operation": "task_center_plan",
+                "inputs": {
+                    "task_id": "VT-DOWNLOAD-LOGIN",
+                    "title": "淘宝详情页登录",
+                    "parameter_lines": ["仅在下载工具明确返回淘宝详情页需要登录后执行"],
+                    "risk_note": "将打开视频工具的淘宝登录流程，可能需要用户扫码或确认",
+                    "authorized_operations": ["download_login"],
+                    "steps": [{"id": "login", "request": {"operation": "download_login"}}],
+                },
+            }
+            result = video_tool.run_request(request)
+        self.assertEqual(result["task"]["authorized_operations"], ["download_login"])
 
     @patch("video_tool.run_tab_operation", return_value={"operation": "video_screenshot", "outputs": []})
     def test_screenshot_only_requires_authorization_when_deleting(self, dispatch):
