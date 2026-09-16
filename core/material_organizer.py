@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import zipfile
@@ -130,6 +131,7 @@ def organize_materials(source_path, *, material_type="model", cargo_number="",
                 stored.append(str(archive_copy))
                 _extract_archive_videos(path, material_dir, videos)
                 if delete_archive and archive_copy.exists():
+                    archive_copy.chmod(archive_copy.stat().st_mode | stat.S_IWRITE)
                     archive_copy.unlink()
                     deleted.append(str(archive_copy))
             elif path.is_file() and path.suffix.lower() in VIDEO_EXTS:

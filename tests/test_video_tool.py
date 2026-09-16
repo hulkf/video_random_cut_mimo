@@ -1,6 +1,7 @@
 import json
 import importlib
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -240,6 +241,34 @@ class VideoToolTests(unittest.TestCase):
                     "authorization": {"confirmed": True, "scope": "material_organize"},
                 })
             self.assertEqual(result["results"][0]["video_count"], 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows read-only archive behavior")
+    def test_material_organize_deletes_readonly_archive_copy_without_touching_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            archive = temp_path / "8819视频01.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("clip.mp4", b"video")
+            output_root = temp_path / "out"
+            copied_archive = output_root / "8819" / archive.name
+            archive.chmod(stat.S_IREAD)
+            try:
+                result = video_tool.run_request({
+                    "operation": "material_organize",
+                    "inputs": {"source_path": str(archive)},
+                    "options": {"output_root": str(output_root), "delete_archive": True},
+                    "authorization": {"confirmed": True, "scope": "material_organize"},
+                })
+                data = result["results"][0]
+                self.assertEqual(data["video_count"], 1)
+                self.assertTrue(data["archive_deleted"])
+                self.assertFalse(copied_archive.exists())
+                self.assertTrue(archive.exists())
+                self.assertTrue(archive.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
+            finally:
+                archive.chmod(stat.S_IWRITE)
+                if copied_archive.exists():
+                    copied_archive.chmod(stat.S_IWRITE)
 
     def test_every_operation_publishes_a_complete_contract(self):
         for name, spec in video_tool.CAPABILITIES["operations"].items():
