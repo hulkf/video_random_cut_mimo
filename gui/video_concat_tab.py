@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox, QComboBox,
-    QScrollArea, QTabBar, QStackedWidget, QToolButton, QStyle
+    QScrollArea
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from core.video_concatenator import VideoConcatenatorEngine
@@ -323,72 +323,6 @@ class VideoConcatPage(BaseTab):
         self.status_label.setText("拼接失败")
 
 
-class VideoConcatTab(BaseTab):
+class VideoConcatTab(VideoConcatPage):
     def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.standard_page = VideoConcatPage("video_concat")
-        self.template_001_page = VideoConcatPage(
-            "video_concat_template_001", template_id="001"
-        )
-
-        template_nav = QHBoxLayout()
-        template_nav.setContentsMargins(8, 4, 8, 0)
-        self.back_to_standard_btn = QToolButton()
-        self.back_to_standard_btn.setIcon(
-            self.style().standardIcon(QStyle.SP_ArrowBack)
-        )
-        self.back_to_standard_btn.setToolTip("返回标准拼接")
-        self.back_to_standard_btn.setAutoRaise(True)
-        self.back_to_standard_btn.hide()
-        self.back_to_standard_btn.clicked.connect(self.show_standard_page)
-        template_nav.addWidget(self.back_to_standard_btn)
-
-        self.template_tabs = QTabBar()
-        self.template_tabs.setDrawBase(False)
-        self.template_tabs.setExpanding(False)
-        self.template_tabs.addTab("模板001")
-        self.template_tabs.tabBarClicked.connect(self._show_template)
-        template_nav.addWidget(self.template_tabs)
-        template_nav.addStretch()
-        layout.addLayout(template_nav)
-
-        self.content_stack = QStackedWidget()
-        self.content_stack.addWidget(self.standard_page)
-        self.content_stack.addWidget(self.template_001_page)
-        self.content_stack.setCurrentWidget(self.standard_page)
-        layout.addWidget(self.content_stack, 1)
-        self._set_template_active(False)
-
-    def _set_template_active(self, active):
-        self.template_active = active
-        if active:
-            self.template_tabs.setStyleSheet("")
-        else:
-            self.template_tabs.setStyleSheet(
-                "QTabBar::tab:selected {"
-                "background: transparent; color: #9e9e9e;"
-                "border-bottom: 1px solid #5a5a5a; }"
-            )
-
-    def _show_template(self, index):
-        if index != 0:
-            return
-        self.content_stack.setCurrentWidget(self.template_001_page)
-        self._set_template_active(True)
-        self.back_to_standard_btn.show()
-
-    def show_standard_page(self):
-        self.content_stack.setCurrentWidget(self.standard_page)
-        self._set_template_active(False)
-        self.back_to_standard_btn.hide()
-
-    def load_config(self):
-        self.standard_page.load_config()
-        self.template_001_page.load_config()
-
-    def save_config(self):
-        self.standard_page.save_config()
-        self.template_001_page.save_config()
+        super().__init__("video_concat")

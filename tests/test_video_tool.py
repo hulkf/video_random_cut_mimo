@@ -315,7 +315,7 @@ class VideoToolTests(unittest.TestCase):
         modules = [
             "gui.slice_tab", "gui.screenshot_tab", "gui.text_recognition_tab",
             "gui.face_detection_tab", "gui.audio_mix_tab", "gui.video_mix_tab",
-            "gui.video_concat_tab", "gui.video_resize_tab", "gui.video_enhance_tab",
+            "gui.video_concat_tab", "gui.template_tab", "gui.video_resize_tab", "gui.video_enhance_tab",
             "gui.keyword_remove_tab", "gui.subtitle_tab", "gui.kaipai_cloud_tab",
             "gui.video_fission_tab", "gui.voice_clone_tab", "gui.video_download_tab",
             "gui.settings_tab",

@@ -20,6 +20,7 @@ from gui.text_recognition_tab import TextRecognitionTab
 from gui.audio_mix_tab import AudioMixTab
 from gui.video_mix_tab import VideoMixTab
 from gui.video_concat_tab import VideoConcatTab
+from gui.template_tab import TemplateTab
 from gui.video_resize_tab import VideoResizeTab
 from gui.video_enhance_tab import VideoEnhanceTab
 from gui.keyword_remove_tab import KeywordRemoveTab
@@ -45,6 +46,7 @@ TABS: List[Tuple[str, str, TabFactory]] = [
     ("audio_mix_tab",        "音频混剪", lambda app: AudioMixTab()),
     ("video_mix_tab",        "视频混剪", lambda app: VideoMixTab()),
     ("video_concat_tab",     "视频拼接", lambda app: VideoConcatTab()),
+    ("template_tab",         "模板",     lambda app: TemplateTab()),
     ("video_resize_tab",     "视频尺寸", lambda app: VideoResizeTab()),
     ("video_enhance_tab",    "视频优化", lambda app: VideoEnhanceTab()),
     ("keyword_remove_tab",   "去关键词", lambda app: KeywordRemoveTab()),

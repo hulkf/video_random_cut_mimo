@@ -46,58 +46,56 @@ class VideoConcatTemplateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未知的视频拼接模板"):
             resolve_video_concat_template("999", {}, {})
 
-    def test_standard_concat_is_default_tool_and_only_templates_are_tabs(self):
+    def test_concat_stays_standard_and_template_gets_its_own_top_level_tab(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PyQt5.QtWidgets import QApplication
         from gui.video_concat_tab import VideoConcatTab
+        from gui.template_tab import TemplateTab
+        from gui.tab_registry import TABS
 
         app = QApplication.instance() or QApplication([])
         with patch(
             "gui.video_concat_tab.get_config",
             side_effect=lambda _section, _key, default="": default,
         ), patch("gui.video_concat_tab.set_config"):
-            tab = VideoConcatTab()
+            concat_tab = VideoConcatTab()
+            template_tab = TemplateTab()
         try:
-            self.assertEqual(tab.template_tabs.count(), 1)
-            self.assertEqual(tab.template_tabs.tabText(0), "模板001")
-            self.assertEqual(tab.content_stack.count(), 2)
-            self.assertIs(tab.content_stack.currentWidget(), tab.standard_page)
-            self.assertFalse(tab.template_active)
-            self.assertEqual(tab.standard_page.config_section, "video_concat")
+            self.assertFalse(hasattr(concat_tab, "template_tabs"))
+            self.assertEqual(concat_tab.config_section, "video_concat")
+            self.assertFalse(concat_tab.cover_check.isChecked())
+            self.assertEqual(concat_tab.cover_source_combo.currentData(), "folder")
+            self.assertEqual(concat_tab.cover_duration_min.value(), 0.5)
+            self.assertEqual(concat_tab.cover_duration_max.value(), 1.0)
+
+            self.assertEqual(template_tab.template_tabs.count(), 1)
+            self.assertEqual(template_tab.template_tabs.tabText(0), "模板001")
             self.assertEqual(
-                tab.template_001_page.config_section,
+                template_tab.template_001_page.config_section,
                 "video_concat_template_001",
             )
-            self.assertFalse(tab.standard_page.cover_check.isChecked())
-            self.assertEqual(tab.standard_page.cover_source_combo.currentData(), "folder")
-            self.assertEqual(tab.standard_page.cover_duration_min.value(), 0.5)
-            self.assertEqual(tab.standard_page.cover_duration_max.value(), 1.0)
-            self.assertTrue(tab.template_001_page.cover_check.isChecked())
+            self.assertTrue(template_tab.template_001_page.cover_check.isChecked())
             self.assertEqual(
-                tab.template_001_page.cover_source_combo.currentData(),
+                template_tab.template_001_page.cover_source_combo.currentData(),
                 "video_b_frame",
             )
-            self.assertEqual(tab.template_001_page.cover_duration_min.value(), 0.2)
-            self.assertEqual(tab.template_001_page.cover_duration_max.value(), 0.5)
+            self.assertEqual(template_tab.template_001_page.cover_duration_min.value(), 0.2)
+            self.assertEqual(template_tab.template_001_page.cover_duration_max.value(), 0.5)
+            self.assertIn(
+                ("template_tab", "模板"),
+                [(attr, title) for attr, title, _factory in TABS],
+            )
 
-            tab.template_tabs.tabBarClicked.emit(0)
+            template_tab.resize(1000, 700)
+            template_tab.show()
             app.processEvents()
-            self.assertIs(tab.content_stack.currentWidget(), tab.template_001_page)
-            self.assertTrue(tab.template_active)
-            self.assertTrue(tab.back_to_standard_btn.isVisibleTo(tab))
-            tab.show_standard_page()
+            self.assertTrue(template_tab.template_tabs.isVisible())
+            template_tab.hide()
             app.processEvents()
-            self.assertIs(tab.content_stack.currentWidget(), tab.standard_page)
-            self.assertFalse(tab.template_active)
-            tab.resize(1000, 700)
-            tab.show()
-            app.processEvents()
-            self.assertTrue(tab.template_tabs.isVisible())
-            tab.hide()
-            app.processEvents()
-            self.assertFalse(tab.template_tabs.isVisible())
+            self.assertFalse(template_tab.template_tabs.isVisible())
         finally:
-            tab.close()
+            concat_tab.close()
+            template_tab.close()
             app.processEvents()
 
     def test_nested_concat_page_worker_is_stopped_with_parent_tab(self):
