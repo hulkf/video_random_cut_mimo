@@ -1590,9 +1590,11 @@ class TaskCenter:
                         ).hexdigest(),
                         "step_id": str(row["step_id"]),
                         "path": normalized_output,
-                        "media_type": "video" if Path(normalized_output).suffix.casefold() in {
-                            ".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm",
-                        } else "file",
+                        "media_type": (
+                            "video"
+                            if Path(normalized_output).suffix.casefold() in VIDEO_SUFFIXES
+                            else "file"
+                        ),
                         "stage": "final" if step_position == len(steps) - 1 else "intermediate",
                         "completed_at": str(row["finished_at"] or ""),
                         "validation": validations.get(

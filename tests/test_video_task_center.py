@@ -221,6 +221,18 @@ class VideoTaskCenterTests(unittest.TestCase):
         context.cloud_item("D:/in/a.mp4", state="completed", cloud_task_id="cloud-1", output_url="https://out/a.mp4")
         self.assertEqual(context.resume_items()["D:/in/a.mp4"]["output_url"], "https://out/a.mp4")
 
+    def test_artifact_media_type_uses_all_task_center_video_suffixes(self):
+        self.center.create_plan("VT-M2TS", "扩展名", [{
+            "id": "encode", "request": {
+                "operation": "video_resize", "input_path": "D:/in", "output_folder": "D:/out",
+            },
+        }])
+        self.center.confirm("VT-M2TS", 1, start_worker=False)
+        self.center.execute(
+            "VT-M2TS", lambda *_: {"success": True, "outputs": ["D:/out/a.m2ts"]}
+        )
+        self.assertEqual(self.center.get("VT-M2TS")["artifacts"][0]["media_type"], "video")
+
     def test_cross_day_cloud_submission_requires_a_new_plan(self):
         self.center.create_plan("VT-NEXT-DAY", "跨日", [{
             "id": "clear", "request": {
