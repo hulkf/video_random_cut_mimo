@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1553,7 +1554,8 @@ class TaskCenter:
         detail["quota_estimate"] = (_decode(task["plan_json"], {}).get("quota_estimate") or {})
         input_paths: set[str] = set()
         output_directories: set[str] = set()
-        for row in steps:
+        artifacts: list[dict[str, Any]] = []
+        for step_position, row in enumerate(steps):
             request = _decode(row["request_json"], {})
             for key in ("input_path", "folder_a", "folder_b", "path", "source"):
                 value = _request_input(request, key, "")
@@ -1572,9 +1574,34 @@ class TaskCenter:
                 output_directories.add(os.path.normpath(result_folder))
             for output in result.get("outputs") or []:
                 if isinstance(output, str) and output.strip() and "://" not in output:
-                    output_directories.add(os.path.normpath(str(Path(output).parent)))
+                    normalized_output = os.path.normpath(output)
+                    output_directories.add(os.path.normpath(str(Path(normalized_output).parent)))
+                    validations = {
+                        os.path.normcase(os.path.normpath(str(item.get("path") or ""))): item
+                        for item in result.get("validation") or []
+                        if isinstance(item, dict) and item.get("path")
+                    }
+                    artifact_key = "\0".join((
+                        str(task_id), str(row["step_id"]), os.path.normcase(normalized_output),
+                    ))
+                    artifacts.append({
+                        "artifact_id": "artifact_" + hashlib.sha256(
+                            artifact_key.encode("utf-8")
+                        ).hexdigest(),
+                        "step_id": str(row["step_id"]),
+                        "path": normalized_output,
+                        "media_type": "video" if Path(normalized_output).suffix.casefold() in {
+                            ".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm",
+                        } else "file",
+                        "stage": "final" if step_position == len(steps) - 1 else "intermediate",
+                        "completed_at": str(row["finished_at"] or ""),
+                        "validation": validations.get(
+                            os.path.normcase(normalized_output), {}
+                        ),
+                    })
         detail["input_paths"] = sorted(input_paths)
         detail["output_directories"] = sorted(output_directories)
+        detail["artifacts"] = artifacts
         return detail
 
     def quota_summary(self, day: str | None = None) -> dict[str, Any]:

@@ -181,7 +181,16 @@ class VideoTaskCenterTests(unittest.TestCase):
 
         def runner(request, _context):
             calls.append(request["operation"])
-            return {"success": True, "operation": request["operation"], "outputs": ["D:/out/a.mp4"]}
+            return {
+                "success": True, "operation": request["operation"],
+                "outputs": ["D:/out/a.mp4"],
+                "validation": [{
+                    "path": "D:/out/a.mp4", "valid": True,
+                    "display_aspect_ratio": "9:16",
+                    "checks": {"decodable": True, "aspect_ratio_9x16": True,
+                               "cover_present": True},
+                }],
+            }
 
         result = self.center.execute("VT-RUN", runner)
         self.assertEqual(result["status"], "completed")
@@ -190,6 +199,13 @@ class VideoTaskCenterTests(unittest.TestCase):
         self.assertEqual([step["status"] for step in detail["steps"]], ["completed", "completed"])
         self.assertEqual(detail["output_directories"], [r"D:\out"])
         self.assertEqual(detail["input_paths"], [r"D:\in", r"D:\out\a.mp4"])
+        self.assertEqual(len(detail["artifacts"]), 2)
+        first = detail["artifacts"][0]
+        self.assertEqual(first["path"], r"D:\out\a.mp4")
+        self.assertEqual(first["step_id"], "resize")
+        self.assertEqual(first["validation"]["checks"]["cover_present"], True)
+        self.assertTrue(first["artifact_id"].startswith("artifact_"))
+        self.assertTrue(first["completed_at"])
 
     def test_cloud_item_checkpoint_is_reused_after_interruption(self):
         self.center.create_plan("VT-RECOVER", "全消", [{
