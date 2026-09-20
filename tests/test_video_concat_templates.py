@@ -69,6 +69,30 @@ class VideoConcatTemplateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未知的视频拼接模板"):
             resolve_video_concat_template("999", {}, {})
 
+    def test_template_option_contract_rejects_wrong_type_and_range(self):
+        from core.video_concat_templates import resolve_video_concat_template
+
+        inputs = {"folder_a": "a", "folder_b": "b", "output_folder": "out"}
+        with self.assertRaisesRegex(ValueError, "cover_enabled"):
+            resolve_video_concat_template("001", inputs, {"cover_enabled": "yes"})
+        with self.assertRaisesRegex(ValueError, "cover_duration_min"):
+            resolve_video_concat_template("001", inputs, {"cover_duration_min": -1})
+
+    def test_template_input_contract_rejects_wrong_type_and_unknown_input(self):
+        from core.video_concat_templates import resolve_video_concat_template
+
+        with self.assertRaisesRegex(ValueError, "folder_a"):
+            resolve_video_concat_template(
+                "001", {"folder_a": 1, "folder_b": "b", "output_folder": "out"}, {}
+            )
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            resolve_video_concat_template(
+                "001", {
+                    "folder_a": "a", "folder_b": "b", "output_folder": "out",
+                    "unexpected": "value",
+                }, {}
+            )
+
     def test_concat_stays_standard_and_template_gets_its_own_top_level_tab(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PyQt5.QtWidgets import QApplication

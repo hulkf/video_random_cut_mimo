@@ -78,7 +78,8 @@ _VIDEO_CONCAT_TEMPLATES = {
             },
             "cover_folder": {"type": "path", "default": ""},
             "cover_mode": {
-                "type": "string", "default": "front", "choices": ["front", "random"],
+                "type": "string_or_integer", "default": "front",
+                "choices": ["front", "random", 0, 1],
             },
             "cover_duration_min": {"type": "number", "default": 0.2, "minimum": 0.0},
             "cover_duration_max": {"type": "number", "default": 0.5, "minimum": 0.0},
@@ -106,9 +107,46 @@ def list_video_concat_templates() -> list:
     return [deepcopy(template) for template in _VIDEO_CONCAT_TEMPLATES.values()]
 
 
+def _validate_template_options(template: dict, options: dict) -> None:
+    definitions = template["option_definitions"]
+    unknown = sorted(set(options) - set(definitions))
+    if unknown:
+        raise ValueError("未知模板参数: {}".format(", ".join(unknown)))
+    for key, value in options.items():
+        definition = definitions[key]
+        value_type = definition.get("type")
+        valid_type = (
+            (value_type == "boolean" and isinstance(value, bool))
+            or (value_type == "number" and isinstance(value, (int, float)) and not isinstance(value, bool))
+            or (value_type in {"string", "path"} and isinstance(value, str))
+            or (
+                value_type == "string_or_integer"
+                and ((isinstance(value, str)) or (isinstance(value, int) and not isinstance(value, bool)))
+            )
+        )
+        if not valid_type:
+            raise ValueError("模板参数 {} 类型不正确，应为 {}".format(key, value_type))
+        if "choices" in definition and value not in definition["choices"]:
+            raise ValueError("模板参数 {} 不在允许值范围内".format(key))
+        if "minimum" in definition and value < definition["minimum"]:
+            raise ValueError("模板参数 {} 不能小于 {}".format(key, definition["minimum"]))
+
+
+def _validate_template_inputs(template: dict, inputs: dict) -> None:
+    definitions = template["input_definitions"]
+    unknown = sorted(set(inputs) - set(definitions))
+    if unknown:
+        raise ValueError("未知模板输入: {}".format(", ".join(unknown)))
+    for key, value in inputs.items():
+        value_type = definitions[key].get("type")
+        if value_type in {"path", "string"} and not isinstance(value, str):
+            raise ValueError("模板输入 {} 类型不正确，应为 {}".format(key, value_type))
+
+
 def resolve_video_concat_template(template_id, inputs=None, options=None) -> dict:
     template = get_video_concat_template(template_id)
     resolved_inputs = dict(inputs or {})
+    _validate_template_inputs(template, resolved_inputs)
     missing = [
         key for key in template["required_inputs"]
         if not resolved_inputs.get(key)
@@ -116,8 +154,10 @@ def resolve_video_concat_template(template_id, inputs=None, options=None) -> dic
     if missing:
         raise ValueError("缺少必要参数: {}".format(", ".join(missing)))
 
+    supplied_options = dict(options or {})
+    _validate_template_options(template, supplied_options)
     resolved_options = dict(template["default_options"])
-    resolved_options.update(options or {})
+    resolved_options.update(supplied_options)
     return {
         "template_id": template["id"],
         "template_name": template["name"],
