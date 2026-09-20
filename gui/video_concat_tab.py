@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox, QComboBox,
-    QScrollArea, QTabWidget
+    QScrollArea, QTabBar, QStackedWidget, QToolButton, QStyle
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from core.video_concatenator import VideoConcatenatorEngine
@@ -42,10 +42,13 @@ class VideoConcatWorker(BaseWorker):
         self.sub_progress.emit(sub)
 
 
-class VideoConcatTab(BaseTab):
-    def __init__(self):
+class VideoConcatPage(BaseTab):
+    def __init__(self, config_section, template_id=None):
         super().__init__()
-        self.template = get_video_concat_template("001")
+        self.config_section = config_section
+        self.template = (
+            get_video_concat_template(template_id) if template_id is not None else None
+        )
         self.init_ui()
         self.load_config()
 
@@ -188,51 +191,51 @@ class VideoConcatTab(BaseTab):
 
         container.setLayout(layout)
         scroll.setWidget(container)
-        self.template_tabs = QTabWidget()
-        self.template_tabs.setDocumentMode(True)
-        self.template_tabs.addTab(
-            scroll,
-            "模板{} | {}".format(self.template["id"], self.template["name"]),
-        )
-        outer_layout.addWidget(self.template_tabs)
+        outer_layout.addWidget(scroll)
         self.setLayout(outer_layout)
 
     def load_config(self):
-        self.folder_a_input.setText(get_config("video_concat", "folder_a", ""))
-        self.folder_b_input.setText(get_config("video_concat", "folder_b", ""))
-        self.output_folder_input.setText(get_config("video_concat", "output_folder", ""))
-        defaults = self.template["default_options"]
+        self.folder_a_input.setText(get_config(self.config_section, "folder_a", ""))
+        self.folder_b_input.setText(get_config(self.config_section, "folder_b", ""))
+        self.output_folder_input.setText(get_config(self.config_section, "output_folder", ""))
+        defaults = self.template["default_options"] if self.template else {
+            "cover_enabled": False,
+            "cover_source": "folder",
+            "cover_mode": "front",
+            "cover_duration_min": 0.5,
+            "cover_duration_max": 1.0,
+        }
         self.cover_check.setChecked(
-            get_config("video_concat", "cover_enabled", defaults["cover_enabled"])
+            get_config(self.config_section, "cover_enabled", defaults["cover_enabled"])
         )
         cover_source = get_config(
-            "video_concat", "cover_source", defaults["cover_source"]
+            self.config_section, "cover_source", defaults["cover_source"]
         )
         cover_source_index = self.cover_source_combo.findData(cover_source)
         self.cover_source_combo.setCurrentIndex(cover_source_index if cover_source_index >= 0 else 0)
-        self.cover_folder_input.setText(get_config("video_concat", "cover_folder", ""))
+        self.cover_folder_input.setText(get_config(self.config_section, "cover_folder", ""))
         default_mode = {"front": 0, "back": 1, "both": 2}[defaults["cover_mode"]]
         self.cover_mode_combo.setCurrentIndex(
-            int(get_config("video_concat", "cover_mode", str(default_mode)))
+            int(get_config(self.config_section, "cover_mode", str(default_mode)))
         )
         self.cover_duration_min.setValue(float(get_config(
-            "video_concat", "cover_duration_min", str(defaults["cover_duration_min"])
+            self.config_section, "cover_duration_min", str(defaults["cover_duration_min"])
         )))
         self.cover_duration_max.setValue(float(get_config(
-            "video_concat", "cover_duration_max", str(defaults["cover_duration_max"])
+            self.config_section, "cover_duration_max", str(defaults["cover_duration_max"])
         )))
         self.on_cover_changed(Qt.Checked if self.cover_check.isChecked() else Qt.Unchecked)
 
     def save_config(self):
-        set_config("video_concat", "folder_a", normalize_input_path(self.folder_a_input.text()))
-        set_config("video_concat", "folder_b", normalize_input_path(self.folder_b_input.text()))
-        set_config("video_concat", "output_folder", normalize_input_path(self.output_folder_input.text()))
-        set_config("video_concat", "cover_enabled", str(self.cover_check.isChecked()).lower())
-        set_config("video_concat", "cover_source", self.cover_source_combo.currentData())
-        set_config("video_concat", "cover_folder", normalize_input_path(self.cover_folder_input.text()))
-        set_config("video_concat", "cover_mode", str(self.cover_mode_combo.currentIndex()))
-        set_config("video_concat", "cover_duration_min", str(self.cover_duration_min.value()))
-        set_config("video_concat", "cover_duration_max", str(self.cover_duration_max.value()))
+        set_config(self.config_section, "folder_a", normalize_input_path(self.folder_a_input.text()))
+        set_config(self.config_section, "folder_b", normalize_input_path(self.folder_b_input.text()))
+        set_config(self.config_section, "output_folder", normalize_input_path(self.output_folder_input.text()))
+        set_config(self.config_section, "cover_enabled", str(self.cover_check.isChecked()).lower())
+        set_config(self.config_section, "cover_source", self.cover_source_combo.currentData())
+        set_config(self.config_section, "cover_folder", normalize_input_path(self.cover_folder_input.text()))
+        set_config(self.config_section, "cover_mode", str(self.cover_mode_combo.currentIndex()))
+        set_config(self.config_section, "cover_duration_min", str(self.cover_duration_min.value()))
+        set_config(self.config_section, "cover_duration_max", str(self.cover_duration_max.value()))
 
     def on_cover_changed(self, state):
         enabled = self.cover_check.isChecked()
@@ -267,23 +270,26 @@ class VideoConcatTab(BaseTab):
 
         self.save_config()
 
-        resolved = resolve_video_concat_template(
-            self.template["id"],
-            {
-                "folder_a": folder_a,
-                "folder_b": folder_b,
-                "output_folder": output_folder,
-            },
-            {
-                "cover_enabled": self.cover_check.isChecked(),
-                "cover_source": self.cover_source_combo.currentData(),
-                "cover_folder": normalize_input_path(self.cover_folder_input.text()),
-                "cover_mode": self.cover_mode_combo.currentIndex(),
-                "cover_duration_min": self.cover_duration_min.value(),
-                "cover_duration_max": self.cover_duration_max.value(),
-            },
-        )
-        config = {**resolved["inputs"], **resolved["options"]}
+        inputs = {
+            "folder_a": folder_a,
+            "folder_b": folder_b,
+            "output_folder": output_folder,
+        }
+        options = {
+            "cover_enabled": self.cover_check.isChecked(),
+            "cover_source": self.cover_source_combo.currentData(),
+            "cover_folder": normalize_input_path(self.cover_folder_input.text()),
+            "cover_mode": self.cover_mode_combo.currentIndex(),
+            "cover_duration_min": self.cover_duration_min.value(),
+            "cover_duration_max": self.cover_duration_max.value(),
+        }
+        if self.template:
+            resolved = resolve_video_concat_template(
+                self.template["id"], inputs, options
+            )
+            config = {**resolved["inputs"], **resolved["options"]}
+        else:
+            config = {**inputs, **options}
 
         worker = VideoConcatWorker(config)
         worker.sub_progress.connect(self.on_sub_progress)
@@ -315,3 +321,74 @@ class VideoConcatTab(BaseTab):
     def on_worker_error(self, msg):
         super().on_worker_error(msg)
         self.status_label.setText("拼接失败")
+
+
+class VideoConcatTab(BaseTab):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.standard_page = VideoConcatPage("video_concat")
+        self.template_001_page = VideoConcatPage(
+            "video_concat_template_001", template_id="001"
+        )
+
+        template_nav = QHBoxLayout()
+        template_nav.setContentsMargins(8, 4, 8, 0)
+        self.back_to_standard_btn = QToolButton()
+        self.back_to_standard_btn.setIcon(
+            self.style().standardIcon(QStyle.SP_ArrowBack)
+        )
+        self.back_to_standard_btn.setToolTip("返回标准拼接")
+        self.back_to_standard_btn.setAutoRaise(True)
+        self.back_to_standard_btn.hide()
+        self.back_to_standard_btn.clicked.connect(self.show_standard_page)
+        template_nav.addWidget(self.back_to_standard_btn)
+
+        self.template_tabs = QTabBar()
+        self.template_tabs.setDrawBase(False)
+        self.template_tabs.setExpanding(False)
+        self.template_tabs.addTab("模板001")
+        self.template_tabs.tabBarClicked.connect(self._show_template)
+        template_nav.addWidget(self.template_tabs)
+        template_nav.addStretch()
+        layout.addLayout(template_nav)
+
+        self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(self.standard_page)
+        self.content_stack.addWidget(self.template_001_page)
+        self.content_stack.setCurrentWidget(self.standard_page)
+        layout.addWidget(self.content_stack, 1)
+        self._set_template_active(False)
+
+    def _set_template_active(self, active):
+        self.template_active = active
+        if active:
+            self.template_tabs.setStyleSheet("")
+        else:
+            self.template_tabs.setStyleSheet(
+                "QTabBar::tab:selected {"
+                "background: transparent; color: #9e9e9e;"
+                "border-bottom: 1px solid #5a5a5a; }"
+            )
+
+    def _show_template(self, index):
+        if index != 0:
+            return
+        self.content_stack.setCurrentWidget(self.template_001_page)
+        self._set_template_active(True)
+        self.back_to_standard_btn.show()
+
+    def show_standard_page(self):
+        self.content_stack.setCurrentWidget(self.standard_page)
+        self._set_template_active(False)
+        self.back_to_standard_btn.hide()
+
+    def load_config(self):
+        self.standard_page.load_config()
+        self.template_001_page.load_config()
+
+    def save_config(self):
+        self.standard_page.save_config()
+        self.template_001_page.save_config()

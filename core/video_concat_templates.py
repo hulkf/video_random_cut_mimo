@@ -10,7 +10,7 @@ from copy import deepcopy
 _VIDEO_CONCAT_TEMPLATES = {
     "001": {
         "id": "001",
-        "name": "B视频抽帧封面",
+        "name": "模板001",
         "operation": "video_concat",
         "required_inputs": ["folder_a", "folder_b", "output_folder"],
         "default_options": {

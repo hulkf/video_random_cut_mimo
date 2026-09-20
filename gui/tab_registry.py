@@ -58,26 +58,30 @@ TABS: List[Tuple[str, str, TabFactory]] = [
 
 
 def stop_tab_threads(tab: QWidget) -> None:
-    """停止一个 tab 上所有 QThread 类型属性（覆盖 worker / login_worker / 未来任意 *_worker）。
+    """停止一个 tab 及其嵌套页面上的所有 QThread 属性。
 
     协议：优先 stop()，其次 request_stop() → wait(1500) → 仍运行则 terminate() → wait(1500)。
     与现状 main_window.closeEvent 的顺序完全一致，只是由"手写属性名列表"改为"vars(tab) 全量扫描"。
     """
-    for _name, obj in vars(tab).items():
-        if not isinstance(obj, QThread):
-            continue
-        if not obj.isRunning():
-            continue
-        if hasattr(obj, "stop"):
-            try:
-                obj.stop()
-            except Exception:
-                pass
-        elif hasattr(obj, "request_stop"):
-            try:
-                obj.request_stop()
-            except Exception:
-                pass
-        if not obj.wait(1500):
-            obj.terminate()
-            obj.wait(1500)
+    widgets = [tab, *tab.findChildren(QWidget)]
+    seen = set()
+    for widget in widgets:
+        for _name, obj in vars(widget).items():
+            if not isinstance(obj, QThread) or id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            if not obj.isRunning():
+                continue
+            if hasattr(obj, "stop"):
+                try:
+                    obj.stop()
+                except Exception:
+                    pass
+            elif hasattr(obj, "request_stop"):
+                try:
+                    obj.request_stop()
+                except Exception:
+                    pass
+            if not obj.wait(1500):
+                obj.terminate()
+                obj.wait(1500)
