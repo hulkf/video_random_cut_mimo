@@ -980,6 +980,32 @@ class VideoToolTests(unittest.TestCase):
         self.assertTrue(effective["options"]["cover_enabled"])
         self.assertEqual(effective["options"]["cover_source"], "video_b_frame")
 
+    def test_video_tool_preserves_template_plan_from_task_center(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder_a, folder_b = root / "a", root / "b"
+            folder_a.mkdir()
+            folder_b.mkdir()
+            (folder_a / "1.mp4").write_bytes(b"a")
+            (folder_b / "1.mp4").write_bytes(b"b")
+            with patch.dict(os.environ, {"VIDEO_TASK_CENTER_DB": str(root / "tasks.db")}):
+                result = video_tool.run_request({
+                    "operation": "task_center_plan",
+                    "inputs": {
+                        "task_id": "TOOL-TEMPLATE-PLAN",
+                        "title": "模板计划",
+                        "template_id": "001",
+                        "template_inputs": {
+                            "folder_a": str(folder_a),
+                            "folder_b": str(folder_b),
+                            "output_folder": str(root / "out"),
+                        },
+                        "template_options": {},
+                    },
+                })
+        self.assertEqual(result["template_plan"]["template_id"], "001")
+        self.assertEqual(result["template_plan"]["template_version"], "2")
+
     def test_legacy_top_level_template_id_does_not_leak_into_effective_inputs(self):
         resolved = video_tool._apply_video_concat_template({
             "operation": "video_concat",

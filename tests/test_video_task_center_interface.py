@@ -33,6 +33,67 @@ class VideoTaskCenterInterfaceTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["task"]["tasks"], [])
 
+    def test_task_center_owns_template_catalog_and_template_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder_a = root / "a"
+            folder_b = root / "b"
+            folder_a.mkdir()
+            folder_b.mkdir()
+            (folder_a / "1.mp4").write_bytes(b"a")
+            (folder_b / "1.mp4").write_bytes(b"b")
+
+            catalog = dispatch(
+                {"operation": "task_center_templates", "inputs": {}},
+                db_path=str(root / "tasks.db"),
+            )
+            request = {
+                "operation": "task_center_plan",
+                "inputs": {
+                    "task_id": "TEMPLATE-PLAN-001",
+                    "title": "模板001测试计划",
+                    "cargo_number": "S2601",
+                    "template_id": "001",
+                    "template_inputs": {
+                        "folder_a": str(folder_a),
+                        "folder_b": str(folder_b),
+                        "output_folder": str(root / "out"),
+                    },
+                    "template_options": {"cover_duration_max": 0.8},
+                },
+            }
+            planned = dispatch(
+                request,
+                db_path=str(root / "tasks.db"),
+            )
+            repeated = dispatch(request, db_path=str(root / "tasks.db"))
+
+        self.assertEqual([item["id"] for item in catalog["task"]["templates"]], ["001"])
+        self.assertEqual(planned["task"]["status"], "awaiting_confirmation")
+        self.assertEqual(planned["task"]["plan_version"], 1)
+        self.assertEqual(repeated["task"]["plan_version"], 1)
+        self.assertEqual(planned["template_plan"]["template_id"], "001")
+        self.assertEqual(planned["template_plan"]["template_version"], "2")
+        self.assertEqual(
+            planned["template_plan"]["effective_parameters"]["options"]["cover_duration_max"],
+            0.8,
+        )
+        self.assertEqual(planned["task"]["steps"][0]["operation"], "video_concat")
+
+    def test_task_center_owns_media_validation(self):
+        expected = {"valid": True, "width": 1080, "height": 1920}
+        with patch("video_tool._run_validate", return_value={
+            "operation": "validate", "validation": expected,
+        }) as validate:
+            result = dispatch({
+                "operation": "task_center_validate_media",
+                "inputs": {"path": "D:/materials/one.mp4"},
+            })
+        validate.assert_called_once_with({
+            "operation": "validate", "inputs": {"path": "D:/materials/one.mp4"},
+        })
+        self.assertEqual(result["task"]["validation"], expected)
+
     def test_python_confirm_requires_the_same_authorization_as_cli(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(PermissionError, "需要显式授权"):

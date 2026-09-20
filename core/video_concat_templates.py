@@ -85,9 +85,17 @@ def resolve_video_concat_template(template_id, inputs=None, options=None) -> dic
     resolved_options.update(options or {})
     return {
         "template_id": template["id"],
+        "template_name": template["name"],
         "template_version": template["version"],
+        "operation": template["operation"],
+        "required_inputs": deepcopy(template["required_inputs"]),
+        "default_options": deepcopy(template["default_options"]),
         "inputs": resolved_inputs,
         "options": resolved_options,
+        "effective_parameters": {
+            "inputs": deepcopy(resolved_inputs),
+            "options": deepcopy(resolved_options),
+        },
         "steps": deepcopy(template["steps"]),
         "output_count_rule": deepcopy(template["output_count_rule"]),
         "output_geometry": deepcopy(template["output_geometry"]),

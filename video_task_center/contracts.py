@@ -6,12 +6,23 @@ from typing import Any
 
 
 TASK_CENTER_OPERATION_SPECS: dict[str, dict[str, Any]] = {
+    "task_center_templates": {
+        "description": "读取视频工具注册的模板目录，供飞书等入口生成模板选择项",
+        "required": [],
+        "options": ["template_id"],
+    },
+    "task_center_validate_media": {
+        "description": "通过任务中心入口执行只读媒体校验",
+        "required": ["path"],
+        "options": [],
+    },
     "task_center_plan": {
         "description": "创建或更新视频任务计划；仅在用户明确说“直接确认/直接执行”时可同时确认并启动",
-        "required": ["task_id", "title", "steps", "parameter_lines"],
+        "required": ["task_id", "title"],
         "options": [
             "cargo_number", "risk_note", "authorized_operations",
-            "direct_confirmation_phrase", "confirmed_by",
+            "direct_confirmation_phrase", "confirmed_by", "steps", "parameter_lines",
+            "template_id", "template_inputs", "template_options",
         ],
     },
     "task_center_confirm": {

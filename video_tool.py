@@ -540,9 +540,17 @@ def _apply_video_concat_template(request: Dict[str, Any]) -> Dict[str, Any]:
         request_inputs,
         request.get("options") or {},
     )
+    expected_version = str(request.get("template_version") or "").strip()
+    if expected_version and expected_version != str(resolved["template_version"]):
+        raise ValueError(
+            "模板版本已变化：计划版本 {}，当前版本 {}".format(
+                expected_version, resolved["template_version"]
+            )
+        )
     return {
         **request,
         "template_id": resolved["template_id"],
+        "template_version": resolved["template_version"],
         "inputs": resolved["inputs"],
         "options": resolved["options"],
     }

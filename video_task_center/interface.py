@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from core.video_task_center import TaskCenter
+from core.video_concat_templates import (
+    list_video_concat_templates,
+    resolve_video_concat_template,
+)
 from .contracts import PUBLIC_OPERATION_NAMES, TASK_CENTER_OPERATION_SPECS
 
 
@@ -111,8 +115,62 @@ def _dispatch_validated(
                 + ", ".join(leaked)
             )
     center = TaskCenter(db_path)
+    response_extra: dict[str, Any] = {}
 
-    if operation == "task_center_plan":
+    if operation == "task_center_templates":
+        templates = list_video_concat_templates()
+        template_id = str(inputs.get("template_id") or "").strip()
+        if template_id:
+            templates = [item for item in templates if str(item.get("id")) == template_id]
+            if not templates:
+                raise ValueError(f"未知的视频模板: {template_id}")
+        result = {"templates": templates}
+    elif operation == "task_center_validate_media":
+        import video_tool
+
+        result = video_tool._run_validate({
+            "operation": "validate",
+            "inputs": {"path": inputs["path"]},
+        })
+    elif operation == "task_center_plan":
+        plan_inputs = dict(inputs)
+        template_id = str(plan_inputs.get("template_id") or "").strip()
+        if template_id:
+            if plan_inputs.get("steps"):
+                raise ValueError("模板计划不能同时提交 steps；步骤由视频工具模板生成")
+            resolved = resolve_video_concat_template(
+                template_id,
+                plan_inputs.get("template_inputs") or {},
+                plan_inputs.get("template_options") or {},
+            )
+            plan_inputs["steps"] = [{
+                "id": f"template-{resolved['template_id']}",
+                "name": f"{resolved['template_name']} v{resolved['template_version']}",
+                "request": {
+                    "operation": resolved["operation"],
+                    "template_id": resolved["template_id"],
+                    "template_version": resolved["template_version"],
+                    "inputs": resolved["inputs"],
+                    "options": resolved["options"],
+                },
+            }]
+            plan_inputs["parameter_lines"] = [
+                f"template_id: {resolved['template_id']}",
+                f"template_version: {resolved['template_version']}",
+                *(
+                    f"input.{key}: {value}"
+                    for key, value in resolved["inputs"].items()
+                ),
+                *(
+                    f"option.{key}: {value}"
+                    for key, value in resolved["options"].items()
+                ),
+            ]
+            plan_inputs["risk_note"] = resolved["risk_summary"]
+            response_extra["template_plan"] = resolved
+        elif not plan_inputs.get("steps"):
+            raise ValueError("task_center_plan 必须提供 template_id 或 steps")
+        inputs = plan_inputs
         declared_authorizations = {
             str(value) for value in inputs.get("authorized_operations") or []
         }
@@ -218,6 +276,7 @@ def _dispatch_validated(
         "version": TASK_CENTER_VERSION,
         "operation": operation,
         "task": _public_result(result) if public else result,
+        **response_extra,
     }
 
 

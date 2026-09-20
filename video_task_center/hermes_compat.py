@@ -26,6 +26,7 @@ def dispatch(
     operation = str(request.get("operation") or "")
     inputs = dict(request.get("inputs") or request)
     center = TaskCenter(db_path)
+    response_extra: dict[str, Any] = {}
 
     if operation == "task_center_bind_card":
         result = center.bind_card(
@@ -78,6 +79,10 @@ def dispatch(
             db_path=db_path,
             public=False,
         )
+        response_extra = {
+            key: value for key, value in core.items()
+            if key not in {"success", "task_center", "version", "operation", "task"}
+        }
         if operation == "task_center_plan" and inputs.get("chat_id"):
             result = center.bind_card(
                 core["task"]["task_id"],
@@ -99,4 +104,5 @@ def dispatch(
         "version": TASK_CENTER_VERSION,
         "operation": operation,
         "task": result,
+        **response_extra,
     }

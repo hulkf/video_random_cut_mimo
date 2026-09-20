@@ -558,30 +558,45 @@ class TaskCenter:
             "parameter_lines": parameter_lines, "risk_note": str(risk_note or ""),
             "authorized_operations": authorized_operations,
         }
+        unchanged = False
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            old = db.execute("SELECT plan_version, status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            old = db.execute(
+                "SELECT plan_version,status,title,cargo_number,plan_json FROM tasks WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
             if old and str(old["status"]) != "awaiting_confirmation":
                 raise ValueError("任务当前状态为{}，不能修改计划".format(old["status"]))
-            version = int(old["plan_version"]) + 1 if old else 1
-            db.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
-            db.execute(
-                "INSERT INTO tasks(task_id,title,cargo_number,plan_version,status,execution_type,plan_json,chat_id,card_message_id,parameter_lines_json,risk_note,authorized_operations_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (task_id, title.strip(), str(cargo_number or ""), version, "awaiting_confirmation", execution_type, _json(plan), chat_id, card_message_id, _json(parameter_lines), str(risk_note or ""), _json(authorized_operations), now, now),
-            )
-            for index, step in enumerate(normalized):
-                request = dict(step["request"])
-                if step["items_from_step"]:
-                    request["_items_from_step"] = step["items_from_step"]
-                    request["_input_key"] = step["input_key"]
-                if step["input_snapshot"]:
-                    request["_input_snapshot"] = step["input_snapshot"]
+            if (
+                old
+                and str(old["title"]) == title.strip()
+                and str(old["cargo_number"]) == str(cargo_number or "")
+                and _decode(old["plan_json"], {}) == plan
+            ):
+                db.rollback()
+                unchanged = True
+            if unchanged:
+                version = int(old["plan_version"])
+            else:
+                version = int(old["plan_version"]) + 1 if old else 1
+                db.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
                 db.execute(
-                    "INSERT INTO steps(task_id,step_index,step_id,name,operation,execution_type,request_json,item_count,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (task_id, index, step["id"], step["name"], request["operation"], step["execution_type"], _json(request), step["item_count"], now),
+                    "INSERT INTO tasks(task_id,title,cargo_number,plan_version,status,execution_type,plan_json,chat_id,card_message_id,parameter_lines_json,risk_note,authorized_operations_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (task_id, title.strip(), str(cargo_number or ""), version, "awaiting_confirmation", execution_type, _json(plan), chat_id, card_message_id, _json(parameter_lines), str(risk_note or ""), _json(authorized_operations), now, now),
                 )
-            self._event(db, task_id, "plan_created", {"version": version})
-            db.commit()
+                for index, step in enumerate(normalized):
+                    request = dict(step["request"])
+                    if step["items_from_step"]:
+                        request["_items_from_step"] = step["items_from_step"]
+                        request["_input_key"] = step["input_key"]
+                    if step["input_snapshot"]:
+                        request["_input_snapshot"] = step["input_snapshot"]
+                    db.execute(
+                        "INSERT INTO steps(task_id,step_index,step_id,name,operation,execution_type,request_json,item_count,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (task_id, index, step["id"], step["name"], request["operation"], step["execution_type"], _json(request), step["item_count"], now),
+                    )
+                self._event(db, task_id, "plan_created", {"version": version})
+                db.commit()
         return self.get(task_id)
 
     def confirm(
