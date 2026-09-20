@@ -11,11 +11,21 @@ _VIDEO_CONCAT_TEMPLATES = {
     "001": {
         "id": "001",
         "name": "模板001",
-        "version": "1",
+        "version": "2",
         "operation": "video_concat",
         "required_inputs": ["folder_a", "folder_b", "output_folder"],
         "steps": [
+            {
+                "id": "normalize_inputs",
+                "name": "将A/B中非9:16素材转为9:16",
+                "operation": "video_resize",
+            },
             {"id": "video_concat", "name": "拼接模特视频与平铺视频", "operation": "video_concat"},
+            {
+                "id": "limit_output_resolution",
+                "name": "任一边超过2000像素的成品降为1080x1920",
+                "operation": "video_resize",
+            },
         ],
         "output_count_rule": {
             "type": "max_input_count",
@@ -25,6 +35,8 @@ _VIDEO_CONCAT_TEMPLATES = {
             "reference_role": "folder_a",
             "required_aspect_ratio": "9:16",
             "enforced_by_option": "require_9x16",
+            "downscale_if_any_edge_above": 2000,
+            "downscale_target": {"width": 1080, "height": 1920},
         },
         "external_cost": "none",
         "risk_summary": "纯本地视频合成；不会调用外部付费服务；不会覆盖输入素材。",

@@ -28,8 +28,15 @@ class VideoConcatWorker(BaseWorker):
 
     def run(self):
         try:
-            engine = VideoConcatenatorEngine(self.config)
-            results = engine.run(self._on_progress)
+            config = dict(self.config)
+            template_id = config.pop("_template_id", None)
+            if template_id == "001":
+                from core.video_concat_pipeline import run_template_001_concat
+
+                results = run_template_001_concat(config, self._on_progress)
+            else:
+                engine = VideoConcatenatorEngine(config)
+                results = engine.run(self._on_progress)
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
@@ -167,15 +174,25 @@ class VideoConcatPage(BaseTab):
 
         self.status_label = QLabel("就绪")
 
-        desc_label = QLabel(
-            "拼接逻辑说明：\n"
-            "1. 从文件夹A和文件夹B各取一个视频进行拼接\n"
-            "2. A和B视频按文件名排序后依次配对（A1+B1, A2+B2, ...）\n"
-            "3. 如果两个文件夹视频数量不同，较少的文件夹会循环使用\n"
-            "4. 启用封面图时，可选择在拼接视频的开头/结尾/首尾添加图片\n"
-            "5. 封面图可来自图片文件夹，也可从当前配对的文件夹B视频抽帧\n"
-            "6. 封面图无音频，时长可设置区间随机"
-        )
+        if self.template and self.template["id"] == "001":
+            description = (
+                "模板001（千川视频）处理逻辑：\n"
+                "1. 文件夹A和B中不是9:16的素材，先按“视频尺寸”功能转为9:16\n"
+                "2. A和B按文件名排序后依次配对；数量较少的一侧循环使用\n"
+                "3. 从当前B视频抽帧，并在成品开头加入0.2~0.5秒封面\n"
+                "4. 拼接成品任一边超过2000像素时，统一降为1080×1920"
+            )
+        else:
+            description = (
+                "拼接逻辑说明：\n"
+                "1. 从文件夹A和文件夹B各取一个视频进行拼接\n"
+                "2. A和B视频按文件名排序后依次配对（A1+B1, A2+B2, ...）\n"
+                "3. 如果两个文件夹视频数量不同，较少的文件夹会循环使用\n"
+                "4. 启用封面图时，可选择在拼接视频的开头/结尾/首尾添加图片\n"
+                "5. 封面图可来自图片文件夹，也可从当前配对的文件夹B视频抽帧\n"
+                "6. 封面图无音频，时长可设置区间随机"
+            )
+        desc_label = QLabel(description)
         desc_label.setStyleSheet("color: gray; padding: 5px;")
         desc_label.setWordWrap(True)
 
@@ -288,6 +305,7 @@ class VideoConcatPage(BaseTab):
                 self.template["id"], inputs, options
             )
             config = {**resolved["inputs"], **resolved["options"]}
+            config["_template_id"] = resolved["template_id"]
         else:
             config = {**inputs, **options}
 

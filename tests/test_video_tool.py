@@ -389,14 +389,14 @@ class VideoToolTests(unittest.TestCase):
                 r"D:\千川素材\8819\模特视频", r"D:\千川素材\8820\平铺视频"
             )
 
-    @patch("video_tool.shutil.copy2")
+    @patch("core.video_concat_pipeline.shutil.copy2")
     @patch("core.video_resizer.VideoResizer.resize_video")
-    @patch("utils.media_utils.probe_video", return_value={
+    @patch("core.video_concat_pipeline.probe_video", return_value={
         "width": 1920, "height": 1080, "display_width": 1080,
         "display_height": 1920, "rotation": 90,
     })
-    @patch("utils.media_utils.collect_videos", return_value=["in/rotated.mp4"])
-    @patch("video_tool.os.makedirs")
+    @patch("core.video_concat_pipeline.collect_videos", return_value=["in/rotated.mp4"])
+    @patch("core.video_concat_pipeline.os.makedirs")
     def test_rotated_portrait_is_physically_normalized(self, _mkdir, _collect, _probe, resize, copy):
         result = video_tool._normalize_folder_9x16("in", "out", 6)
         resize.assert_called_once_with("in/rotated.mp4", os.path.join("out", "rotated.mp4"))
@@ -914,11 +914,12 @@ class VideoToolTests(unittest.TestCase):
         "height": 1920, "duration": 10.0,
     })
     @patch("video_tool.os.makedirs")
+    @patch("core.video_concat_pipeline.run_template_001_concat", return_value=["out.mp4"])
     @patch("core.video_concatenator.VideoConcatenatorEngine.get_videos", return_value=[])
     @patch("core.video_concatenator.VideoConcatenatorEngine.run", return_value=["out.mp4"])
     @patch("core.video_concatenator.VideoConcatenatorEngine.__init__", return_value=None)
     def test_concat_template_001_applies_defaults_before_run(
-        self, _init, run, _get_videos, _makedirs, _probe
+        self, _init, run, _get_videos, pipeline, _makedirs, _probe
     ):
         result = video_tool.run_request({
             "operation": "video_concat",
@@ -942,12 +943,15 @@ class VideoToolTests(unittest.TestCase):
             result["effective_parameters"]["options"]["cover_duration_max"],
             0.8,
         )
-        config = _init.call_args.args[0]
+        run.assert_not_called()
+        config = pipeline.call_args.args[0]
         self.assertTrue(config["cover_enabled"])
         self.assertEqual(config["cover_source"], "video_b_frame")
         self.assertEqual(config["cover_mode"], "front")
         self.assertEqual(config["cover_duration_min"], 0.2)
         self.assertEqual(config["cover_duration_max"], 0.8)
+        self.assertNotIn("max_output_width", config)
+        self.assertNotIn("max_output_height", config)
 
     def test_concat_template_resolve_reports_effective_parameters_before_execution(self):
         result = video_tool.run_request({
@@ -963,8 +967,9 @@ class VideoToolTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["template_id"], "001")
-        self.assertEqual(result["template_version"], "1")
-        self.assertEqual(result["steps"][0]["operation"], "video_concat")
+        self.assertEqual(result["template_version"], "2")
+        self.assertEqual(result["steps"][0]["operation"], "video_resize")
+        self.assertEqual(result["steps"][1]["operation"], "video_concat")
         self.assertEqual(result["output_count_rule"]["type"], "max_input_count")
         self.assertEqual(result["output_geometry"]["reference_role"], "folder_a")
         self.assertEqual(result["external_cost"], "none")

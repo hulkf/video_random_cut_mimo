@@ -350,13 +350,19 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         "cover_mode": options.get("cover_mode", "front"),
         "cover_duration_min": options.get("cover_duration_min", 0.2),
         "cover_duration_max": options.get("cover_duration_max", 0.5),
+        "blur_strength": options.get("blur_strength", 6),
         "resume_existing": bool(request.get("resume_existing", False)),
     }
     os.makedirs(config["output_folder"], exist_ok=True)
     engine = VideoConcatenatorEngine(config)
     controller = request.get("_task_controller")
-    if controller:
-        outputs = engine.run(lambda *_args: controller.check())
+    callback = (lambda *_args: controller.check()) if controller else None
+    if request.get("template_id") == "001":
+        from core.video_concat_pipeline import run_template_001_concat
+
+        outputs = run_template_001_concat(config, callback)
+    elif controller:
+        outputs = engine.run(callback)
     else:
         outputs = engine.run()
     require_9x16 = options.get("require_9x16", True)
@@ -381,6 +387,15 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
             )
         if not checks["exists"] or not checks["decodable"]:
             raise RuntimeError("输出校验失败：文件不存在或不可解码 ({})".format(output))
+        if (
+            request.get("template_id") == "001"
+            and max(info["width"], info["height"]) > 2000
+        ):
+            raise RuntimeError(
+                "输出校验失败：模板001成品仍有边长超过2000像素，实际 {}x{} ({})".format(
+                    info["width"], info["height"], output
+                )
+            )
         cover_present = True
         if require_cover:
             # VideoConcatenatorEngine 的 video_b_frame + front 封面会在 A+B
@@ -417,33 +432,9 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _normalize_folder_9x16(input_folder: str, output_folder: str, blur_strength: int) -> Dict[str, Any]:
-    from core.video_resizer import VideoResizer
-    from utils.media_utils import collect_videos, probe_video
+    from core.video_concat_pipeline import normalize_folder_9x16
 
-    videos = collect_videos(input_folder)
-    if not videos:
-        raise ValueError("输入文件夹中没有视频: {}".format(input_folder))
-    os.makedirs(output_folder, exist_ok=True)
-    engine = VideoResizer("9:16", blur_strength)
-    converted = copied = 0
-    used_names = set()
-    for index, video in enumerate(videos):
-        stem, extension = os.path.splitext(os.path.basename(video))
-        info = probe_video(video)
-        display_width = info.get("display_width", info.get("width", 0))
-        display_height = info.get("display_height", info.get("height", 0))
-        output_name = stem + (extension.lower() if _is_9x16(display_width, display_height) else ".mp4")
-        if output_name.lower() in used_names:
-            output_name = "{:06d}_{}".format(index, output_name)
-        used_names.add(output_name.lower())
-        output = os.path.join(output_folder, output_name)
-        if _is_9x16(display_width, display_height) and not info.get("rotation", 0):
-            shutil.copy2(video, output)
-            copied += 1
-        else:
-            engine.resize_video(video, output)
-            converted += 1
-    return {"input_count": len(videos), "converted": converted, "copied": copied}
+    return normalize_folder_9x16(input_folder, output_folder, blur_strength)
 
 
 def _qianchuan_output_folder(folder_a: str, folder_b: str, requested: str = "") -> str:

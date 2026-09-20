@@ -18,8 +18,11 @@ class VideoConcatTemplateTests(unittest.TestCase):
 
         self.assertEqual(template["id"], "001")
         self.assertEqual(template["name"], "模板001")
-        self.assertEqual(template["version"], "1")
-        self.assertEqual(template["steps"][0]["operation"], "video_concat")
+        self.assertEqual(template["version"], "2")
+        self.assertEqual(
+            [step["id"] for step in template["steps"]],
+            ["normalize_inputs", "video_concat", "limit_output_resolution"],
+        )
         self.assertEqual(template["output_count_rule"]["type"], "max_input_count")
         self.assertEqual(template["output_geometry"]["reference_role"], "folder_a")
         self.assertEqual(
@@ -31,6 +34,14 @@ class VideoConcatTemplateTests(unittest.TestCase):
         self.assertEqual(template["default_options"]["cover_mode"], "front")
         self.assertEqual(template["default_options"]["cover_duration_min"], 0.2)
         self.assertEqual(template["default_options"]["cover_duration_max"], 0.5)
+        self.assertEqual(
+            template["output_geometry"]["downscale_if_any_edge_above"],
+            2000,
+        )
+        self.assertEqual(
+            template["output_geometry"]["downscale_target"],
+            {"width": 1080, "height": 1920},
+        )
 
     def test_template_defaults_can_be_overridden_by_caller(self):
         from core.video_concat_templates import resolve_video_concat_template
@@ -43,8 +54,8 @@ class VideoConcatTemplateTests(unittest.TestCase):
 
         self.assertEqual(resolved["options"]["cover_source"], "video_b_frame")
         self.assertEqual(resolved["options"]["cover_duration_max"], 0.8)
-        self.assertEqual(resolved["template_version"], "1")
-        self.assertEqual(resolved["steps"][0]["operation"], "video_concat")
+        self.assertEqual(resolved["template_version"], "2")
+        self.assertEqual(resolved["steps"][1]["operation"], "video_concat")
         self.assertEqual(resolved["output_count_rule"]["input_roles"], ["folder_a", "folder_b"])
         self.assertEqual(resolved["output_geometry"]["required_aspect_ratio"], "9:16")
 
@@ -140,6 +151,28 @@ class VideoConcatTemplateTests(unittest.TestCase):
                 child.worker.wait(1000)
             parent.close()
             app.processEvents()
+
+    @patch("core.video_concat_pipeline.run_template_001_concat", return_value=["out.mp4"])
+    @patch("core.video_concatenator.VideoConcatenatorEngine.run")
+    def test_template_worker_uses_normalize_concat_limit_pipeline(self, engine_run, pipeline):
+        from gui.video_concat_tab import VideoConcatWorker
+
+        worker = VideoConcatWorker({
+            "_template_id": "001",
+            "folder_a": "a",
+            "folder_b": "b",
+            "output_folder": "out",
+        })
+        finished = []
+        worker.finished.connect(finished.append)
+
+        worker.run()
+
+        self.assertEqual(finished, [["out.mp4"]])
+        engine_run.assert_not_called()
+        config, callback = pipeline.call_args.args
+        self.assertNotIn("_template_id", config)
+        self.assertTrue(callable(callback))
 
 
 if __name__ == "__main__":
