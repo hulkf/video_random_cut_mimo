@@ -63,18 +63,6 @@ def dispatch(
     another presentation.
     """
 
-    if not isinstance(request, dict):
-        raise ValueError("request must be a JSON object")
-    operation = str(request.get("operation") or "")
-    if operation not in PUBLIC_OPERATION_NAMES:
-        raise ValueError(f"unsupported task center operation: {operation}")
-    inputs = _inputs(request)
-    leaked = sorted(PLATFORM_ADAPTER_FIELDS.intersection(inputs))
-    if leaked:
-        raise ValueError(
-            "public task center does not accept presentation or transport fields: "
-            + ", ".join(leaked)
-        )
     if operation_catalog is None or validate_request is None or authorization_required is None:
         # Lazy import keeps video_tool -> task-center compatibility acyclic while
         # giving Web/Python callers one ready-to-use public function.
@@ -83,6 +71,45 @@ def dispatch(
         operation_catalog = video_tool.CAPABILITIES["operations"]
         validate_request = video_tool._validate_request
         authorization_required = video_tool._authorization_required
+    validate_request(request)
+    return _dispatch_validated(
+        request,
+        operation_catalog=operation_catalog,
+        validate_request=validate_request,
+        authorization_required=authorization_required,
+        db_path=db_path,
+        public=True,
+    )
+
+
+def _dispatch_validated(
+    request: dict[str, Any],
+    *,
+    operation_catalog: Mapping[str, Any],
+    validate_request: Callable[[dict[str, Any]], None],
+    authorization_required: Callable[[dict[str, Any]], bool],
+    db_path: str | None = None,
+    public: bool,
+) -> dict[str, Any]:
+    """Execute a request which has already passed the outer request gate.
+
+    This private seam lets compatibility adapters keep their raw delivery
+    fields without validating or executing the same task-center operation a
+    second time.
+    """
+    if not isinstance(request, dict):
+        raise ValueError("request must be a JSON object")
+    operation = str(request.get("operation") or "")
+    if operation not in PUBLIC_OPERATION_NAMES:
+        raise ValueError(f"unsupported task center operation: {operation}")
+    inputs = _inputs(request)
+    if public:
+        leaked = sorted(PLATFORM_ADAPTER_FIELDS.intersection(inputs))
+        if leaked:
+            raise ValueError(
+                "public task center does not accept presentation or transport fields: "
+                + ", ".join(leaked)
+            )
     center = TaskCenter(db_path)
 
     if operation == "task_center_plan":
@@ -190,7 +217,7 @@ def dispatch(
         "task_center": TASK_CENTER_NAME,
         "version": TASK_CENTER_VERSION,
         "operation": operation,
-        "task": _public_result(result),
+        "task": _public_result(result) if public else result,
     }
 
 

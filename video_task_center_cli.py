@@ -37,7 +37,6 @@ def _load_request(path: str) -> dict[str, Any]:
 
 
 def run_request(request: dict[str, Any]) -> dict[str, Any]:
-    video_tool._validate_request(request)
     return dispatch(
         request,
         operation_catalog=video_tool.CAPABILITIES["operations"],
@@ -48,7 +47,6 @@ def run_request(request: dict[str, Any]) -> dict[str, Any]:
 
 def run_hermes_request(request: dict[str, Any]) -> dict[str, Any]:
     """Compatibility entry for the installed Hermes delivery adapter only."""
-    video_tool._validate_request(request)
     return dispatch_hermes(
         request,
         operation_catalog=video_tool.CAPABILITIES["operations"],

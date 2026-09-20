@@ -4,6 +4,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -30,6 +32,85 @@ class VideoTaskCenterInterfaceTests(unittest.TestCase):
             )
         self.assertTrue(result["success"])
         self.assertEqual(result["task"]["tasks"], [])
+
+    def test_python_confirm_requires_the_same_authorization_as_cli(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(PermissionError, "需要显式授权"):
+                dispatch(
+                    {
+                        "operation": "task_center_confirm",
+                        "inputs": {"task_id": "WEB-AUTH", "plan_version": 1},
+                    },
+                    db_path=str(Path(temp) / "tasks.db"),
+                )
+
+    def test_python_direct_confirmation_rejects_an_unrecognized_phrase(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "直接启动只接受"):
+                dispatch(
+                    {
+                        "operation": "task_center_plan",
+                        "authorization": {"confirmed": True, "scope": "task_center_confirm"},
+                        "inputs": {
+                            "task_id": "WEB-PHRASE",
+                            "title": "invalid phrase",
+                            "parameter_lines": ["input: sample.mp4"],
+                            "direct_confirmation_phrase": "确认",
+                            "steps": [{
+                                "id": "validate",
+                                "request": {"operation": "validate", "path": "sample.mp4"},
+                            }],
+                        },
+                    },
+                    db_path=str(Path(temp) / "tasks.db"),
+                )
+
+    def test_python_and_cli_reject_non_boolean_list_flags(self):
+        request = {
+            "operation": "task_center_list",
+            "inputs": {"limit": 1, "watchable_only": "false", "reconcile": "true"},
+        }
+        with self.assertRaisesRegex(ValueError, "必须是布尔值"):
+            dispatch(request)
+        with self.assertRaisesRegex(ValueError, "必须是布尔值"):
+            video_task_center_cli.run_request(request)
+
+    def test_public_dispatch_runs_the_outer_validator_once(self):
+        validator = MagicMock()
+        with tempfile.TemporaryDirectory() as temp:
+            dispatch(
+                {"operation": "task_center_list", "inputs": {"limit": 1}},
+                operation_catalog=video_tool.CAPABILITIES["operations"],
+                validate_request=validator,
+                authorization_required=video_tool._authorization_required,
+                db_path=str(Path(temp) / "tasks.db"),
+            )
+        validator.assert_called_once()
+
+    def test_hermes_list_executes_one_core_query_and_keeps_raw_fields(self):
+        center = MagicMock()
+        center.list_tasks.return_value = {
+            "tasks": [{"task_id": "VT-RAW", "chat_id": "oc_chat"}],
+            "total": 1,
+        }
+        with patch("video_task_center.interface.TaskCenter", return_value=center):
+            result = video_task_center_cli.run_hermes_request({
+                "operation": "task_center_list", "inputs": {"limit": 1, "reconcile": False},
+            })
+        center.list_tasks.assert_called_once()
+        center.get.assert_not_called()
+        self.assertEqual(result["task"]["tasks"][0]["chat_id"], "oc_chat")
+
+    def test_hermes_status_reconciles_and_reads_the_task_only_once(self):
+        center = MagicMock()
+        center.get.return_value = {"task_id": "VT-ONE", "chat_id": "oc_chat"}
+        with patch("video_task_center.interface.TaskCenter", return_value=center):
+            result = video_task_center_cli.run_hermes_request({
+                "operation": "task_center_status", "inputs": {"task_id": "VT-ONE"},
+            })
+        center.reconcile_workers.assert_called_once_with("VT-ONE")
+        center.get.assert_called_once_with("VT-ONE")
+        self.assertEqual(result["task"]["chat_id"], "oc_chat")
 
     def test_capabilities_are_platform_neutral(self):
         completed = subprocess.run(
