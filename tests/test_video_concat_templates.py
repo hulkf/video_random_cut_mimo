@@ -18,6 +18,10 @@ class VideoConcatTemplateTests(unittest.TestCase):
 
         self.assertEqual(template["id"], "001")
         self.assertEqual(template["name"], "模板001")
+        self.assertEqual(template["version"], "1")
+        self.assertEqual(template["steps"][0]["operation"], "video_concat")
+        self.assertEqual(template["output_count_rule"]["type"], "max_input_count")
+        self.assertEqual(template["output_geometry"]["reference_role"], "folder_a")
         self.assertEqual(
             template["required_inputs"],
             ["folder_a", "folder_b", "output_folder"],
@@ -39,6 +43,10 @@ class VideoConcatTemplateTests(unittest.TestCase):
 
         self.assertEqual(resolved["options"]["cover_source"], "video_b_frame")
         self.assertEqual(resolved["options"]["cover_duration_max"], 0.8)
+        self.assertEqual(resolved["template_version"], "1")
+        self.assertEqual(resolved["steps"][0]["operation"], "video_concat")
+        self.assertEqual(resolved["output_count_rule"]["input_roles"], ["folder_a", "folder_b"])
+        self.assertEqual(resolved["output_geometry"]["required_aspect_ratio"], "9:16")
 
     def test_unknown_template_is_rejected(self):
         from core.video_concat_templates import resolve_video_concat_template

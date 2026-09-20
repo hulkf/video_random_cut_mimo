@@ -161,11 +161,21 @@ CAPABILITIES["operations"]["validate"]["result_schema"] = {
 }
 CAPABILITIES["operations"]["video_concat_template_resolve"]["result_schema"] = {
     "type": "object",
-    "required": ["operation", "template_id", "effective_parameters"],
+    "required": [
+        "operation", "template_id", "template_version", "effective_parameters",
+        "steps", "output_count_rule", "external_cost", "risk_summary",
+        "output_geometry",
+    ],
     "properties": {
         "operation": {"type": "string"},
         "template_id": {"type": "string"},
+        "template_version": {"type": "string"},
         "effective_parameters": {"type": "object"},
+        "steps": {"type": "array"},
+        "output_count_rule": {"type": "object"},
+        "output_geometry": {"type": "object"},
+        "external_cost": {"type": "string"},
+        "risk_summary": {"type": "string"},
     },
 }
 CAPABILITIES["operations"]["video_concat"]["result_schema"] = {
@@ -514,10 +524,16 @@ def _run_concat_template_resolve(request: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "operation": "video_concat_template_resolve",
         "template_id": resolved["template_id"],
+        "template_version": resolved["template_version"],
         "effective_parameters": {
             "inputs": resolved["inputs"],
             "options": resolved["options"],
         },
+        "steps": resolved["steps"],
+        "output_count_rule": resolved["output_count_rule"],
+        "output_geometry": resolved["output_geometry"],
+        "external_cost": resolved["external_cost"],
+        "risk_summary": resolved["risk_summary"],
     }
 
 

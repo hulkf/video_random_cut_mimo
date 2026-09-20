@@ -11,8 +11,23 @@ _VIDEO_CONCAT_TEMPLATES = {
     "001": {
         "id": "001",
         "name": "模板001",
+        "version": "1",
         "operation": "video_concat",
         "required_inputs": ["folder_a", "folder_b", "output_folder"],
+        "steps": [
+            {"id": "video_concat", "name": "拼接模特视频与平铺视频", "operation": "video_concat"},
+        ],
+        "output_count_rule": {
+            "type": "max_input_count",
+            "input_roles": ["folder_a", "folder_b"],
+        },
+        "output_geometry": {
+            "reference_role": "folder_a",
+            "required_aspect_ratio": "9:16",
+            "enforced_by_option": "require_9x16",
+        },
+        "external_cost": "none",
+        "risk_summary": "纯本地视频合成；不会调用外部付费服务；不会覆盖输入素材。",
         "default_options": {
             "cover_enabled": True,
             "cover_source": "video_b_frame",
@@ -58,6 +73,12 @@ def resolve_video_concat_template(template_id, inputs=None, options=None) -> dic
     resolved_options.update(options or {})
     return {
         "template_id": template["id"],
+        "template_version": template["version"],
         "inputs": resolved_inputs,
         "options": resolved_options,
+        "steps": deepcopy(template["steps"]),
+        "output_count_rule": deepcopy(template["output_count_rule"]),
+        "output_geometry": deepcopy(template["output_geometry"]),
+        "external_cost": template["external_cost"],
+        "risk_summary": template["risk_summary"],
     }

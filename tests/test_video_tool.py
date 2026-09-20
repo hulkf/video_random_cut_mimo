@@ -963,6 +963,11 @@ class VideoToolTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["template_id"], "001")
+        self.assertEqual(result["template_version"], "1")
+        self.assertEqual(result["steps"][0]["operation"], "video_concat")
+        self.assertEqual(result["output_count_rule"]["type"], "max_input_count")
+        self.assertEqual(result["output_geometry"]["reference_role"], "folder_a")
+        self.assertEqual(result["external_cost"], "none")
         effective = result["effective_parameters"]
         self.assertEqual(effective["inputs"]["folder_a"], "a")
         self.assertEqual(effective["options"]["cover_duration_max"], 0.8)
