@@ -29,6 +29,10 @@ class VideoConcatTemplateTests(unittest.TestCase):
             template["required_inputs"],
             ["folder_a", "folder_b", "output_folder"],
         )
+        self.assertEqual(template["input_definitions"]["folder_a"]["kind"], "video_source")
+        self.assertEqual(template["input_definitions"]["output_folder"]["kind"], "output_directory")
+        self.assertEqual(template["option_definitions"]["cover_enabled"]["type"], "boolean")
+        self.assertEqual(template["option_definitions"]["cover_duration_min"]["minimum"], 0.0)
         self.assertEqual(template["default_options"]["cover_enabled"], True)
         self.assertEqual(template["default_options"]["cover_source"], "video_b_frame")
         self.assertEqual(template["default_options"]["cover_mode"], "front")

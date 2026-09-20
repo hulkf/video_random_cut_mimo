@@ -14,6 +14,26 @@ _VIDEO_CONCAT_TEMPLATES = {
         "version": "2",
         "operation": "video_concat",
         "required_inputs": ["folder_a", "folder_b", "output_folder"],
+        "input_definitions": {
+            "folder_a": {
+                "label": "模特视频",
+                "type": "path",
+                "kind": "video_source",
+                "required": True,
+            },
+            "folder_b": {
+                "label": "平铺视频",
+                "type": "path",
+                "kind": "video_source",
+                "required": True,
+            },
+            "output_folder": {
+                "label": "输出目录",
+                "type": "path",
+                "kind": "output_directory",
+                "required": True,
+            },
+        },
         "steps": [
             {
                 "id": "normalize_inputs",
@@ -49,6 +69,21 @@ _VIDEO_CONCAT_TEMPLATES = {
             "cover_duration_max": 0.5,
             "require_9x16": True,
             "require_cover": True,
+        },
+        "option_definitions": {
+            "cover_enabled": {"type": "boolean", "default": True},
+            "cover_source": {
+                "type": "string", "default": "video_b_frame",
+                "choices": ["video_b_frame", "folder"],
+            },
+            "cover_folder": {"type": "path", "default": ""},
+            "cover_mode": {
+                "type": "string", "default": "front", "choices": ["front", "random"],
+            },
+            "cover_duration_min": {"type": "number", "default": 0.2, "minimum": 0.0},
+            "cover_duration_max": {"type": "number", "default": 0.5, "minimum": 0.0},
+            "require_9x16": {"type": "boolean", "default": True},
+            "require_cover": {"type": "boolean", "default": True},
         },
     },
 }
@@ -89,7 +124,9 @@ def resolve_video_concat_template(template_id, inputs=None, options=None) -> dic
         "template_version": template["version"],
         "operation": template["operation"],
         "required_inputs": deepcopy(template["required_inputs"]),
+        "input_definitions": deepcopy(template["input_definitions"]),
         "default_options": deepcopy(template["default_options"]),
+        "option_definitions": deepcopy(template["option_definitions"]),
         "inputs": resolved_inputs,
         "options": resolved_options,
         "effective_parameters": {
