@@ -32,6 +32,7 @@ class VideoToolTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(payload["success"])
         self.assertIn("video_concat", payload["operations"])
+        self.assertIn("video_concat_template_resolve", payload["operations"])
         self.assertFalse(payload["constraints"]["direct_ffmpeg_from_agent"])
         self.assertIn("task_control", payload["operations"])
         self.assertIn("task_center_plan", payload["operations"])
@@ -40,6 +41,10 @@ class VideoToolTests(unittest.TestCase):
         self.assertEqual(
             payload["operations"]["video_concat"]["templates"][0]["id"],
             "001",
+        )
+        self.assertEqual(
+            payload["operations"]["video_concat"]["template_selector"],
+            "inputs.template_id",
         )
         list_options = payload["operations"]["task_center_list"]["option_schema"]["properties"]
         self.assertEqual(list_options["watchable_only"]["type"], "boolean")
@@ -917,19 +922,68 @@ class VideoToolTests(unittest.TestCase):
     ):
         result = video_tool.run_request({
             "operation": "video_concat",
-            "template_id": "001",
-            "inputs": {"folder_a": "a", "folder_b": "b", "output_folder": "out"},
-            "options": {"require_cover": False},
+            "inputs": {
+                "template_id": "001",
+                "folder_a": "a", "folder_b": "b", "output_folder": "out",
+            },
+            "options": {"require_cover": False, "cover_duration_max": 0.8},
         })
 
         self.assertTrue(result["success"])
         self.assertEqual(result["template_id"], "001")
+        self.assertEqual(result["effective_parameters"]["inputs"], {
+            "folder_a": "a", "folder_b": "b", "output_folder": "out",
+        })
+        self.assertEqual(
+            result["effective_parameters"]["options"]["cover_source"],
+            "video_b_frame",
+        )
+        self.assertEqual(
+            result["effective_parameters"]["options"]["cover_duration_max"],
+            0.8,
+        )
         config = _init.call_args.args[0]
         self.assertTrue(config["cover_enabled"])
         self.assertEqual(config["cover_source"], "video_b_frame")
         self.assertEqual(config["cover_mode"], "front")
         self.assertEqual(config["cover_duration_min"], 0.2)
-        self.assertEqual(config["cover_duration_max"], 0.5)
+        self.assertEqual(config["cover_duration_max"], 0.8)
+
+    def test_concat_template_resolve_reports_effective_parameters_before_execution(self):
+        result = video_tool.run_request({
+            "operation": "video_concat_template_resolve",
+            "inputs": {
+                "template_id": "001",
+                "folder_a": "a",
+                "folder_b": "b",
+                "output_folder": "out",
+            },
+            "options": {"cover_duration_max": 0.8, "require_cover": False},
+        })
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["template_id"], "001")
+        effective = result["effective_parameters"]
+        self.assertEqual(effective["inputs"]["folder_a"], "a")
+        self.assertEqual(effective["options"]["cover_duration_max"], 0.8)
+        self.assertFalse(effective["options"]["require_cover"])
+        self.assertTrue(effective["options"]["cover_enabled"])
+        self.assertEqual(effective["options"]["cover_source"], "video_b_frame")
+
+    def test_legacy_top_level_template_id_does_not_leak_into_effective_inputs(self):
+        resolved = video_tool._apply_video_concat_template({
+            "operation": "video_concat",
+            "template_id": "001",
+            "inputs": {
+                "template_id": "001",
+                "folder_a": "a",
+                "folder_b": "b",
+                "output_folder": "out",
+            },
+        })
+
+        self.assertEqual(resolved["template_id"], "001")
+        self.assertNotIn("template_id", resolved["inputs"])
 
     @patch("video_tool._probe", side_effect=[
         {"valid": True, "exists": True, "path": "out.mp4", "width": 720,

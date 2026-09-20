@@ -16,6 +16,7 @@ _VIDEO_CONCAT_TEMPLATES = {
         "default_options": {
             "cover_enabled": True,
             "cover_source": "video_b_frame",
+            "cover_folder": "",
             "cover_mode": "front",
             "cover_duration_min": 0.2,
             "cover_duration_max": 0.5,

@@ -33,7 +33,7 @@ from video_task_center.contracts import (
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.10.0"
+TOOL_VERSION = "0.11.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -43,6 +43,7 @@ CAPABILITIES = {
             "description": "按文件名排序配对两个输入目录中的视频并拼接，可从 B 视频抽帧生成封面",
             "tab": "视频拼接",
             "templates": list_video_concat_templates(),
+            "template_selector": "inputs.template_id",
             "required": ["folder_a", "folder_b", "output_folder"],
             "options": [
                 "cover_enabled", "cover_source", "cover_folder", "cover_mode",
@@ -51,6 +52,16 @@ CAPABILITIES = {
             ],
             "cover_source_values": ["folder", "video_b_frame"],
             "cover_mode_values": ["front", "back", "both"],
+        },
+        "video_concat_template_resolve": {
+            "description": "解析视频拼接模板与调用参数，返回本次完整有效参数但不执行视频处理",
+            "templates": list_video_concat_templates(),
+            "required": ["template_id", "folder_a", "folder_b", "output_folder"],
+            "options": [
+                "cover_enabled", "cover_source", "cover_folder", "cover_mode",
+                "cover_duration_min", "cover_duration_max", "require_9x16",
+                "require_cover",
+            ],
         },
         "qianchuan_concat": {
             "description": "千川拼接闭环：A/B 输入先统一为 9:16，再调用原有视频拼接逻辑",
@@ -114,11 +125,14 @@ for _name, _spec in CAPABILITIES["operations"].items():
 # 的 max_workers 默认仍由各自的通用 schema 决定。
 CAPABILITIES["operations"]["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
 
-for _operation_name in ("video_concat", "qianchuan_concat"):
+for _operation_name in (
+    "video_concat", "video_concat_template_resolve", "qianchuan_concat",
+):
     _properties = CAPABILITIES["operations"][_operation_name]["option_schema"]["properties"]
     _properties.update({
         "cover_enabled": {"type": "boolean", "default": True},
         "cover_source": {"type": "string", "enum": ["folder", "video_b_frame"], "default": "video_b_frame"},
+        "cover_folder": {"type": "string", "default": ""},
         "cover_mode": {"type": ["string", "integer"], "enum": ["front", "back", "both", 0, 1, 2], "default": "front"},
         "cover_duration_min": {"type": "number", "default": 0.2, "exclusiveMinimum": 0},
         "cover_duration_max": {"type": "number", "default": 0.5, "exclusiveMinimum": 0},
@@ -133,12 +147,25 @@ CAPABILITIES["operations"]["qianchuan_concat"]["input_schema"]["properties"]["ou
     "type": "string",
     "description": "可省略；若提供，必须等于工具按 <货号> 千川素材 <MMDD> 推导出的目录",
 }
+CAPABILITIES["operations"]["video_concat"]["input_schema"]["properties"]["template_id"] = {
+    "type": "string",
+    "description": "可选；选择模板时传入，例如 001",
+}
 CAPABILITIES["operations"]["validate"]["result_schema"] = {
     "type": "object",
     "required": ["operation", "validation"],
     "properties": {
         "operation": {"type": "string"},
         "validation": {"type": "object"},
+    },
+}
+CAPABILITIES["operations"]["video_concat_template_resolve"]["result_schema"] = {
+    "type": "object",
+    "required": ["operation", "template_id", "effective_parameters"],
+    "properties": {
+        "operation": {"type": "string"},
+        "template_id": {"type": "string"},
+        "effective_parameters": {"type": "object"},
     },
 }
 CAPABILITIES["operations"]["video_concat"]["result_schema"] = {
@@ -149,6 +176,8 @@ CAPABILITIES["operations"]["video_concat"]["result_schema"] = {
         "outputs": {"type": "array", "items": {"type": "string"}},
         "validation": {"type": "array"},
         "summary": {"type": "object"},
+        "template_id": {"type": "string"},
+        "effective_parameters": {"type": "object"},
     },
 }
 CAPABILITIES["operations"]["qianchuan_concat"]["result_schema"] = {
@@ -278,7 +307,9 @@ def _validate_request(request: Dict[str, Any]) -> None:
                     operation, operation
                 )
             )
-    if operation in ("video_concat", "qianchuan_concat"):
+    if operation in (
+        "video_concat", "video_concat_template_resolve", "qianchuan_concat",
+    ):
         cover_source = options.get("cover_source", "video_b_frame")
         if cover_source not in ("folder", "video_b_frame"):
             raise ValueError("不支持的 cover_source: {}".format(cover_source))
@@ -472,14 +503,34 @@ def _run_validate(request: Dict[str, Any]) -> Dict[str, Any]:
     return {"operation": "validate", "validation": _probe(path)}
 
 
+def _run_concat_template_resolve(request: Dict[str, Any]) -> Dict[str, Any]:
+    inputs = dict(request.get("inputs") or {})
+    template_id = inputs.pop("template_id")
+    resolved = resolve_video_concat_template(
+        template_id,
+        inputs,
+        request.get("options") or {},
+    )
+    return {
+        "operation": "video_concat_template_resolve",
+        "template_id": resolved["template_id"],
+        "effective_parameters": {
+            "inputs": resolved["inputs"],
+            "options": resolved["options"],
+        },
+    }
+
+
 def _apply_video_concat_template(request: Dict[str, Any]) -> Dict[str, Any]:
-    template_id = request.get("template_id")
+    request_inputs = dict(request.get("inputs") or {})
+    nested_template_id = request_inputs.pop("template_id", None)
+    template_id = request.get("template_id") or nested_template_id
     if request.get("operation") != "video_concat" or template_id is None:
         return request
 
     resolved = resolve_video_concat_template(
         template_id,
-        request.get("inputs") or {},
+        request_inputs,
         request.get("options") or {},
     )
     return {
@@ -530,6 +581,12 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
             result = _run_concat(request)
             if request.get("template_id") is not None:
                 result["template_id"] = request["template_id"]
+                result["effective_parameters"] = {
+                    "inputs": dict(request.get("inputs") or {}),
+                    "options": dict(request.get("options") or {}),
+                }
+        elif operation == "video_concat_template_resolve":
+            result = _run_concat_template_resolve(request)
         elif operation == "qianchuan_concat":
             result = _run_qianchuan_concat(request)
         elif operation == "validate":
