@@ -19,6 +19,10 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from core.video_concat_templates import (
+    list_video_concat_templates,
+    resolve_video_concat_template,
+)
 from headless_operations import OPERATIONS as TAB_OPERATIONS
 from headless_operations import operation_field_schema
 from headless_operations import run_operation as run_tab_operation
@@ -29,7 +33,7 @@ from video_task_center.contracts import (
 
 
 TOOL_NAME = "video-random-cut"
-TOOL_VERSION = "0.9.0"
+TOOL_VERSION = "0.10.0"
 
 CAPABILITIES = {
     "tool": TOOL_NAME,
@@ -38,6 +42,7 @@ CAPABILITIES = {
         "video_concat": {
             "description": "按文件名排序配对两个输入目录中的视频并拼接，可从 B 视频抽帧生成封面",
             "tab": "视频拼接",
+            "templates": list_video_concat_templates(),
             "required": ["folder_a", "folder_b", "output_folder"],
             "options": [
                 "cover_enabled", "cover_source", "cover_folder", "cover_mode",
@@ -467,7 +472,26 @@ def _run_validate(request: Dict[str, Any]) -> Dict[str, Any]:
     return {"operation": "validate", "validation": _probe(path)}
 
 
+def _apply_video_concat_template(request: Dict[str, Any]) -> Dict[str, Any]:
+    template_id = request.get("template_id")
+    if request.get("operation") != "video_concat" or template_id is None:
+        return request
+
+    resolved = resolve_video_concat_template(
+        template_id,
+        request.get("inputs") or {},
+        request.get("options") or {},
+    )
+    return {
+        **request,
+        "template_id": resolved["template_id"],
+        "inputs": resolved["inputs"],
+        "options": resolved["options"],
+    }
+
+
 def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
+    request = _apply_video_concat_template(request)
     _validate_request(request)
     operation = request["operation"]
     if operation == "task_control":
@@ -504,6 +528,8 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if operation == "video_concat":
             result = _run_concat(request)
+            if request.get("template_id") is not None:
+                result["template_id"] = request["template_id"]
         elif operation == "qianchuan_concat":
             result = _run_qianchuan_concat(request)
         elif operation == "validate":

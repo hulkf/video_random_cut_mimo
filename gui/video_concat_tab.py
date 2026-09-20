@@ -2,10 +2,14 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox, QComboBox,
-    QScrollArea
+    QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from core.video_concatenator import VideoConcatenatorEngine
+from core.video_concat_templates import (
+    get_video_concat_template,
+    resolve_video_concat_template,
+)
 from gui.config import get_config, set_config
 from utils.path_utils import normalize_path as normalize_input_path
 from gui.common.base_tab import BaseTab
@@ -41,6 +45,7 @@ class VideoConcatWorker(BaseWorker):
 class VideoConcatTab(BaseTab):
     def __init__(self):
         super().__init__()
+        self.template = get_video_concat_template("001")
         self.init_ui()
         self.load_config()
 
@@ -183,21 +188,39 @@ class VideoConcatTab(BaseTab):
 
         container.setLayout(layout)
         scroll.setWidget(container)
-        outer_layout.addWidget(scroll)
+        self.template_tabs = QTabWidget()
+        self.template_tabs.setDocumentMode(True)
+        self.template_tabs.addTab(
+            scroll,
+            "模板{} | {}".format(self.template["id"], self.template["name"]),
+        )
+        outer_layout.addWidget(self.template_tabs)
         self.setLayout(outer_layout)
 
     def load_config(self):
         self.folder_a_input.setText(get_config("video_concat", "folder_a", ""))
         self.folder_b_input.setText(get_config("video_concat", "folder_b", ""))
         self.output_folder_input.setText(get_config("video_concat", "output_folder", ""))
-        self.cover_check.setChecked(get_config("video_concat", "cover_enabled", "false") == "true")
-        cover_source = get_config("video_concat", "cover_source", "folder")
+        defaults = self.template["default_options"]
+        self.cover_check.setChecked(
+            get_config("video_concat", "cover_enabled", defaults["cover_enabled"])
+        )
+        cover_source = get_config(
+            "video_concat", "cover_source", defaults["cover_source"]
+        )
         cover_source_index = self.cover_source_combo.findData(cover_source)
         self.cover_source_combo.setCurrentIndex(cover_source_index if cover_source_index >= 0 else 0)
         self.cover_folder_input.setText(get_config("video_concat", "cover_folder", ""))
-        self.cover_mode_combo.setCurrentIndex(int(get_config("video_concat", "cover_mode", "0")))
-        self.cover_duration_min.setValue(float(get_config("video_concat", "cover_duration_min", "0.5")))
-        self.cover_duration_max.setValue(float(get_config("video_concat", "cover_duration_max", "1.0")))
+        default_mode = {"front": 0, "back": 1, "both": 2}[defaults["cover_mode"]]
+        self.cover_mode_combo.setCurrentIndex(
+            int(get_config("video_concat", "cover_mode", str(default_mode)))
+        )
+        self.cover_duration_min.setValue(float(get_config(
+            "video_concat", "cover_duration_min", str(defaults["cover_duration_min"])
+        )))
+        self.cover_duration_max.setValue(float(get_config(
+            "video_concat", "cover_duration_max", str(defaults["cover_duration_max"])
+        )))
         self.on_cover_changed(Qt.Checked if self.cover_check.isChecked() else Qt.Unchecked)
 
     def save_config(self):
@@ -244,17 +267,23 @@ class VideoConcatTab(BaseTab):
 
         self.save_config()
 
-        config = {
-            "folder_a": folder_a,
-            "folder_b": folder_b,
-            "output_folder": output_folder,
-            "cover_enabled": self.cover_check.isChecked(),
-            "cover_source": self.cover_source_combo.currentData(),
-            "cover_folder": normalize_input_path(self.cover_folder_input.text()),
-            "cover_mode": self.cover_mode_combo.currentIndex(),
-            "cover_duration_min": self.cover_duration_min.value(),
-            "cover_duration_max": self.cover_duration_max.value()
-        }
+        resolved = resolve_video_concat_template(
+            self.template["id"],
+            {
+                "folder_a": folder_a,
+                "folder_b": folder_b,
+                "output_folder": output_folder,
+            },
+            {
+                "cover_enabled": self.cover_check.isChecked(),
+                "cover_source": self.cover_source_combo.currentData(),
+                "cover_folder": normalize_input_path(self.cover_folder_input.text()),
+                "cover_mode": self.cover_mode_combo.currentIndex(),
+                "cover_duration_min": self.cover_duration_min.value(),
+                "cover_duration_max": self.cover_duration_max.value(),
+            },
+        )
+        config = {**resolved["inputs"], **resolved["options"]}
 
         worker = VideoConcatWorker(config)
         worker.sub_progress.connect(self.on_sub_progress)

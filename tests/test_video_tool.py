@@ -37,6 +37,10 @@ class VideoToolTests(unittest.TestCase):
         self.assertIn("task_center_plan", payload["operations"])
         self.assertIn("task_center_confirm", payload["operations"])
         self.assertIn("task_center_list", payload["operations"])
+        self.assertEqual(
+            payload["operations"]["video_concat"]["templates"][0]["id"],
+            "001",
+        )
         list_options = payload["operations"]["task_center_list"]["option_schema"]["properties"]
         self.assertEqual(list_options["watchable_only"]["type"], "boolean")
         self.assertEqual(list_options["reconcile"]["type"], "boolean")
@@ -897,6 +901,33 @@ class VideoToolTests(unittest.TestCase):
         self.assertEqual(result["outputs"], ["out.mp4"])
         run.assert_called_once_with()
         config = _init.call_args.args[0]
+        self.assertEqual(config["cover_duration_min"], 0.2)
+        self.assertEqual(config["cover_duration_max"], 0.5)
+
+    @patch("video_tool._probe", return_value={
+        "valid": True, "exists": True, "path": "out.mp4", "width": 1080,
+        "height": 1920, "duration": 10.0,
+    })
+    @patch("video_tool.os.makedirs")
+    @patch("core.video_concatenator.VideoConcatenatorEngine.get_videos", return_value=[])
+    @patch("core.video_concatenator.VideoConcatenatorEngine.run", return_value=["out.mp4"])
+    @patch("core.video_concatenator.VideoConcatenatorEngine.__init__", return_value=None)
+    def test_concat_template_001_applies_defaults_before_run(
+        self, _init, run, _get_videos, _makedirs, _probe
+    ):
+        result = video_tool.run_request({
+            "operation": "video_concat",
+            "template_id": "001",
+            "inputs": {"folder_a": "a", "folder_b": "b", "output_folder": "out"},
+            "options": {"require_cover": False},
+        })
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["template_id"], "001")
+        config = _init.call_args.args[0]
+        self.assertTrue(config["cover_enabled"])
+        self.assertEqual(config["cover_source"], "video_b_frame")
+        self.assertEqual(config["cover_mode"], "front")
         self.assertEqual(config["cover_duration_min"], 0.2)
         self.assertEqual(config["cover_duration_max"], 0.5)
 
