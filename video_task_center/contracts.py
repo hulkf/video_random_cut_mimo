@@ -28,7 +28,7 @@ TASK_CENTER_OPERATION_SPECS: dict[str, dict[str, Any]] = {
     "task_center_confirm": {
         "description": "确认指定计划版本并启动独立后台执行器",
         "required": ["task_id", "plan_version"],
-        "options": [],
+        "options": ["confirmed_by"],
     },
     "task_center_list": {
         "description": "查询本地、云端和混合视频任务总览及当日开拍额度台账",
