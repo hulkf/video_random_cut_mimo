@@ -1,10 +1,13 @@
+from datetime import datetime
+import uuid
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel,
     QMessageBox, QGroupBox, QCheckBox, QDoubleSpinBox, QComboBox,
     QScrollArea
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from core.video_concatenator import VideoConcatenatorEngine
 from core.video_concat_templates import (
     get_video_concat_template,
@@ -16,6 +19,81 @@ from gui.common.base_tab import BaseTab
 from gui.common.base_worker import BaseWorker
 from gui.common.path_row import PathRow, MODE_FOLDER
 from gui.common.progress_panel import ProgressPanel
+
+
+class Template001TaskCenterClient:
+    """模板001界面到正式任务中心公共接口的薄适配层。"""
+
+    def __init__(self, request_runner=None, task_id_factory=None):
+        self.request_runner = request_runner
+        self.task_id_factory = task_id_factory or self._new_task_id
+
+    @staticmethod
+    def _new_task_id():
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return "template001-{}-{}".format(timestamp, uuid.uuid4().hex[:8])
+
+    def _run(self, request):
+        if self.request_runner is None:
+            from video_task_center_cli import run_request
+
+            self.request_runner = run_request
+        return self.request_runner(request)
+
+    def submit(self, config):
+        inputs = {
+            "folder_a": config["folder_a"],
+            "folder_b": config["folder_b"],
+            "output_folder": config["output_folder"],
+        }
+        options = {
+            key: value for key, value in config.items()
+            if key not in inputs and not key.startswith("_")
+        }
+        task_id = self.task_id_factory()
+        planned = self._run({
+            "operation": "task_center_plan",
+            "inputs": {
+                "task_id": task_id,
+                "title": "模板001 千川视频合成",
+                "steps": [{
+                    "id": "template001-concat",
+                    "name": "模板001 千川视频合成",
+                    "request": {
+                        "operation": "video_concat",
+                        "template_id": "001",
+                        "inputs": inputs,
+                        "options": options,
+                    },
+                }],
+                "parameter_lines": [
+                    "文件夹A：{}".format(inputs["folder_a"]),
+                    "文件夹B：{}".format(inputs["folder_b"]),
+                    "输出目录：{}".format(inputs["output_folder"]),
+                    "非9:16素材：先转为9:16",
+                    "成品任一边超过2000像素：转为1080×1920",
+                ],
+                "risk_note": "纯本地视频处理；不调用外部付费服务；不覆盖输入素材。",
+            },
+        })["task"]
+        return self._run({
+            "operation": "task_center_confirm",
+            "inputs": {
+                "task_id": task_id,
+                "plan_version": int(planned["plan_version"]),
+                "confirmed_by": "desktop-gui",
+            },
+            "authorization": {
+                "confirmed": True,
+                "scope": "task_center_confirm",
+            },
+        })["task"]
+
+    def get(self, task_id):
+        return self._run({
+            "operation": "task_center_status",
+            "inputs": {"task_id": task_id},
+        })["task"]
 
 
 class VideoConcatWorker(BaseWorker):
@@ -56,7 +134,12 @@ class VideoConcatPage(BaseTab):
         self.template = (
             get_video_concat_template(template_id) if template_id is not None else None
         )
+        self.active_task_id = ""
+        self._task_center_client = None
         self.init_ui()
+        self.task_poll_timer = QTimer(self)
+        self.task_poll_timer.setInterval(1000)
+        self.task_poll_timer.timeout.connect(self._poll_task_center)
         self.load_config()
 
     def init_ui(self):
@@ -242,6 +325,7 @@ class VideoConcatPage(BaseTab):
             self.config_section, "cover_duration_max", str(defaults["cover_duration_max"])
         )))
         self.on_cover_changed(Qt.Checked if self.cover_check.isChecked() else Qt.Unchecked)
+        self._restore_active_template_task()
 
     def save_config(self):
         set_config(self.config_section, "folder_a", normalize_input_path(self.folder_a_input.text()))
@@ -309,6 +393,10 @@ class VideoConcatPage(BaseTab):
         else:
             config = {**inputs, **options}
 
+        if self.template and self.template["id"] == "001":
+            self._start_template_001_task(config)
+            return
+
         worker = VideoConcatWorker(config)
         worker.sub_progress.connect(self.on_sub_progress)
         if not self.start_worker(worker):
@@ -316,6 +404,128 @@ class VideoConcatPage(BaseTab):
 
     def set_busy(self, busy):
         self.start_btn.setEnabled(not busy)
+
+    def is_busy(self):
+        return bool(self.active_task_id) or super().is_busy()
+
+    def _task_client(self):
+        if self._task_center_client is None:
+            self._task_center_client = Template001TaskCenterClient()
+        return self._task_center_client
+
+    def _start_template_001_task(self, config):
+        if self.active_task_id:
+            QMessageBox.warning(self, "警告", "模板001任务正在任务中心执行中")
+            return
+        summary = (
+            "确认提交到任务中心执行？\n\n"
+            "文件夹A：{}\n"
+            "文件夹B：{}\n"
+            "输出目录：{}\n\n"
+            "处理：非9:16先转9:16；成品任一边超过2000像素时转为1080×1920。\n"
+            "费用：纯本地处理，0外部费用。"
+        ).format(config["folder_a"], config["folder_b"], config["output_folder"])
+        if QMessageBox.question(
+            self,
+            "确认模板001任务",
+            summary,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        try:
+            task = self._task_client().submit(config)
+        except Exception as exc:
+            QMessageBox.critical(self, "任务中心提交失败", str(exc))
+            return
+        self.active_task_id = str(task["task_id"])
+        set_config(self.config_section, "active_task_id", self.active_task_id)
+        self.set_busy(True)
+        self.global_progress_bar.setValue(5)
+        self.global_progress_label.setText("5%")
+        self.status_label.setText("已提交任务中心：{}".format(self.active_task_id))
+        self.task_poll_timer.start()
+
+    def _poll_task_center(self):
+        if not self.active_task_id:
+            self.task_poll_timer.stop()
+            return
+        try:
+            task = self._task_client().get(self.active_task_id)
+        except Exception as exc:
+            self.status_label.setText("任务中心状态读取失败：{}".format(exc))
+            return
+
+        status = str(task.get("status") or "")
+        labels = {
+            "awaiting_confirmation": "等待确认",
+            "queued": "排队中",
+            "running": "执行中",
+            "waiting_cloud": "等待云端",
+            "pausing": "正在暂停",
+            "paused": "已暂停",
+            "cancelling": "正在取消",
+        }
+        if status not in {"completed", "partial_failed", "failed", "cancelled", "stopped_unknown"}:
+            progress = 50 if status in {"running", "waiting_cloud", "pausing", "cancelling"} else 10
+            self.global_progress_bar.setValue(progress)
+            self.global_progress_label.setText("{}%".format(progress))
+            self.status_label.setText(
+                "任务中心{}：{}".format(labels.get(status, status or "处理中"), self.active_task_id)
+            )
+            return
+
+        task_id = self.active_task_id
+        self.task_poll_timer.stop()
+        self.active_task_id = ""
+        set_config(self.config_section, "active_task_id", "")
+        self.set_busy(False)
+        if status == "completed":
+            self.global_progress_bar.setValue(100)
+            self.global_progress_label.setText("100%")
+            self.task_progress_bar.setValue(100)
+            self.task_progress_label.setText("100%")
+            self.status_label.setText("任务中心执行完成：{}".format(task_id))
+            output_text = "\n".join(task.get("output_directories") or []) or "请在任务中心查看结果"
+            QMessageBox.information(self, "完成", "模板001任务已完成\n\n{}".format(output_text))
+        else:
+            error = str(task.get("error") or "任务未完成")
+            self.status_label.setText("任务中心执行失败：{}".format(task_id))
+            QMessageBox.critical(self, "模板001任务失败", "{}\n\n{}".format(task_id, error))
+
+    def _restore_active_template_task(self):
+        if not self.template or self.template["id"] != "001" or self.active_task_id:
+            return
+        stored_task_id = str(
+            get_config(self.config_section, "active_task_id", "") or ""
+        ).strip()
+        if not stored_task_id:
+            return
+        try:
+            task = self._task_client().get(stored_task_id)
+        except ValueError as exc:
+            if "任务不存在" in str(exc):
+                set_config(self.config_section, "active_task_id", "")
+                return
+            self.active_task_id = stored_task_id
+            self.set_busy(True)
+            self.status_label.setText("任务中心状态暂时无法读取，将自动重试")
+            self.task_poll_timer.start()
+            return
+        except Exception:
+            self.active_task_id = stored_task_id
+            self.set_busy(True)
+            self.status_label.setText("任务中心状态暂时无法读取，将自动重试")
+            self.task_poll_timer.start()
+            return
+        self.active_task_id = stored_task_id
+        self.set_busy(True)
+        if task.get("status") in {"completed", "partial_failed", "failed", "cancelled", "stopped_unknown"}:
+            self.status_label.setText("正在读取已结束任务：{}".format(stored_task_id))
+            QTimer.singleShot(0, self._poll_task_center)
+        else:
+            self.status_label.setText("已恢复任务中心跟踪：{}".format(stored_task_id))
+            self.task_poll_timer.start()
 
     def on_worker_progress(self, current, total, message):
         global_progress = int((current / total) * 100) if total > 0 else 0

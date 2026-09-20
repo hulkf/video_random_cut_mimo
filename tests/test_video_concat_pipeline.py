@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,12 +66,13 @@ class VideoConcatPipelineTests(unittest.TestCase):
         engine_cls.return_value.run.return_value = ["out/result.mp4"]
         limit.return_value = {"downscaled": 0, "kept": 1}
 
+        callback = Mock()
         outputs = run_template_001_concat({
             "folder_a": "a",
             "folder_b": "b",
             "output_folder": "out",
             "blur_strength": 6,
-        })
+        }, callback)
 
         self.assertEqual(outputs, ["out/result.mp4"])
         self.assertEqual(normalize.call_count, 2)
@@ -79,7 +80,9 @@ class VideoConcatPipelineTests(unittest.TestCase):
         self.assertNotEqual(effective["folder_a"], "a")
         self.assertNotEqual(effective["folder_b"], "b")
         self.assertEqual(effective["output_folder"], "out")
-        limit.assert_called_once_with(["out/result.mp4"], 6)
+        limit.assert_called_once()
+        self.assertEqual(limit.call_args.args[:2], (["out/result.mp4"], 6))
+        self.assertIs(limit.call_args.args[2], callback)
 
 
 if __name__ == "__main__":

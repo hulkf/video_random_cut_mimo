@@ -17,7 +17,7 @@ def _is_9x16(width, height):
     return width > 0 and height > 0 and width * 16 == height * 9
 
 
-def normalize_folder_9x16(input_folder, output_folder, blur_strength=6):
+def normalize_folder_9x16(input_folder, output_folder, blur_strength=6, callback=None):
     """保留已是9:16的素材，其余素材复用视频尺寸引擎转为1080x1920。"""
     videos = collect_videos(input_folder)
     if not videos:
@@ -30,6 +30,8 @@ def normalize_folder_9x16(input_folder, output_folder, blur_strength=6):
     used_names = set()
 
     for index, video_path in enumerate(videos):
+        if callback:
+            callback(index, len(videos), "检查并统一9:16素材", 0)
         stem, extension = os.path.splitext(os.path.basename(video_path))
         info = probe_video(video_path)
         display_width = info.get("display_width", info.get("width", 0))
@@ -48,22 +50,28 @@ def normalize_folder_9x16(input_folder, output_folder, blur_strength=6):
         else:
             resizer.resize_video(video_path, output_path)
             converted += 1
+        if callback:
+            callback(index + 1, len(videos), "已统一9:16素材", 100)
 
     return {"input_count": len(videos), "converted": converted, "copied": copied}
 
 
-def limit_output_resolution(outputs, blur_strength=6):
+def limit_output_resolution(outputs, blur_strength=6, callback=None):
     """将任一边像素值超过2000的成品原位降至1080x1920。"""
     resizer = VideoResizer("9:16", blur_strength)
     downscaled = 0
     kept = 0
 
-    for output_path in outputs:
+    for index, output_path in enumerate(outputs):
+        if callback:
+            callback(index, len(outputs), "检查成品分辨率", 0)
         info = probe_video(output_path)
         width = info.get("display_width", info.get("width", 0))
         height = info.get("display_height", info.get("height", 0))
         if max(width, height) <= OUTPUT_RESOLUTION_LIMIT:
             kept += 1
+            if callback:
+                callback(index + 1, len(outputs), "成品分辨率无需调整", 100)
             continue
 
         stem, _extension = os.path.splitext(output_path)
@@ -75,6 +83,8 @@ def limit_output_resolution(outputs, blur_strength=6):
             if os.path.exists(temporary_output):
                 os.remove(temporary_output)
         downscaled += 1
+        if callback:
+            callback(index + 1, len(outputs), "已限制成品分辨率", 100)
 
     return {"downscaled": downscaled, "kept": kept}
 
@@ -85,12 +95,12 @@ def run_template_001_concat(config, callback=None):
     with tempfile.TemporaryDirectory(prefix="video_template_001_") as work_folder:
         folder_a = os.path.join(work_folder, "a_9x16")
         folder_b = os.path.join(work_folder, "b_9x16")
-        normalize_folder_9x16(config["folder_a"], folder_a, blur_strength)
-        normalize_folder_9x16(config["folder_b"], folder_b, blur_strength)
+        normalize_folder_9x16(config["folder_a"], folder_a, blur_strength, callback)
+        normalize_folder_9x16(config["folder_b"], folder_b, blur_strength, callback)
 
         effective_config = dict(config)
         effective_config["folder_a"] = folder_a
         effective_config["folder_b"] = folder_b
         outputs = VideoConcatenatorEngine(effective_config).run(callback)
-        limit_output_resolution(outputs, blur_strength)
+        limit_output_resolution(outputs, blur_strength, callback)
         return outputs
