@@ -10,6 +10,38 @@ python video_tool.py run --request -
 
 请求和响应均为 JSON。`capabilities` 是唯一权威能力清单；Agent 不应根据 GUI 名称猜测 operation。
 
+## 独立视频任务中心入口（2026-09-20）
+
+视频任务的计划、确认、排队、状态、控制、额度和事件流已经从 Hermes
+适配层中抽出，正式入口为：
+
+```powershell
+python video_task_center_cli.py capabilities
+python video_task_center_cli.py run --request -
+```
+
+该入口与平台无关，Hermes、其他飞书应用、Web 后端和本地程序调用的是同一
+SQLite 状态库和同一执行器。新平台不需要安装 Hermes，也不应复制任务状态机。
+任务中心只返回 JSON 业务数据；HTML、飞书 Card 2.0、消息发送和按钮回调由
+各平台适配器负责。
+
+公开 operation：
+
+- `task_center_plan`：建立计划；
+- `task_center_confirm`：确认精确计划版本并启动；
+- `task_center_list`：任务总览和额度；
+- `task_center_status`：单任务、步骤和逐文件进度；
+- `task_center_control`：暂停、继续、取消；
+- `task_center_events`：按 `after_event_id` 游标增量读取持久化事件。
+
+`video_tool.py` 暂时保留同名 operation 作为兼容入口，但内部也统一转发给独立
+任务中心接口。新接入方优先调用 `video_task_center_cli.py`。
+
+Python 程序可以直接导入并调用 `video_task_center.dispatch(request)`；它会复用
+正式视频 operation 清单和校验规则，不要求 Web、Hermes 各自复制参数规则。
+公开入口会拒绝 `chat_id`、`card_message_id` 等展示/传输字段，并从响应中移除
+历史 Hermes 卡片交付状态。
+
 ## 任务调用与临时产物（2026-09-09）
 
 - 业务视频任务统一通过 `video_task_plan` 提交结构化步骤，确认后由任务中心执行；状态和结果读取 `video_task_status`，控制使用 `video_task_control`。工具不可用时报告故障，不能退回 Shell 批处理。

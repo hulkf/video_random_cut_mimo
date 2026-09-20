@@ -22,6 +22,10 @@ from typing import Any, Dict
 from headless_operations import OPERATIONS as TAB_OPERATIONS
 from headless_operations import operation_field_schema
 from headless_operations import run_operation as run_tab_operation
+from video_task_center.contracts import (
+    HERMES_COMPAT_OPERATION_SPECS,
+    TASK_CENTER_OPERATION_SPECS,
+)
 
 
 TOOL_NAME = "video-random-cut"
@@ -61,42 +65,8 @@ CAPABILITIES = {
             "required": ["task_id", "action"],
             "action_values": ["status", "pause", "resume", "cancel"],
         },
-        "task_center_plan": {
-            "description": "创建或更新视频任务计划；仅在用户明确说“直接确认/直接执行”时可同时确认并启动",
-            "required": ["task_id", "title", "steps"],
-            "options": ["direct_confirmation_phrase"],
-        },
-        "task_center_confirm": {
-            "description": "确认指定计划版本并启动独立后台执行器",
-            "required": ["task_id", "plan_version"],
-            "options": ["expected_chat_id", "expected_card_message_id"],
-        },
-        "task_center_list": {
-            "description": "查询本地、云端和混合视频任务总览及当日开拍额度台账",
-            "required": [],
-            "options": ["status", "cargo_number", "limit", "offset", "watchable_only", "reconcile"],
-        },
-        "task_center_status": {
-            "description": "查询一个视频任务及各步骤、逐文件云端进度",
-            "required": ["task_id"],
-        },
-        "task_center_control": {
-            "description": "暂停、继续或取消一个视频任务，不影响其他任务",
-            "required": ["task_id", "action"],
-            "action_values": ["pause", "resume", "cancel"],
-            "options": ["expected_chat_id", "expected_card_message_id"],
-        },
-        "task_center_bind_card": {
-            "description": "绑定任务的飞书 Card 2.0 消息，用于无模型进度更新",
-            "required": ["task_id", "chat_id"],
-            "options": [
-                "card_message_id",
-                "delivered_updated_at", "delivered_revision", "pending_card_kind", "pending_card_revision",
-                "pending_card_uuid", "pending_card_json", "pending_card_updated_at", "pending_card_mode",
-                "pending_card_target_message_id", "ack_pending_revision", "ack_pending_uuid",
-                "next_delivery_mode",
-            ],
-        },
+        **TASK_CENTER_OPERATION_SPECS,
+        **HERMES_COMPAT_OPERATION_SPECS,
     },
     "constraints": {
         "headless": True,
@@ -507,100 +477,21 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
                 "operation": operation, **result}
     if operation.startswith("task_center_"):
-        from core.video_task_center import TaskCenter
+        from video_task_center.hermes_compat import dispatch
 
-        inputs = request.get("inputs") or request
-        center = TaskCenter()
-        if operation == "task_center_plan":
-            declared_authorizations = {str(value) for value in inputs.get("authorized_operations") or []}
-            required_authorizations = set()
-            for index, step in enumerate(inputs["steps"]):
-                inner = dict(step.get("request") or {}) if isinstance(step, dict) else {}
-                inner_operation = str(inner.get("operation") or "")
-                if not inner_operation or inner_operation == "task_control" or inner_operation.startswith("task_center_"):
-                    raise ValueError("步骤 {} 不是可执行的视频业务操作".format(index + 1))
-                if inner_operation in {"settings_secret_set", "settings_update"}:
-                    raise ValueError("{} 不允许进入持久化视频任务计划，请使用专用交互流程".format(inner_operation))
-                validation_request = dict(inner)
-                if step.get("items_from_step"):
-                    target_key = str(step.get("input_key") or ("items" if inner_operation == "kaipai_download" else "input_path"))
-                    if target_key not in CAPABILITIES["operations"][inner_operation]["required"]:
-                        raise ValueError("步骤 {} 的 input_key={} 不是该 operation 的必要输入".format(index + 1, target_key))
-                    placeholder = [{"url": "https://placeholder.invalid/result.mp4"}] if target_key == "items" else "D:/derived-input"
-                    if isinstance(validation_request.get("inputs"), dict):
-                        validation_request["inputs"] = {**validation_request["inputs"], target_key: placeholder}
-                    else:
-                        validation_request[target_key] = placeholder
-                validation_request["authorization"] = {"confirmed": True, "scope": inner_operation}
-                _validate_request(validation_request)
-                if _authorization_required(inner):
-                    required_authorizations.add(inner_operation)
-            missing_authorizations = sorted(required_authorizations - declared_authorizations)
-            if missing_authorizations:
-                raise PermissionError("计划包含需单独披露的风险操作但未声明授权范围: {}".format(", ".join(missing_authorizations)))
-            if required_authorizations and not str(inputs.get("risk_note") or "").strip():
-                raise ValueError("计划包含外部服务或删除操作，risk_note 不能为空")
-            if not [line for line in inputs.get("parameter_lines") or [] if str(line).strip()]:
-                raise ValueError("parameter_lines 必须完整列出实际参数")
-            result = center.create_plan(
-                inputs["task_id"], inputs["title"], inputs["steps"],
-                cargo_number=inputs.get("cargo_number", ""),
-                chat_id=inputs.get("chat_id", ""),
-                card_message_id=inputs.get("card_message_id", ""),
-                parameter_lines=inputs.get("parameter_lines") or [],
-                risk_note=inputs.get("risk_note", ""),
-                authorized_operations=inputs.get("authorized_operations") or [],
-            )
-            if inputs.get("direct_confirmation_phrase"):
-                result = center.confirm(
-                    result["task_id"], int(result["plan_version"]),
-                    confirmed_by=inputs.get("confirmed_by", ""),
-                    confirmation_message_id=inputs.get("confirmation_message_id", ""),
-                )
-        elif operation == "task_center_confirm":
-            result = center.confirm(
-                inputs["task_id"], int(inputs["plan_version"]),
-                confirmed_by=inputs.get("confirmed_by", ""),
-                confirmation_message_id=inputs.get("confirmation_message_id", ""),
-                expected_chat_id=inputs.get("expected_chat_id", ""),
-                expected_card_message_id=inputs.get("expected_card_message_id", ""),
-            )
-        elif operation == "task_center_list":
-            result = center.list_tasks(
-                status=inputs.get("status", ""),
-                cargo_number=inputs.get("cargo_number", ""),
-                limit=int(inputs.get("limit", 20)),
-                offset=int(inputs.get("offset", 0)),
-                watchable_only=inputs.get("watchable_only", False),
-                reconcile=inputs.get("reconcile", True),
-            )
-        elif operation == "task_center_status":
-            center.reconcile_workers(inputs["task_id"])
-            result = center.get(inputs["task_id"])
-        elif operation == "task_center_control":
-            result = center.control(
-                inputs["task_id"], inputs["action"],
-                expected_chat_id=inputs.get("expected_chat_id", ""),
-                expected_card_message_id=inputs.get("expected_card_message_id", ""),
-            )
-        else:
-            result = center.bind_card(
-                inputs["task_id"], inputs["chat_id"], inputs["card_message_id"],
-                delivered_updated_at=inputs.get("delivered_updated_at", ""),
-                delivered_revision=inputs.get("delivered_revision"),
-                pending_kind=inputs.get("pending_card_kind"),
-                pending_revision=inputs.get("pending_card_revision"),
-                pending_uuid=inputs.get("pending_card_uuid"),
-                pending_card_json=inputs.get("pending_card_json"),
-                pending_updated_at=inputs.get("pending_card_updated_at"),
-                pending_mode=inputs.get("pending_card_mode"),
-                pending_target_message_id=inputs.get("pending_card_target_message_id"),
-                ack_pending_revision=inputs.get("ack_pending_revision"),
-                ack_pending_uuid=inputs.get("ack_pending_uuid"),
-                next_delivery_mode=inputs.get("next_delivery_mode"),
-            )
-        return {"success": True, "tool": TOOL_NAME, "version": TOOL_VERSION,
-                "operation": operation, "task": result}
+        result = dispatch(
+            request,
+            operation_catalog=CAPABILITIES["operations"],
+            validate_request=_validate_request,
+            authorization_required=_authorization_required,
+        )
+        # Preserve the legacy video-tool envelope while the standalone task
+        # center becomes the preferred entry for new platform adapters.
+        return {
+            **result,
+            "tool": TOOL_NAME,
+            "version": TOOL_VERSION,
+        }
 
     from core.task_control import TaskController, TaskControlSignal
     task_id = request.get("task_id") or (request.get("inputs") or {}).get("task_id")

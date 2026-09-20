@@ -1410,6 +1410,56 @@ class TaskCenter:
             "updated_at": _now(),
         }
 
+    def list_events(
+        self,
+        *,
+        task_id: str = "",
+        after_event_id: int = 0,
+        limit: int = 100,
+        tail: bool = False,
+    ) -> dict[str, Any]:
+        """Return durable, presentation-neutral task events after a cursor."""
+        if after_event_id < 0:
+            raise ValueError("after_event_id 不能小于 0")
+        if limit < 1 or limit > 500:
+            raise ValueError("limit 必须在 1 到 500 之间")
+        if tail:
+            with closing(self._connect()) as db:
+                latest = int(db.execute(
+                    "SELECT COALESCE(MAX(event_id),0) FROM task_events"
+                    + (" WHERE task_id=?" if task_id else ""),
+                    (str(task_id),) if task_id else (),
+                ).fetchone()[0])
+            return {"events": [], "next_event_id": latest, "has_more": False}
+        clauses = ["event_id>?"]
+        values: list[Any] = [after_event_id]
+        if task_id:
+            clauses.append("task_id=?")
+            values.append(str(task_id))
+        values.append(limit)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT event_id,task_id,event_type,detail_json,created_at "
+                "FROM task_events WHERE " + " AND ".join(clauses) +
+                " ORDER BY event_id ASC LIMIT ?",
+                values,
+            ).fetchall()
+        events = [
+            {
+                "event_id": int(row["event_id"]),
+                "task_id": str(row["task_id"]),
+                "event_type": str(row["event_type"]),
+                "detail": _decode(row["detail_json"], {}),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+        return {
+            "events": events,
+            "next_event_id": events[-1]["event_id"] if events else after_event_id,
+            "has_more": len(events) == limit,
+        }
+
     def reconcile_workers(self, task_id: str = "") -> list[str]:
         """Recover only cloud-safe work; fence uncertain/local crash states for review."""
         clauses = " AND task_id=?" if task_id else ""
