@@ -31,6 +31,10 @@ class VideoConcatTemplateTests(unittest.TestCase):
         )
         self.assertEqual(template["input_definitions"]["folder_a"]["kind"], "video_source")
         self.assertEqual(template["input_definitions"]["output_folder"]["kind"], "output_directory")
+        self.assertEqual(
+            template["input_definitions"]["output_folder"]["default_folder_name_pattern"],
+            "{style_name} 千川素材 {mmdd}",
+        )
         self.assertEqual(template["option_definitions"]["cover_enabled"]["type"], "boolean")
         self.assertEqual(template["option_definitions"]["cover_duration_min"]["minimum"], 0.0)
         self.assertEqual(template["default_options"]["cover_enabled"], True)

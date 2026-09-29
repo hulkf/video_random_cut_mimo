@@ -32,6 +32,7 @@ _VIDEO_CONCAT_TEMPLATES = {
                 "type": "path",
                 "kind": "output_directory",
                 "required": True,
+                "default_folder_name_pattern": "{style_name} 千川素材 {mmdd}",
             },
         },
         "steps": [
