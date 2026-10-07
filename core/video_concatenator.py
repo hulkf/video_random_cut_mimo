@@ -2,6 +2,7 @@ import os
 import random
 import tempfile
 import shutil
+from core.concat_batch import concat_workers, ordered_batch
 
 from core.ffmpeg_runner import (
     run_ffmpeg, run_ffmpeg_with_fallback, FFmpegError
@@ -46,6 +47,8 @@ class VideoConcatenatorEngine:
             )
         self.cover_mode = config.get("cover_mode", "front")  # front, back, both
         self.resume_existing = bool(config.get("resume_existing", False))
+        self.batch_workers = concat_workers(config.get("batch_workers"))
+        self.ffmpeg_threads = max(1, min(4, (os.cpu_count() or 1) // self.batch_workers))
 
     def get_videos(self, folder):
         return collect_videos(normalize_path(folder))
@@ -101,6 +104,8 @@ class VideoConcatenatorEngine:
         try:
             ref = self._probe_video(video_a)
             ref_w, ref_h = ref["width"], ref["height"]
+            if self.config.get("limit_output_edge") and max(ref_w, ref_h) > self.config["limit_output_edge"]:
+                ref_w, ref_h = 1080, 1920
             ref_fps = round(ref["fps"], 3)
 
             # 获取两个视频的时长
@@ -191,19 +196,21 @@ class VideoConcatenatorEngine:
             # 编码参数统一走 run_ffmpeg_with_fallback（硬件失败自动回退软件）
             def _build_concat_cmd(params):
                 _codec, _enc_preset, _quality_args = params
-                _cmd = ["ffmpeg"]
+                _cmd = ["ffmpeg", "-filter_complex_threads", "2"]
                 # 必须按 filter_complex 中 [N:v]/[N:a] 引用的顺序添加 -i 输入：
                 #   有封面：cover_video(0) + video_a(1) + video_b(2)
                 #   无封面：video_a(0) + video_b(1)
                 # P0/P1 重构（4608376）时漏写，导致 ffmpeg 报
                 # "Error binding filtergraph inputs/outputs: Invalid argument"。
                 if cover_video:
-                    _cmd.extend(["-i", cover_video])
-                _cmd.extend(["-i", video_a, "-i", video_b])
+                    _cmd.extend(["-threads", str(self.ffmpeg_threads), "-i", cover_video])
+                _cmd.extend(["-threads", str(self.ffmpeg_threads), "-i", video_a,
+                             "-threads", str(self.ffmpeg_threads), "-i", video_b])
                 _cmd.extend([
                     "-filter_complex", filter_str,
                     "-map", "[outv]", "-map", "[outa]",
                     "-c:v", _codec, "-preset", _enc_preset, *_quality_args,
+                    "-threads", str(self.ffmpeg_threads),
                     "-c:a", "aac", "-b:a", "128k",
                     "-shortest",
                     "-y", output_path
@@ -402,8 +409,8 @@ class VideoConcatenatorEngine:
     def run(self, callback=None):
         os.makedirs(self.output_folder, exist_ok=True)
 
-        videos_a = self.get_videos(self.folder_a)
-        videos_b = self.get_videos(self.folder_b)
+        videos_a = self.config.get("prepared_videos_a") or self.get_videos(self.folder_a)
+        videos_b = self.config.get("prepared_videos_b") or self.get_videos(self.folder_b)
 
         if not videos_a:
             raise ValueError("文件夹A中没有视频文件")
@@ -413,8 +420,8 @@ class VideoConcatenatorEngine:
         cover_images = self.get_cover_images()
 
         total = max(len(videos_a), len(videos_b))
-        results = []
-
+        jobs = []
+        output_paths = set()
         for i in range(total):
             va = videos_a[i % len(videos_a)]
             vb = videos_b[i % len(videos_b)]
@@ -423,29 +430,24 @@ class VideoConcatenatorEngine:
             name_b = os.path.splitext(os.path.basename(vb))[0]
             output_name = f"{name_a}+{name_b}.mp4"
             output_path = os.path.join(self.output_folder, output_name)
+            key = os.path.normcase(os.path.abspath(output_path))
+            if key in output_paths:
+                raise ValueError("批量拼接输出文件名重复，请先区分同名素材: " + output_name)
+            output_paths.add(key)
+            cover_img = None if self.cover_source == "video_b_frame" else (
+                random.choice(cover_images) if cover_images else None)
+            jobs.append((va, vb, output_path, cover_img))
 
+        def process(job):
+            va, vb, output_path, cover_img = job
             if self.resume_existing and os.path.isfile(output_path):
                 try:
                     if self._probe_video(output_path).get("duration", 0) > 0:
-                        results.append(output_path)
-                        if callback:
-                            callback(i + 1, total, f"跳过已完成: {name_a} + {name_b}", 100)
-                        continue
+                        return output_path
                 except Exception:
                     pass
-
-            if self.cover_source == "video_b_frame":
-                cover_img = None
-            else:
-                cover_img = random.choice(cover_images) if cover_images else None
-
-            if callback:
-                callback(i, total, f"拼接: {name_a} + {name_b}", 0)
-
             self.concat_pair(va, vb, output_path, cover_img)
-            results.append(output_path)
+            return output_path
 
-            if callback:
-                callback(i + 1, total, f"完成: {name_a} + {name_b}", 100)
-
-        return results
+        return ordered_batch(jobs, process, workers=self.batch_workers,
+                             callback=callback, message="批量拼接视频")

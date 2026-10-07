@@ -48,7 +48,7 @@ CAPABILITIES = {
             "options": [
                 "cover_enabled", "cover_source", "cover_folder", "cover_mode",
                 "cover_duration_min", "cover_duration_max", "require_9x16",
-                "require_cover",
+                "require_cover", "batch_workers",
             ],
             "cover_source_values": ["folder", "video_b_frame"],
             "cover_mode_values": ["front", "back", "both"],
@@ -60,7 +60,7 @@ CAPABILITIES = {
             "options": [
                 "cover_enabled", "cover_source", "cover_folder", "cover_mode",
                 "cover_duration_min", "cover_duration_max", "require_9x16",
-                "require_cover",
+                "require_cover", "batch_workers",
             ],
         },
         "qianchuan_concat": {
@@ -69,7 +69,7 @@ CAPABILITIES = {
             "options": [
                 "cover_enabled", "cover_source", "cover_mode",
                 "cover_duration_min", "cover_duration_max", "require_cover",
-                "blur_strength",
+                "blur_strength", "batch_workers",
             ],
         },
         "validate": {
@@ -335,9 +335,13 @@ def _validate_request(request: Dict[str, Any]) -> None:
                     raise ValueError("{} 必须是大于 0 的数字".format(key)) from None
 
 
-def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
+def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, Any]:
+    from core.concat_batch import concat_workers
     from core.video_concatenator import VideoConcatenatorEngine
+    import time
 
+    started = time.perf_counter()
+    performance = {"batch_workers": concat_workers((request.get("options") or {}).get("batch_workers"))}
     inputs = request.get("inputs") or request
     options = request.get("options") or {}
     config = {
@@ -352,7 +356,10 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         "cover_duration_max": options.get("cover_duration_max", 0.5),
         "blur_strength": options.get("blur_strength", 6),
         "resume_existing": bool(request.get("resume_existing", False)),
+        "batch_workers": options.get("batch_workers"),
+        "_performance": performance,
     }
+    config.update(prepared_inputs or {})
     os.makedirs(config["output_folder"], exist_ok=True)
     engine = VideoConcatenatorEngine(config)
     controller = request.get("_task_controller")
@@ -369,8 +376,8 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
     require_cover = options.get("require_cover", True)
     if require_cover and not config["cover_enabled"]:
         raise ValueError("成品标准要求封面，不能关闭 cover_enabled")
-    input_a = engine.get_videos(config["folder_a"])
-    input_b = engine.get_videos(config["folder_b"])
+    input_a = config.get("prepared_videos_a") or engine.get_videos(config["folder_a"])
+    input_b = config.get("prepared_videos_b") or engine.get_videos(config["folder_b"])
     validated = []
     for output_index, output in enumerate(outputs):
         info = _probe(output)
@@ -420,6 +427,7 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         validated.append(info)
     return {
         "operation": "video_concat",
+        "performance": {**performance, "total_seconds": round(time.perf_counter() - started, 3)},
         "outputs": [item["path"] for item in validated],
         "validation": validated,
         "summary": {
@@ -431,10 +439,10 @@ def _run_concat(request: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _normalize_folder_9x16(input_folder: str, output_folder: str, blur_strength: int) -> Dict[str, Any]:
+def _normalize_folder_9x16(input_folder: str, output_folder: str, blur_strength: int, **kwargs) -> Dict[str, Any]:
     from core.video_concat_pipeline import normalize_folder_9x16
 
-    return normalize_folder_9x16(input_folder, output_folder, blur_strength)
+    return normalize_folder_9x16(input_folder, output_folder, blur_strength, **kwargs)
 
 
 def _qianchuan_output_folder(folder_a: str, folder_b: str, requested: str = "") -> str:
@@ -461,6 +469,10 @@ def _qianchuan_output_folder(folder_a: str, folder_b: str, requested: str = "") 
 
 
 def _run_qianchuan_concat(request: Dict[str, Any]) -> Dict[str, Any]:
+    from core.concat_batch import concat_workers
+    import time
+
+    started = time.perf_counter()
     inputs = request.get("inputs") or request
     options = dict(request.get("options") or {})
     output_folder = _qianchuan_output_folder(
@@ -473,10 +485,16 @@ def _run_qianchuan_concat(request: Dict[str, Any]) -> Dict[str, Any]:
         folder_a = os.path.join(work_folder, "a_9x16")
         folder_b = os.path.join(work_folder, "b_9x16")
         blur_strength = int(options.pop("blur_strength", 6))
-        normalization = {
-            "folder_a": _normalize_folder_9x16(inputs["folder_a"], folder_a, blur_strength),
-            "folder_b": _normalize_folder_9x16(inputs["folder_b"], folder_b, blur_strength),
+        normalize_options = {
+            "workers": concat_workers(options.get("batch_workers")),
+            "reuse_sources": True,
+            "callback": (lambda *_args: controller.check()) if controller else None,
         }
+        normalization = {
+            "folder_a": _normalize_folder_9x16(inputs["folder_a"], folder_a, blur_strength, **normalize_options),
+            "folder_b": _normalize_folder_9x16(inputs["folder_b"], folder_b, blur_strength, **normalize_options),
+        }
+        normalized_at = time.perf_counter()
         options["require_9x16"] = True
         concat_request = {
             "operation": "video_concat",
@@ -491,10 +509,18 @@ def _run_qianchuan_concat(request: Dict[str, Any]) -> Dict[str, Any]:
             concat_request["resume_existing"] = True
         if controller:
             concat_request["_task_controller"] = controller
-        result = _run_concat(concat_request)
+        result = _run_concat(concat_request, prepared_inputs={
+            "prepared_videos_a": normalization["folder_a"].pop("_videos", None),
+            "prepared_videos_b": normalization["folder_b"].pop("_videos", None),
+        })
         result["operation"] = "qianchuan_concat"
         result["output_folder"] = output_folder
         result["normalization"] = normalization
+        result.setdefault("performance", {}).update({
+            "normalization_seconds": round(normalized_at - started, 3),
+            "total_seconds": round(time.perf_counter() - started, 3),
+            "reused_inputs": sum(item.get("reused", 0) for item in normalization.values()),
+        })
         return result
 
 

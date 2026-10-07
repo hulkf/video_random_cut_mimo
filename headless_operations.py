@@ -93,6 +93,9 @@ OPERATIONS["face_detection"]["authorization_requirement"] = {
 
 def operation_field_schema(name: str) -> Dict[str, Any]:
     """Return the machine-readable contract for a named input/option field."""
+    if name == "batch_workers":
+        return {"type": "integer", "enum": [1, 2, 3],
+                "description": "批量合成并发数；省略时按CPU选择，8线程以上默认2路"}
     boolean_fields = {
         "detect_text", "separate_folders", "detect_faces", "delete_face_images",
         "delete_face_videos", "auto_delete", "cover_enabled", "head_tail",

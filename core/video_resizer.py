@@ -84,7 +84,7 @@ class VideoResizer:
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
         )
 
-    def resize_video(self, video_path, output_path):
+    def resize_video(self, video_path, output_path, *, threads=None):
         from core.encoder import get_encoder
         from core.ffmpeg_runner import run_ffmpeg_with_fallback
 
@@ -94,6 +94,9 @@ class VideoResizer:
         def build_cmd(enc_params):
             codec, enc_preset, quality_args = enc_params
             cmd = ["ffmpeg", "-i", video_path]
+            if threads is not None:
+                cmd = ["ffmpeg", "-threads", str(threads), "-i", video_path,
+                       "-filter_threads", "2", "-filter_complex_threads", "2"]
             if filter_type == "complex":
                 cmd.extend(["-filter_complex", filter_value, "-map", "[v]", "-map", "0:a?"])
             else:
@@ -105,6 +108,8 @@ class VideoResizer:
                 "-movflags", "+faststart",
                 "-y", output_path,
             ])
+            if threads is not None:
+                cmd[-2:-2] = ["-threads", str(threads)]
             return cmd
 
         # crf=23 保持现状（不因迁移改变质量档）；硬件失败自动回退软件重试一次（R5/R6）

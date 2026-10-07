@@ -72,6 +72,7 @@ _VIDEO_CONCAT_TEMPLATES = {
             "require_cover": True,
         },
         "option_definitions": {
+            "batch_workers": {"type": "number", "choices": [1, 2, 3]},
             "cover_enabled": {"type": "boolean", "default": True},
             "cover_source": {
                 "type": "string", "default": "video_b_frame",
