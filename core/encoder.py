@@ -15,7 +15,7 @@ DEFAULT_CRF = 20                 # 裂变现状默认 crf
 DEFAULT_PRESET = "ultrafast"     # 软件编码默认 preset
 NVENC_PRESET = "p1"              # 本机实测最快档（裂变现状）
 NVENC_WORKERS = 3                # 消费级卡 NVENC 同时会话 3~5，取 3
-SOFTWARE_WORKERS_CAP = 8         # 软件编码并发上限
+SOFTWARE_WORKERS_CAP = 4         # 裂变实测：配合每进程线程预算，避免整机线程过量
 NVENC_CQ_OFFSET = 0              # OQ1：cq 相对 crf 的偏移，默认 0（cq = crf）；不达标时调整用
 _DETECT_TIMEOUT = 30             # -encoders 探测超时
 _TEST_DURATION = 0.3             # testsrc 试编码时长（裂变现状 0.3s）
@@ -88,10 +88,10 @@ def get_encoder(crf: int = DEFAULT_CRF, preset: str = DEFAULT_PRESET):
 
 
 def get_default_workers() -> int:
-    """默认并发数：NVENC=3；软件=min(核数, 8)（AC-P1-1）。"""
+    """裂变默认并发：NVENC=3；软件最多4路，低于8线程的CPU使用1路。"""
     if is_nvenc_available():
         return NVENC_WORKERS
-    return min(os.cpu_count() or 4, SOFTWARE_WORKERS_CAP)
+    return SOFTWARE_WORKERS_CAP if (os.cpu_count() or 1) >= 8 else 1
 
 
 def fallback_to_software() -> None:

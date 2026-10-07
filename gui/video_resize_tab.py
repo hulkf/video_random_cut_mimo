@@ -31,41 +31,20 @@ class VideoResizeWorker(BaseWorker):
         self.blur_strength = blur_strength
 
     def work(self):
-        videos = collect_videos(self.input_folder)
-        if len(videos) == 0:
-            raise ValueError("输入文件夹中没有找到视频文件")
-
         engine = VideoResizer(self.target_ratio, self.blur_strength)
-        if self.process_mode == "mismatched":
-            videos = [
-                video_path for video_path in videos
-                if not matches_target_size(video_path, self.target_ratio)
-            ]
-
-        total = len(videos)
         results = []
-
-        if total == 0:
-            self.emit_finished(results)
-            return
-
-        for index, video_path in enumerate(videos):
-            if self.stopped():
-                break
-            rel_path = engine_target_rel_path(video_path, self.input_folder, self.target_ratio)
-            output_path = os.path.join(self.output_folder, rel_path)
-
-            self.emit_progress(index, total, rel_path)
-            result_path = engine.resize_video(video_path, output_path)
-            result = {
-                "input": video_path,
-                "output": result_path,
-                "ratio": self.target_ratio,
-            }
+        def on_result(result):
             results.append(result)
             self.video_done.emit(result)
-            self.emit_progress(index + 1, total, rel_path)
-
+        def progress(current, total, message):
+            if self.stopped():
+                raise InterruptedError("用户停止")
+            self.emit_progress(current, total, message)
+        try:
+            results = engine.resize_folder(self.input_folder, self.output_folder, progress,
+                process_mode=self.process_mode, on_result=on_result)
+        except InterruptedError:
+            pass
         self.emit_finished(results)
 
 

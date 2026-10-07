@@ -16,7 +16,8 @@ import sys
 import shutil
 import glob as glob_module
 import subprocess
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
+from core.concat_batch import bounded_results
 from utils.media_utils import VIDEO_EXTS
 
 
@@ -46,18 +47,12 @@ class TextRecognitionWorker(BaseWorker):
             ]
 
             results = []
-            with ProcessPoolExecutor(max_workers=self.max_workers,
+            workers = max(1, min(self.max_workers, total))
+            with ProcessPoolExecutor(max_workers=workers,
                                      initializer=_init_worker) as executor:
-                future_map = {
-                    executor.submit(detect_single_video, t): t[0]
-                    for t in tasks
-                }
-                for future in as_completed(future_map):
-                    if self.stopped():
-                        for f in future_map:
-                            f.cancel()
-                        break
-                    video_path, has_text, frames_dir = future.result()
+                for _, value in bounded_results(executor, detect_single_video, tasks,
+                        workers=workers, should_stop=self.stopped):
+                    video_path, has_text, frames_dir = value
                     # 单文件输入时 relpath 退化为 basename
                     if os.path.isfile(self.folder_path):
                         rel_path = os.path.basename(video_path)

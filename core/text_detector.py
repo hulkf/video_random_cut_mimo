@@ -1,5 +1,6 @@
 import os
 import glob as glob_module
+import tempfile
 
 from core.ffmpeg_runner import run_ffmpeg, FFmpegError
 
@@ -31,12 +32,14 @@ def detect_single_video(args):
         if _ocr_instance is None:
             _init_worker()
         
-        frames_dir = os.path.join(os.path.dirname(video_path), "_frames_tmp",
-                                  os.path.splitext(os.path.basename(video_path))[0])
-        os.makedirs(frames_dir, exist_ok=True)
+        frames_root = os.path.join(os.path.dirname(video_path), "_frames_tmp")
+        os.makedirs(frames_root, exist_ok=True)
+        frames_dir = tempfile.mkdtemp(prefix=os.path.splitext(os.path.basename(video_path))[0] + "_",
+                                      dir=frames_root)
 
         cmd = [
-            "ffmpeg", "-i", video_path, "-vf", f"fps=1/{frame_interval}",
+            "ffmpeg", "-y", "-threads", "2", "-i", video_path,
+            "-filter_threads", "1", "-threads", "2", "-vf", f"fps=1/{frame_interval}",
             "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
         ]
         try:

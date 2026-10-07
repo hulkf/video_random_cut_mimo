@@ -56,6 +56,7 @@ class SliceWorker(BaseWorker):
             time.sleep(0.1)
 
     def _slice_one_video(self, folder_dir, file):
+        from core.ffmpeg_runner import ffmpeg_thread_budget
         slicer = VideoSlicer(self.min_dur, self.max_dur, detect_text=False)
         video_path = os.path.join(folder_dir, file)
         video_name = os.path.splitext(file)[0]
@@ -63,7 +64,8 @@ class SliceWorker(BaseWorker):
             video_output = os.path.join(self.output_dir, video_name)
         else:
             video_output = self.output_dir
-        return slicer.slice_video(video_path, video_output)
+        with ffmpeg_thread_budget(max(1, min(4, (os.cpu_count() or 1) // self.max_workers))):
+            return slicer.slice_video(video_path, video_output)
 
     def work(self):
         video_exts = VIDEO_EXTS
@@ -78,6 +80,9 @@ class SliceWorker(BaseWorker):
             self.error.emit(f"路径不存在: {self.folder_path}")
             return
 
+        stems = [os.path.normcase(os.path.splitext(f)[0]) for f in video_files]
+        if len(stems) != len(set(stems)):
+            raise ValueError("切片输入存在同名视频，请先区分文件名，避免覆盖切片")
         total = len(video_files)
         if total == 0:
             self.error.emit(f"未找到视频文件\n路径: {self.folder_path}\n请检查路径是否正确，或文件扩展名是否为 .mp4/.avi/.mov/.mkv/.flv")
@@ -86,6 +91,7 @@ class SliceWorker(BaseWorker):
         all_results = []
         completed = 0
         next_index = self._resume_index
+        finished_indices = set()
         worker_count = min(self.max_workers, total)
 
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -118,7 +124,9 @@ class SliceWorker(BaseWorker):
                     self.video_done.emit(results)
                     completed += 1
                     self.progress.emit(completed, total, "")
-                    self._resume_index = idx + 1
+                    finished_indices.add(idx)
+                    while self._resume_index in finished_indices:
+                        self._resume_index += 1
 
                 submit_next()
 

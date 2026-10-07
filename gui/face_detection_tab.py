@@ -2,7 +2,8 @@ import os
 import csv
 import cv2
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
+from core.concat_batch import bounded_results
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QLabel, QFileDialog,
@@ -150,21 +151,12 @@ class FaceDetectionWorker(BaseWorker):
                 ]
                 completed = 0
                 with ProcessPoolExecutor(
-                    max_workers=self.max_workers,
+                    max_workers=min(self.max_workers, total),
                     initializer=_init_face_worker,
                     initargs=(self.model_path, self.score_thresh),
                 ) as executor:
-                    future_map = {
-                        executor.submit(_detect_face_task, task): task[0]
-                        for task in tasks
-                    }
-                    for future in as_completed(future_map):
-                        if self.stopped():
-                            # 中断：取消未开始的 future，已完成的照常收集
-                            for f in future_map:
-                                f.cancel()
-                            break
-                        raw_result = future.result()
+                    for _, raw_result in bounded_results(executor, _detect_face_task, tasks,
+                            workers=min(self.max_workers, total), should_stop=self.stopped):
                         result = self._build_result(
                             raw_result["full_path"],
                             raw_result["has_face"],

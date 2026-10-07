@@ -16,6 +16,35 @@ import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, List, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_thread_budget = ContextVar("ffmpeg_thread_budget", default=None)
+
+
+@contextmanager
+def ffmpeg_thread_budget(threads):
+    """Limit only this job's FFmpeg processes, including nested media helpers."""
+    token = _thread_budget.set(max(1, int(threads)))
+    try:
+        yield
+    finally:
+        _thread_budget.reset(token)
+
+
+def _budgeted_command(cmd):
+    threads = _thread_budget.get()
+    if threads is None:
+        return cmd
+    result = list(cmd)
+    if not any(arg == "-threads" or arg.startswith("-threads:") for arg in result):
+        result = [result[0]] + [part for arg in result[1:]
+                  for part in (["-threads", str(threads), arg] if arg == "-i" else [arg])]
+        result[-1:-1] = ["-threads", str(threads)]
+    for option in ("-filter_threads", "-filter_complex_threads"):
+        if option not in result:
+            result[1:1] = [option, str(min(2, threads))]
+    return result
 
 CREATE_NO_WINDOW = 0x08000000  # Windows 无黑窗（全项目现状均未带，属纯增强，R4）
 
@@ -236,6 +265,7 @@ def run_ffmpeg(
     5. 成功：返回 FFmpegResult；
     6. track=True 时自动注册/注销；on_progress 回调异常不致命（吞掉并继续）。
     """
+    cmd = _budgeted_command(cmd)
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = CREATE_NO_WINDOW

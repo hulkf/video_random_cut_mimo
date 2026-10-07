@@ -41,13 +41,13 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
 }
 
 OPERATION_OPTIONS = {
-    "video_slice": ["min_duration", "max_duration", "detect_text", "separate_folders"],
+    "video_slice": ["min_duration", "max_duration", "detect_text", "separate_folders", "batch_workers"],
     "video_screenshot": ["frame_count", "detect_faces", "delete_face_images", "delete_face_videos", "model_path", "separate_folders"],
     "text_recognition": ["frame_interval", "threshold", "max_workers"],
     "face_detection": ["min_face_ratio", "sample_count", "model_path", "score_threshold", "auto_delete", "max_workers"],
-    "audio_mix": ["cover_enabled", "cover_folder", "cover_duration_min", "cover_duration_max"],
-    "video_mix": ["head_tail", "head_min", "head_max", "tail_min", "tail_max", "slice_count_min", "slice_count_max", "slice_duration_min", "slice_duration_max", "mode", "mix_count", "cover_enabled", "cover_folder", "cover_duration_min", "cover_duration_max"],
-    "video_resize": ["target_ratio", "process_mode", "blur_strength"],
+    "audio_mix": ["cover_enabled", "cover_folder", "cover_duration_min", "cover_duration_max", "batch_workers"],
+    "video_mix": ["head_tail", "head_min", "head_max", "tail_min", "tail_max", "slice_count_min", "slice_count_max", "slice_duration_min", "slice_duration_max", "mode", "mix_count", "cover_enabled", "cover_folder", "cover_duration_min", "cover_duration_max", "batch_workers"],
+    "video_resize": ["target_ratio", "process_mode", "blur_strength", "batch_workers"],
     "video_enhance": ["level", "wink_exe", "include_images", "skip_existing", "retry", "timeout"],
     "keyword_remove": ["padding", "match_mode", "estimate_min_duration", "model_type"],
     "subtitle_generate": ["font_name", "font_size", "font_color", "outline_color", "outline_width", "position", "model_type", "enable_correction", "keep_srt"],
@@ -227,7 +227,10 @@ def _video_slice(request):
     if os.path.isfile(path):
         results = engine.slice_video(path, output)
     else:
-        results = engine.slice_folder(path, output, separate_folders=bool(opts.get("separate_folders", False)))
+        controller = request.get("_task_controller")
+        results = engine.slice_folder(path, output, separate_folders=bool(opts.get("separate_folders", False)),
+            max_workers=opts.get("batch_workers"),
+            callback=(lambda *_: controller.check()) if controller else None)
     return {"results": results, "outputs": [item["file"] for item in results]}
 
 
@@ -280,7 +283,10 @@ def _audio_mix(request):
         bool(opts.get("cover_enabled", False)), opts.get("cover_folder", ""),
         float(opts.get("cover_duration_min", 0.5)), float(opts.get("cover_duration_max", 1.0)),
     )
-    outputs = engine.mix_folder(data["clips_folder"], data["media_folder"], data["output_folder"])
+    controller = request.get("_task_controller")
+    outputs = engine.mix_folder(data["clips_folder"], data["media_folder"], data["output_folder"],
+        max_workers=opts.get("batch_workers"),
+        callback=(lambda *_: controller.check()) if controller else None)
     return {"results": outputs, "outputs": outputs}
 
 
@@ -301,31 +307,24 @@ def _video_mix(request):
         "cover_duration_min": float(opts.get("cover_duration_min", 0.5)),
         "cover_duration_max": float(opts.get("cover_duration_max", 1.0)),
     }
-    outputs = VideoMixerEngine(config).run()
+    config["batch_workers"] = opts.get("batch_workers")
+    controller = request.get("_task_controller")
+    engine = VideoMixerEngine(config)
+    outputs = engine.run((lambda *_: controller.check())) if controller else engine.run()
     return {"results": outputs, "outputs": outputs}
 
 
 def _video_resize(request):
-    from core.video_resizer import VideoResizer, matches_target_size
-    from utils.media_utils import collect_videos
-    from utils.path_utils import build_output_path
+    from core.video_resizer import VideoResizer
 
     data, opts = _inputs(request), _options(request)
     target = opts.get("target_ratio", "9:16")
     engine = VideoResizer(target, int(opts.get("blur_strength", 6)))
     path, output_folder = data["input_path"], data["output_folder"]
-    videos = collect_videos(path)
-    if not videos:
-        raise ValueError("输入路径中没有找到视频文件")
-    if opts.get("process_mode", "all") == "mismatched":
-        videos = [video for video in videos if not matches_target_size(video, target)]
-    results = []
-    root = path if os.path.isdir(path) else os.path.dirname(path)
-    for video in videos:
-        rel_base = os.path.splitext(os.path.relpath(video, root))[0]
-        output = build_output_path(output_folder, rel_base, target.replace(":", "x"), dedupe=True)
-        engine.resize_video(video, output)
-        results.append({"input": video, "output": output, "ratio": target})
+    controller = request.get("_task_controller")
+    results = engine.resize_folder(path, output_folder,
+        process_mode=opts.get("process_mode", "all"), max_workers=opts.get("batch_workers"),
+        callback=(lambda *_: controller.check()) if controller else None)
     return {"results": results, "outputs": [item["output"] for item in results]}
 
 

@@ -1,4 +1,6 @@
 import os
+import math
+from core.concat_batch import concat_workers, ordered_batch, reserve_output
 import random
 import tempfile
 import shutil
@@ -145,6 +147,16 @@ class VideoMixerEngine:
         Returns a list of clip segments that fill the gap.
         Multiple clips can be added, and the last one is trimmed if needed.
         """
+        valid_clips = []
+        for clip in clips:
+            if clip not in self._clip_duration_cache:
+                self._clip_duration_cache[clip] = get_video_duration(clip)
+            duration = self._clip_duration_cache[clip]
+            if math.isfinite(duration) and duration > 0:
+                valid_clips.append(clip)
+        if not valid_clips:
+            raise ValueError("切片素材没有有效时长，无法填充视频")
+        clips = valid_clips
         clips_in_gap = []
         remaining = gap_duration
         
@@ -182,7 +194,9 @@ class VideoMixerEngine:
         Cover image is added at the beginning, with silence during cover duration.
         Audio = silence(cover_duration) + base_video_complete_audio
         """
-        duration = get_video_duration(base_video)
+        duration = self._clip_duration_cache.get(base_video)
+        if duration is None:
+            duration = get_video_duration(base_video)
         plan = self.generate_plan(duration)
         
         if not plan:
@@ -246,22 +260,25 @@ class VideoMixerEngine:
         if not clips:
             raise ValueError("No clip videos found")
         
-        results = []
+        self._clip_duration_cache.clear()
+        for path in set(base_videos + clips):
+            self._clip_duration_cache[path] = get_video_duration(path)
+        self._cover_images_cache = None
+        self.get_cover_images()
+        jobs, reserved = [], set()
         total_videos = len(base_videos) * self.mix_count
         
         for idx, base_video in enumerate(base_videos):
             base_name = os.path.splitext(os.path.basename(base_video))[0]
             for i in range(self.mix_count):
                 output_name = f"{base_name}_mix_{i+1}.mp4" if self.mix_count > 1 else f"{base_name}_mix.mp4"
-                output_path = os.path.join(self.output_folder, output_name)
-                
-                if callback:
-                    callback(idx * self.mix_count + i, total_videos, f"{base_name} - 处理中...", 0)
-                
-                self.create_mix(base_video, clips, output_path)
-                results.append(output_path)
-                
-                if callback:
-                    callback(idx * self.mix_count + i + 1, total_videos, f"{base_name} - 完成", 100)
-        
-        return results
+                output_path = reserve_output(os.path.join(self.output_folder, output_name), reserved)
+                jobs.append((base_video, output_path))
+        def process(job):
+            base_video, output_path = job
+            if self.create_mix(base_video, clips, output_path) is None:
+                raise ValueError("未生成有效混剪计划: " + base_video)
+            return output_path
+        workers = concat_workers(self.config.get("batch_workers"))
+        return ordered_batch(jobs, process, workers=workers, callback=callback,
+            message="批量视频混剪", ffmpeg_threads=max(1, min(4, (os.cpu_count() or 1) // workers)))

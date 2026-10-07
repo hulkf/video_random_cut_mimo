@@ -341,11 +341,14 @@ def extract_random_frames(video_path, output_dir, count=5, prefix="frame"):
         return []
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
-    saved = []
+    from core.concat_batch import ordered_batch, reserve_output
+    reserved = set()
+    jobs = [(random.uniform(0, duration), reserve_output(
+        os.path.join(output_dir, f"{video_name}_{prefix}_{i:04d}.jpg"), reserved))
+        for i in range(count)]
 
-    for i in range(count):
-        t = random.uniform(0, duration)
-        output_path = os.path.join(output_dir, f"{video_name}_{prefix}_{i:04d}.jpg")
+    def extract(job):
+        t, output_path = job
         cmd = [
             "ffmpeg", "-ss", str(t), "-i", video_path,
             "-vframes", "1", "-q:v", "2",
@@ -354,11 +357,12 @@ def extract_random_frames(video_path, output_dir, count=5, prefix="frame"):
         try:
             run_ffmpeg(cmd, error_message="extract frame failed", output_path=output_path)
             if os.path.exists(output_path):
-                saved.append(output_path)
+                return output_path
         except FFmpegError:
-            continue
+            return None
 
-    return saved
+    return [path for path in ordered_batch(jobs, extract, workers=2,
+        ffmpeg_threads=2) if path]
 
 
 def detect_face_in_image(image_path, detector=None):

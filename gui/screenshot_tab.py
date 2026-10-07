@@ -35,13 +35,9 @@ class ScreenshotWorker(BaseWorker):
         self.delete_face_videos = delete_face_videos
     
     def work(self):
-        video_exts = VIDEO_EXTS
-        video_files = []
-        for root, dirs, files in os.walk(self.folder_path):
-            for f in files:
-                if f.lower().endswith(video_exts):
-                    video_files.append(os.path.join(root, f))
-        
+        from utils.media_utils import collect_videos
+        video_files = collect_videos(self.folder_path)
+
         # 使用SCRFD检测器
         model_path = r"D:\Models\scrfd_10g\det_10g.onnx"
         detector = None
@@ -70,32 +66,9 @@ class ScreenshotWorker(BaseWorker):
             return 0
     
     def _extract_random_frames(self, video_path, output_dir, count):
-        os.makedirs(output_dir, exist_ok=True)
-        duration = self._get_video_duration(video_path)
-        if duration <= 0:
-            return []
-        
-        video_name = os.path.splitext(os.path.basename(video_path))[0]
-        saved = []
-        
-        for i in range(count):
-            t = random.uniform(0, duration)
-            output_path = os.path.join(output_dir, f"{video_name}_frame_{i:04d}.jpg")
-            cmd = [
-                "ffmpeg", "-ss", str(t), "-i", video_path,
-                "-vframes", "1", "-q:v", "2",
-                "-y", output_path
-            ]
-            try:
-                run_ffmpeg(cmd, error_message="extract frame failed",
-                           output_path=output_path)
-                if os.path.exists(output_path):
-                    saved.append(output_path)
-            except FFmpegError:
-                continue
-        
-        return saved
-    
+        from core.screenshot import extract_random_frames
+        return extract_random_frames(video_path, output_dir, count)
+
     def _detect_face_in_image(self, image_path, detector):
         """使用SCRFD检测图片中是否包含人脸"""
         if detector is None:

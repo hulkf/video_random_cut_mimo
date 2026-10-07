@@ -1,7 +1,8 @@
 import os
 import json
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+from core.concat_batch import bounded_results
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton,
@@ -238,27 +239,28 @@ class KaipaiWorker(BaseWorker):
         """有界并发提交多个开拍任务，并分别等待各自结果。"""
         workers = min(self.max_workers, total)
         self.log.emit(f"批量提交 {total} 个文件，并发数: {workers}")
-        results = [None] * total
+        results = {}
+        def process(item):
+            idx, file_path = item
+            if self.stopped():
+                return None
+            try:
+                return self._process_one(client, file_path, idx, total)
+            except Exception as exc:
+                return {
+                    "file": os.path.basename(file_path),
+                    "path": file_path,
+                    "status": "失败",
+                    "task_id": "",
+                    "output_url": "",
+                    "error": str(exc),
+                }
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kaipai") as pool:
-            futures = {
-                pool.submit(self._process_one, client, file_path, idx, total): idx
-                for idx, file_path in enumerate(self.files)
-            }
-            for future in as_completed(futures):
-                idx = futures[future]
-                try:
-                    results[idx] = future.result()
-                except Exception as exc:  # 防止单个线程异常中断整批
-                    file_path = self.files[idx]
-                    results[idx] = {
-                        "file": os.path.basename(file_path),
-                        "path": file_path,
-                        "status": "失败",
-                        "task_id": "",
-                        "output_url": "",
-                        "error": str(exc),
-                    }
-        return results
+            for idx, result in bounded_results(pool, process, enumerate(self.files),
+                    workers=workers, should_stop=self.stopped):
+                if result is not None:
+                    results[idx] = result
+        return [results[idx] for idx in sorted(results)]
 
 
 class KaipaiCloudTab(BaseTab):

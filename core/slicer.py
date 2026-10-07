@@ -1,6 +1,7 @@
 import os
 import json
 import random
+from core.concat_batch import concat_workers, ordered_batch
 from core.text_detector import TextDetector
 from core.video_utils import (
     get_video_duration, extract_frames, cut_video_fast
@@ -64,6 +65,8 @@ def flatten_to_root(output_dir):
 
 class VideoSlicer:
     def __init__(self, min_duration=3, max_duration=5, detect_text=False):
+        if not (0 < min_duration <= max_duration < float("inf")):
+            raise ValueError("切片时长必须有限且满足 0 < 最小值 <= 最大值")
         self.min_duration = min_duration
         self.max_duration = max_duration
         self.detect_text = detect_text
@@ -110,7 +113,8 @@ class VideoSlicer:
         
         return results
     
-    def slice_folder(self, folder_path, output_dir, on_video_done=None, separate_folders=False):
+    def slice_folder(self, folder_path, output_dir, on_video_done=None, separate_folders=False,
+                     *, max_workers=None, callback=None):
         """Slice all videos in a folder.
         
         Args:
@@ -123,8 +127,11 @@ class VideoSlicer:
         all_results = []
         
         video_files = [f for f in os.listdir(folder_path) if f.lower().endswith(video_exts)]
+        stems = [os.path.normcase(os.path.splitext(f)[0]) for f in video_files]
+        if len(stems) != len(set(stems)):
+            raise ValueError("切片输入存在同名视频，请先区分文件名，避免覆盖切片")
         
-        for file in video_files:
+        def process(file):
             video_path = os.path.join(folder_path, file)
             video_name = os.path.splitext(file)[0]
             
@@ -134,12 +141,17 @@ class VideoSlicer:
                 video_output = output_dir
             
             results = self.slice_video(video_path, video_output)
-            all_results.extend(results)
-            
-            if on_video_done:
-                on_video_done(results)
+            return results
+
+        # A shared OCR model is intentionally not called from multiple threads.
+        workers = 1 if self.detect_text else concat_workers(max_workers)
+        batches = ordered_batch(video_files, process, workers=workers,
+            on_result=on_video_done, callback=callback,
+            ffmpeg_threads=max(1, min(4, (os.cpu_count() or 1) // workers)))
+        all_results = [item for batch in batches for item in batch]
         
         report_path = os.path.join(output_dir, "slice_report.json")
+        os.makedirs(output_dir, exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(all_results, f, ensure_ascii=False, indent=2)
         

@@ -117,29 +117,34 @@ class VideoResizer:
                                  output_path=output_path, error_message="resize failed")
         return output_path
 
-    def resize_folder(self, input_folder, output_folder, callback=None):
+    def resize_folder(self, input_folder, output_folder, callback=None, *,
+                      process_mode="all", max_workers=None, on_result=None):
+        from core.concat_batch import concat_workers, ordered_batch, reserve_output
+        from utils.media_utils import collect_videos
+        from utils.path_utils import build_output_path, strip_quotes
+
+        input_folder = strip_quotes(input_folder)
         videos = collect_videos(input_folder)
-        results = []
-        total = len(videos)
+        if not videos:
+            raise ValueError("输入路径中没有找到视频文件")
+        if process_mode == "mismatched":
+            videos = [video for video in videos if not matches_target_size(video, self.target_ratio)]
+        root = input_folder if os.path.isdir(input_folder) else os.path.dirname(input_folder)
+        suffix = ("9x16_to_3x4_to_9x16" if self.target_ratio == PIPELINE_9X16_TO_3X4_TO_9X16
+                  else self.target_ratio.replace(":", "x"))
+        jobs, reserved = [], set()
+        for video in videos:
+            rel_base = os.path.splitext(os.path.relpath(video, root))[0]
+            output = reserve_output(build_output_path(output_folder, rel_base, suffix), reserved)
+            jobs.append((video, output))
 
-        for index, video_path in enumerate(videos):
-            rel_path = os.path.relpath(video_path, input_folder)
-            rel_base, _ = os.path.splitext(rel_path)
-            # 防重名：已存在同名输出不再覆盖而是生成 _2/_3...（行为增强）
-            output_path = build_output_path(
-                output_folder, rel_base, self.target_ratio.replace(':', 'x'), dedupe=True)
+        def process(job):
+            video, output = job
+            self.resize_video(video, output)
+            return {"input": video, "output": output, "ratio": self.target_ratio}
 
-            if callback:
-                callback(index, total, rel_path)
-
-            result_path = self.resize_video(video_path, output_path)
-            results.append({
-                "input": video_path,
-                "output": result_path,
-                "ratio": self.target_ratio,
-            })
-
-            if callback:
-                callback(index + 1, total, rel_path)
-
-        return results
+        workers = concat_workers(max_workers)
+        return ordered_batch(jobs, process, workers=workers,
+            callback=(lambda cur, total, msg, sub: callback(cur, total, msg)) if callback else None,
+            on_result=on_result, message="批量调整视频尺寸",
+            ffmpeg_threads=max(1, min(4, (os.cpu_count() or 1) // workers)))

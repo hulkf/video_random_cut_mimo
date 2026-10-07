@@ -1,6 +1,8 @@
 import concurrent.futures
 import datetime
 import os
+from core.concat_batch import bounded_results, reserve_output
+from core.ffmpeg_runner import ffmpeg_thread_budget
 import random
 import threading
 
@@ -61,7 +63,7 @@ class VideoFission:
         return get_encoder(crf=self.crf, preset=self.preset)
 
     def default_workers(self):
-        """按编码器选择默认并发数（NVENC=3 / 软件=min(核数,8)）。"""
+        """按编码器选择默认并发数（NVENC=3 / 软件最多4路）。"""
         return get_default_workers()
 
     # ── 中断控制 ─────────────────────────────────────────────
@@ -251,7 +253,7 @@ class VideoFission:
             separate_folder:  True=每个源视频的产物放独立子文件夹；
                              False=所有产物统一平铺在输出根目录下
             callback:         progress(done, total, rel_path) 回调（按"份"粒度，并发安全）
-            max_workers:      并发数；None=按编码器策略自动（NVENC 3 / QSV 4 / 软件 min(核数,8)）
+            max_workers:      并发数；None=按编码器策略自动（NVENC 3 / 软件最多4路）
 
         Returns:
             [{"input": ..., "outputs": [path1, ...], "subfolder": ...}, ...]
@@ -294,6 +296,7 @@ class VideoFission:
         # ── 构建任务计划：展开所有 (视频 × 份) 任务，记录输出分组 ──
         plan = []       # [(video_path, rel_base, subfolder)]
         all_tasks = []  # [(video_index, video_path, out_path, seed)]
+        reserved = set()
         for index, ((video_path, source_root, count), rel_base) in enumerate(zip(videos, names)):
             if separate_folder:
                 # 规则A：每个源视频的产物放独立子文件夹
@@ -313,13 +316,13 @@ class VideoFission:
                     out_path = os.path.join(
                         subfolder, "{}_{:03d}_{}.mp4".format(rel_base, i + 1, k))
                     k += 1
+                out_path = reserve_output(out_path, reserved)
                 all_tasks.append((index, video_path, out_path, seed))
 
         # ── 并发执行所有任务 ──────────────────────────────────
         workers = max_workers or self.default_workers()
         workers = max(1, min(workers, len(all_tasks)))
         lock = threading.Lock()
-        done = [0]
         total = len(all_tasks)
         finished_outputs = {}  # video_index -> [out_path, ...]
         errors = []
@@ -328,27 +331,36 @@ class VideoFission:
         def run_one(task):
             vi, video_path, out_path, seed = task
             self._check_stop()  # 线程内检查：已停止则不启动新任务
-            self.fission_one(video_path, out_path, seed=seed)
+            with ffmpeg_thread_budget(max(1, min(4, (os.cpu_count() or 1) // workers))):
+                self.fission_one(video_path, out_path, seed=seed)
             with lock:
                 finished_outputs.setdefault(vi, []).append(out_path)
-                done[0] += 1
-                d = done[0]
-            if callback:
-                callback(d, total, os.path.basename(out_path))
-            return vi
+            return out_path
+
+        def run_safe(task):
+            try:
+                return run_one(task), None
+            except Exception as exc:
+                return None, exc
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(run_one, t): t for t in all_tasks}
-            for fut in concurrent.futures.as_completed(futures):
-                try:
-                    fut.result()
-                except FissionStopped:
+            completed = 0
+            for _, (out_path, error) in bounded_results(pool, run_safe, all_tasks,
+                    workers=workers, should_stop=lambda: self._stop_requested):
+                if isinstance(error, FissionStopped):
                     stop_raised[0] = True
-                    for f in futures:
-                        f.cancel()
                     break
-                except Exception as e:
-                    errors.append(e)
+                if error:
+                    errors.append(error)
+                else:
+                    completed += 1
+                    if callback:
+                        try:
+                            callback(completed, total, os.path.basename(out_path))
+                        except FissionStopped:
+                            stop_raised[0] = True
+                            self.request_stop()
+                            break
             # with 块退出时会等待所有已提交任务结束
             # （中断场景下 request_stop 已 terminate 所有 ffmpeg，任务会快速结束）
 
@@ -366,7 +378,7 @@ class VideoFission:
 
         if errors:
             raise errors[0]
-        if stop_raised[0]:
+        if stop_raised[0] or self._stop_requested:
             raise FissionStopped("用户中断")
 
         return results
