@@ -19,6 +19,40 @@ from video_task_center import PUBLIC_CAPABILITIES, TASK_CENTER_OPERATION_SPECS, 
 
 
 class VideoTaskCenterInterfaceTests(unittest.TestCase):
+    def test_qianchuan_plan_rejects_missing_source_directories_before_creation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            missing_a = root / "千川素材«0" / "模特素材02"
+            missing_b = root / "千川素材«0" / "平铺视频"
+            with self.assertRaisesRegex(ValueError, "千川拼接输入目录不存在"):
+                dispatch(
+                    {
+                        "operation": "task_center_plan",
+                        "inputs": {
+                            "task_id": "QC-PATH-REGRESSION",
+                            "title": "2530 千川素材拼接",
+                            "steps": [{
+                                "id": "concat",
+                                "name": "千川素材拼接",
+                                "request": {
+                                    "operation": "qianchuan_concat",
+                                    "folder_a": str(missing_a),
+                                    "folder_b": str(missing_b),
+                                },
+                            }],
+                            "parameter_lines": ["统一为 9:16 后拼接"],
+                        },
+                    },
+                    db_path=str(root / "tasks.db"),
+                )
+
+            self.assertFalse((root / "tasks.db").exists() and any(
+                dispatch(
+                    {"operation": "task_center_list", "inputs": {}},
+                    db_path=str(root / "tasks.db"),
+                )["task"]["tasks"]
+            ))
+
     def test_all_adapters_share_one_canonical_operation_contract(self):
         self.assertIs(PUBLIC_CAPABILITIES["operations"], TASK_CENTER_OPERATION_SPECS)
         for name, spec in TASK_CENTER_OPERATION_SPECS.items():

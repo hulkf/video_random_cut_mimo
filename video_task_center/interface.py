@@ -9,6 +9,7 @@ from core.video_concat_templates import (
     list_video_concat_templates,
     resolve_video_concat_template,
 )
+from utils.media_utils import collect_videos
 from .contracts import PUBLIC_OPERATION_NAMES, TASK_CENTER_OPERATION_SPECS
 
 
@@ -49,6 +50,15 @@ def _inputs(request: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise ValueError("inputs must be an object")
     return dict(raw)
+
+
+def _validate_qianchuan_sources(request: Mapping[str, Any]) -> None:
+    """Reject a broken A/B path before a confirmed task can start a worker."""
+    inputs = _inputs(request)
+    for key, label in (("folder_a", "A 段"), ("folder_b", "B 段")):
+        path = str(inputs.get(key) or "").strip()
+        if not path or not collect_videos(path):
+            raise ValueError(f"千川拼接输入目录不存在或没有视频：{label} {path or '未提供'}")
 
 
 def dispatch(
@@ -190,6 +200,8 @@ def _dispatch_validated(
                 )
             if inner_operation not in operation_catalog:
                 raise ValueError(f"不支持的视频业务操作: {inner_operation}")
+            if inner_operation == "qianchuan_concat":
+                _validate_qianchuan_sources(inner)
             validation_request = dict(inner)
             if step.get("items_from_step"):
                 target_key = str(
