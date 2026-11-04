@@ -100,17 +100,38 @@ def probe_video(video_path: str, *, timeout: float = 10.0) -> dict:
             "display_aspect_ratio": str, # 如 "9:16"
             "has_audio": bool,           # 是否存在音频流
         }
-    失败（returncode!=0 / 无视频流 / 超时）抛 RuntimeError / subprocess.TimeoutExpired。
+    单次超时只对身份未变化的本地文件再探测一次；持续超时明确失败。
+    不重试格式错误、不重新执行编码，默认最多两次各10秒的只读探测。
     """
     cmd = [
         "ffprobe", "-v", "quiet",
         "-show_format", "-show_streams",
         "-of", "json", video_path,
     ]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True,
-        encoding="utf-8", errors="ignore", timeout=timeout,
-    )
+    def identity():
+        try:
+            info = os.stat(video_path)
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        except OSError:
+            return None
+
+    original = identity()
+    for attempt in range(2):
+        try:
+            # run() kills and reaps the timed-out process before raising: the
+            # second read never overlaps a surviving first ffprobe process.
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="ignore", timeout=timeout,
+            )
+            if attempt and identity() != original:
+                raise RuntimeError("VIDEO_PROBE_SOURCE_CHANGED：探测期间输入视频已变化，请核查原文件。")
+            break
+        except subprocess.TimeoutExpired as error:
+            if original is None or identity() != original:
+                raise RuntimeError("VIDEO_PROBE_SOURCE_CHANGED：探测期间输入视频已变化或不可用，请核查原文件。") from error
+            if attempt:
+                raise RuntimeError("VIDEO_PROBE_TIMEOUT：读取视频信息连续两次超时（每次{:g}秒）；请检查文件读取与本机负载。".format(timeout)) from error
     if result.returncode != 0 or not result.stdout:
         raise RuntimeError("ffprobe failed: {}".format(result.stderr))
 
