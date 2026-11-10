@@ -25,7 +25,7 @@ DAILY_LIMITS = {
     "videoscreenclear": 50,
     "hdvideoallinone": 50,
 }
-CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance"}
+CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance", "kaipai_portrait"}
 RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download"}
 CARDINALITY_CHANGING_OPERATIONS = {"video_fission", "video_concat", "video_mix", "audio_mix"}
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".ts", ".mts", ".m2ts"}
@@ -163,6 +163,9 @@ def _snapshot_path(raw_path: str) -> dict[str, Any]:
 
 
 def _input_snapshot(request: dict[str, Any]) -> list[dict[str, Any]]:
+    if request.get("operation") == "kaipai_portrait":
+        return [{"key": "input_sources", **_snapshot_path(path)}
+                for path in _request_input(request, "input_sources", [])]
     snapshots = []
     for key in ("input_path", "folder_a", "folder_b", "source"):
         value = _request_input(request, key, "")
@@ -497,7 +500,12 @@ class TaskCenter:
             source_step = next((item for item in normalized if item["id"] == source_step_id), None) if source_step_id else None
             if source_step_id and not source_step:
                 raise ValueError("items_from_step 必须引用前面的步骤: {}".format(source_step_id))
-            if source_step:
+            if operation == "kaipai_portrait":
+                if source_step:
+                    raise ValueError("开拍人像增强要求直接列出确认的输入文件")
+                from core.kaipai_portrait import sources as portrait_sources
+                item_count = len(portrait_sources(_request_input(request, "input_sources")))
+            elif source_step:
                 declared_count = raw.get("item_count")
                 source_operation = str(source_step["request"].get("operation") or "")
                 if source_operation in CARDINALITY_CHANGING_OPERATIONS:

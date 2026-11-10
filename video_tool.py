@@ -124,6 +124,7 @@ for _name, _spec in CAPABILITIES["operations"].items():
 # 开拍目录任务默认使用 9 路并发；其他 operation
 # 的 max_workers 默认仍由各自的通用 schema 决定。
 CAPABILITIES["operations"]["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
+CAPABILITIES["operations"]["kaipai_portrait"]["description"] = "通过视频任务中心执行开拍网页版人像增强并下载已验收成片"
 
 for _operation_name in (
     "video_concat", "video_concat_template_resolve", "qianchuan_concat",
