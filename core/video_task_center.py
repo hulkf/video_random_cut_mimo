@@ -1039,8 +1039,7 @@ class TaskCenter:
                 else:
                     raise ValueError("任务当前状态为{}，不能暂停".format(status))
             elif action == "resume":
-                if status != "paused":
-                    raise ValueError("任务当前状态为{}，不能继续".format(status))
+                self._require_resumable_state(task_id, status)
                 target = "queued"
             elif action == "cancel":
                 if status in TERMINAL_STATES:
@@ -1059,6 +1058,17 @@ class TaskCenter:
         if target == "cancelled":
             self._release_unsubmitted_quota(task_id, final=True)
         return self.get(task_id)
+
+    def _require_resumable_state(self, task_id: str, status: str) -> None:
+        if status == "paused":
+            return
+        if status == "failed":
+            steps = self._step_rows(task_id)
+            if len(steps) == 1 and steps[0]["operation"] == "kaipai_portrait":
+                # The portrait executor reconciles the original browser batch
+                # and refuses unknown submission outcomes before any write.
+                return
+        raise ValueError("任务当前状态为{}，不能继续".format(status))
 
     def _resume(
         self,
@@ -1079,8 +1089,8 @@ class TaskCenter:
             expected_chat_id=expected_chat_id,
             expected_card_message_id=expected_card_message_id,
         )
-        if str(row["status"]) != "paused":
-            raise ValueError("任务当前状态为{}，不能继续".format(row["status"]))
+        previous_status = str(row["status"])
+        self._require_resumable_state(task_id, previous_status)
         previous_pid = int(row["worker_pid"] or 0)
         previous_token = str(row["worker_token"] or "")
         self._wait_previous_worker_exit(
@@ -1100,14 +1110,14 @@ class TaskCenter:
                 expected_card_message_id=expected_card_message_id,
             )
             claimed = db.execute(
-                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',updated_at=?,state_revision=state_revision+1 "
-                "WHERE task_id=? AND status='paused' AND worker_pid=?",
-                (_now(), task_id, previous_pid),
+                "UPDATE tasks SET status='queued',worker_pid=-1,worker_token='',error='',updated_at=?,state_revision=state_revision+1 "
+                "WHERE task_id=? AND status=? AND worker_pid=?",
+                (_now(), task_id, previous_status, previous_pid),
             )
             if claimed.rowcount != 1:
                 db.rollback()
                 raise RuntimeError("任务状态已变化，请刷新后再继续")
-            self._event(db, task_id, "control_resume", {"from": "paused", "to": "queued"})
+            self._event(db, task_id, "control_resume", {"from": previous_status, "to": "queued"})
             db.commit()
         self._spawn_worker(task_id)
         return self.get(task_id)
