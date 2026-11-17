@@ -72,6 +72,11 @@ CAPABILITIES = {
                 "blur_strength", "batch_workers",
             ],
         },
+        "video_scene_edit": {
+            "description": "识别原片的正面和侧背面并复核切点，从原帧导出保留区间",
+            "required": ["files", "mode", "description", "output_folder"],
+            "external_service": True,
+        },
         "validate": {
             "description": "检查视频是否可解析、时长是否大于 0，并返回媒体信息",
             "required": ["path"],
@@ -631,6 +636,10 @@ def run_request(request: Dict[str, Any]) -> Dict[str, Any]:
             result = _run_concat_template_resolve(request)
         elif operation == "qianchuan_concat":
             result = _run_qianchuan_concat(request)
+        elif operation == "video_scene_edit":
+            from core.video_scene_edit import run_scene_edit
+
+            result = run_scene_edit(request)
         elif operation == "validate":
             result = _run_validate(request)
         else:
