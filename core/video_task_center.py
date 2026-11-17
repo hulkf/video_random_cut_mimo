@@ -25,7 +25,7 @@ DAILY_LIMITS = {
     "videoscreenclear": 50,
     "hdvideoallinone": 50,
 }
-CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance", "kaipai_portrait"}
+CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download", "kaipai_quota", "video_enhance", "kaipai_portrait", "kaipai_cli_process"}
 RECOVERABLE_CLOUD_OPERATIONS = {"kaipai_process", "kaipai_download"}
 CARDINALITY_CHANGING_OPERATIONS = {"video_fission", "video_concat", "video_mix", "audio_mix"}
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".ts", ".mts", ".m2ts"}
@@ -505,6 +505,12 @@ class TaskCenter:
                     raise ValueError("开拍人像增强要求直接列出确认的输入文件")
                 from core.kaipai_portrait import sources as portrait_sources
                 item_count = len(portrait_sources(_request_input(request, "input_sources")))
+            elif operation == "kaipai_cli_process":
+                if source_step:
+                    raise ValueError("开拍 CLI 要求直接列出确认的素材文件")
+                from core.kaipai_cli import source_path
+                source_path(_request_input(request, "input_path"), _request_input(request, "mode"))
+                item_count = 1
             elif source_step:
                 declared_count = raw.get("item_count")
                 source_operation = str(source_step["request"].get("operation") or "")
@@ -1064,9 +1070,8 @@ class TaskCenter:
             return
         if status == "failed":
             steps = self._step_rows(task_id)
-            if len(steps) == 1 and steps[0]["operation"] == "kaipai_portrait":
-                # The portrait executor reconciles the original browser batch
-                # and refuses unknown submission outcomes before any write.
+            if len(steps) == 1 and steps[0]["operation"] in {"kaipai_portrait", "kaipai_cli_process"}:
+                # Both executors reconcile the original submission before any write.
                 return
         raise ValueError("任务当前状态为{}，不能继续".format(status))
 

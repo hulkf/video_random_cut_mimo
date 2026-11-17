@@ -11,6 +11,7 @@ import hashlib
 from typing import Any, Dict, Iterable, List
 
 from core.kaipai_portrait import OPERATION as KAIPAI_PORTRAIT, run as run_kaipai_portrait
+from core.kaipai_cli import OPERATION as KAIPAI_CLI, run as run_kaipai_cli
 
 
 OPERATIONS: Dict[str, Dict[str, Any]] = {
@@ -28,6 +29,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "kaipai_download": {"tab": "开拍云端", "required": ["items", "output_folder"]},
     "kaipai_quota": {"tab": "开拍云端", "required": []},
     KAIPAI_PORTRAIT: {"tab": "开拍云端", "required": ["input_sources"]},
+    KAIPAI_CLI: {"tab": "开拍云端", "required": ["input_path", "mode"]},
     "video_fission": {"tab": "视频裂变", "required": ["input_sources", "output_folder"]},
     "voice_profile_list": {"tab": "音色复刻", "required": []},
     "voice_profile_create": {"tab": "音色复刻", "required": ["name", "reference_audio", "reference_text"]},
@@ -68,7 +70,7 @@ for _operation_name, _option_names in OPERATION_OPTIONS.items():
     OPERATIONS[_operation_name]["options"] = _option_names
 
 for _operation_name in (
-    "video_enhance", "kaipai_process", "kaipai_download", "kaipai_quota", KAIPAI_PORTRAIT,
+    "video_enhance", "kaipai_process", "kaipai_download", "kaipai_quota", KAIPAI_PORTRAIT, KAIPAI_CLI,
     "video_download", "download_login",
 ):
     OPERATIONS[_operation_name]["external_service"] = True
@@ -80,7 +82,7 @@ for _operation_name in (
     OPERATIONS[_operation_name]["supports_destructive_action"] = True
 
 for _operation_name in (
-    "video_enhance", "kaipai_process", "kaipai_download", "kaipai_quota", KAIPAI_PORTRAIT,
+    "video_enhance", "kaipai_process", "kaipai_download", "kaipai_quota", KAIPAI_PORTRAIT, KAIPAI_CLI,
     "video_download", "download_login", "voice_profile_delete",
     "settings_update", "settings_secret_set", "material_organize",
 ):
@@ -666,6 +668,7 @@ HANDLERS = {
     "subtitle_generate": _subtitle_generate, "kaipai_process": _kaipai_process,
     "kaipai_download": _kaipai_download, "kaipai_quota": _kaipai_quota,
     KAIPAI_PORTRAIT: run_kaipai_portrait,
+    KAIPAI_CLI: run_kaipai_cli,
     "video_fission": _video_fission, "voice_profile_list": _voice_profile_list,
     "voice_profile_create": _voice_profile_create, "voice_profile_delete": _voice_profile_delete,
     "voice_clone_apply": _voice_clone_apply, "voice_synthesize": _voice_synthesize,
