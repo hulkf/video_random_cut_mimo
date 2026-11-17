@@ -23,6 +23,11 @@ PROMPTS = {
     "keep_front": "仅在腰胯与所穿商品主要清楚展示正面时标 F。侧面、侧后方、背面或仍有它们的叠化为 S。",
     "visible_candidates": "以当前角度的目标商品为准。腰口、可见裤脚边缘和两侧可见外轮廓都在画面内且无明显遮挡才标 F；明确截断或挡住标 S。衣服另一面的自然不可见不算遮挡。"
 }
+ORIENTATION_GUIDE = (
+    "用腰胯和商品的朝向判断，不凭手、肩膀、腿的姿势，也不因裁切和颜色变化改判。"
+    "若叠化两层都明确为正面，仍标 F；若能看出任一层为侧面或背面，标 S；"
+    "叠化使朝向看不清时标 U。"
+)
 OPERATION = "video_scene_edit"
 
 
@@ -74,7 +79,8 @@ def _read_keys(want_qwen):
 
 def classify(provider, frames, mode, description, keys):
     url, model, key_name = PROVIDERS[provider]
-    prompt = (f"这是电商服装剪辑任务。{PROMPTS[mode]}\n用户描述：{description}\n"
+    guidance = ORIENTATION_GUIDE if mode != "visible_candidates" else ""
+    prompt = (f"这是电商服装剪辑任务。{PROMPTS[mode]}{guidance}\n用户描述：{description}\n"
               "根据当前帧画面分类，邻帧只作辅助。有明显转身而不能清楚确定的帧标 U；"
               "仅回答 JSON 对象 {\"labels\":[\"F\",\"S\",\"U\"]}，"
               f"按图片顺序给恰好 {len(frames)} 项。F=可保留/候选，S=不符合，U=证据不够。")
