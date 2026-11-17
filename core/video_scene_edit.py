@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+import re
+from bisect import bisect_left
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,6 +30,7 @@ ORIENTATION_GUIDE = (
     "正面要能看清商品前片和两侧髋部；能看到一小块前片不算正面。"
     "一侧髋部明显藏在另一侧之后，或主要看到侧缝、侧臀或后片，标 S。"
     "侧坐和斜靠也按腰胯朝向判断。仅看不全而无法辨别时标 U。"
+    "坐姿或俯拍斜靠时，若一侧髋部突出且另一侧不清晰，即使看到前片也标 S。"
     "若叠化两层都明确为正面，仍标 F；若能看出任一层为侧面或背面，标 S；"
     "叠化使朝向看不清时标 U。"
 )
@@ -80,7 +83,7 @@ def _read_keys(want_qwen):
     return values
 
 
-def classify(provider, frames, mode, description, keys):
+def classify(provider, frames, mode, description, keys, retry_format=True):
     url, model, key_name = PROVIDERS[provider]
     guidance = ORIENTATION_GUIDE if mode != "visible_candidates" else ""
     prompt = (f"这是电商服装剪辑任务。{PROMPTS[mode]}{guidance}\n用户描述：{description}\n"
@@ -113,8 +116,16 @@ def classify(provider, frames, mode, description, keys):
             code = None
         detail = f" ({code})" if isinstance(code, str) and code.isascii() and code.isidentifier() and len(code) <= 60 else ""
         raise RuntimeError(f"{provider} 请求失败 HTTP {error.code}{detail}") from None
-    labels = json.loads(result["choices"][0]["message"]["content"])["labels"]
-    if not isinstance(labels, list) or len(labels) != len(frames) or any(l not in ("F", "S", "U") for l in labels):
+    try:
+        labels = json.loads(result["choices"][0]["message"]["content"])["labels"]
+        valid = isinstance(labels, list) and len(labels) == len(frames) and all(label in ("F", "S", "U") for label in labels)
+    except (ValueError, KeyError, TypeError, IndexError):
+        valid = False
+    if not valid:
+        if retry_format:
+            middle = max(1, len(frames)//2)
+            return [label for start in range(0, len(frames), middle)
+                    for label in classify(provider, frames[start:start+middle], mode, description, keys, False)]
         raise ValueError(f"{provider} 未返回逐帧有效的分类")
     return labels
 
@@ -168,6 +179,22 @@ def reconcile(indices, coarse, frame_count, dense):
         for i in range(lo, hi):
             output[i] = labels[i-lo] if labels[i-lo] != "U" else None
     return output
+
+
+def stable_ranges(source, labels, times, duration):
+    metadata = _run("ffmpeg", ["-nostdin", "-v", "error", "-i", str(source),
+        "-vf", "scdet,metadata=mode=print:file=-", "-an", "-f", "null", "-"]).decode()
+    scores = re.findall(r"frame:(\d+).*?lavfi.scd.score=([\d.]+)", metadata, re.S)
+    hard_cuts = {int(frame) for frame, score in scores if float(score) >= 10}
+    ranges, adjustments = [], []
+    for lo, hi in _ranges(labels, "F"):
+        start = lo if lo == 0 or lo in hard_cuts else bisect_left(times, times[lo] + 1/6)
+        end = hi if hi == len(times) or hi in hard_cuts else bisect_left(times, times[hi] - 1/6)
+        if start < end:
+            ranges.append([start, end])
+        adjustments.append({"classified": [lo, hi], "retained": [start, end] if start < end else [],
+                            "start_hard_cut": lo in hard_cuts, "end_hard_cut": hi in hard_cuts})
+    return ranges, adjustments
 
 
 def _snapshot(path):
@@ -247,7 +274,15 @@ def _one(entry, mode, description, output, keys, check):
             frames = _frame_batch(source, list(range(lo, hi)), times, scratch / f"{batch_name}{lo}")
             return lo, classify("qwen", frames, mode, description, keys)
 
+        def full_review():
+            parts = []
+            for start in range(0, len(times), 16):
+                parts.append(confirm((start, min(start+16, len(times))), "full"))
+                check()
+            return parts
+
         dense = []
+        fallback = False
         if windows:
             # Split long mutually overlapping windows and cover every intervening frame.
             cuts = [(start, min(start+32, hi)) for lo, hi in _merge(windows) for start in range(lo, hi, 32)]
@@ -262,7 +297,8 @@ def _one(entry, mode, description, output, keys, check):
             frames = _frame_batch(source, sentinel, times, scratch / "uniform")
             second = classify("qwen", frames, mode, description, keys)
             if set(second) != {coarse[0]} or "U" in coarse:
-                return {"file": source.name, "status": "review_required", "reason": "整段方向两模型不一致"}
+                dense = full_review()
+                fallback = True
         labels = reconcile(indices, coarse, len(times), dense)
         confirmed = {lo+i for lo, part in dense for i, label in enumerate(part) if label in ("F", "S")}
         boundaries = [i for i in range(1, len(labels)) if labels[i] != labels[i-1]]
@@ -279,28 +315,46 @@ def _one(entry, mode, description, output, keys, check):
             confirmed.update(lo+i for lo, part in dense for i, label in enumerate(part) if label in ("F", "S"))
             confirmed.intersection_update(i for i, label in enumerate(labels) if label in ("F", "S"))
             boundaries = [i for i in range(1, len(labels)) if labels[i] != labels[i-1]]
-        ranges = _ranges(labels, "F")
-        times_result = [[round(times[a], 6), round(times[b] if b < len(times) else duration, 6)] for a,b in ranges]
-        result = {"file": source.name, "keep_frames": ranges, "keep_seconds": times_result,
-                  "source_frames": len(times), "confirmed_cut_points": [i for i in boundaries if i in confirmed and i-1 in confirmed],
-                  "deepseek_sample_indices": indices, "deepseek_labels": coarse,
-                  "qwen_windows": [[lo, len(part)] for lo, part in dense]}
-        if None in labels or any(i not in confirmed or i-1 not in confirmed for i in boundaries):
-            return dict(result, status="review_required", reason="有未复核或方向不确定的切点")
-        if windows:
-            # DeepSeek can miss an entire side-facing turn between the cut windows.
-            # Sample the retained portions that have had no second-model check.
+        unresolved = None in labels or any(i not in confirmed or i-1 not in confirmed for i in boundaries)
+        disagreements = []
+        if windows and not unresolved:
             unreviewed = [i for i in indices if labels[i] == "F" and i not in confirmed]
-            disagreements = []
-            for start in range(0, len(unreviewed), 32):
-                batch = unreviewed[start:start+32]
+            for start in range(0, len(unreviewed), 16):
+                batch = unreviewed[start:start+16]
                 frames = _frame_batch(source, batch, times, scratch / f"audit{start}")
                 audited = classify("qwen", frames, "keep_front", "复核拟保留的原帧，轻微偏正可保留。", keys)
                 disagreements.extend(i for i, label in zip(batch, audited) if label != "F")
                 check()
-            if disagreements:
-                return dict(result, status="review_required", review_frame_indices=disagreements,
-                            reason="拟保留区间发现疑似侧背面或方向不明")
+        if (unresolved or disagreements) and not fallback:
+            dense = full_review()
+            fallback = True
+            labels = reconcile(indices, coarse, len(times), dense)
+        # A valid U label explicitly excludes that frame. Missing model results
+        # still fail the whole file in classify(), before any export.
+        if fallback:
+            labels = [label if label in ("F", "S") else "S" for label in labels]
+        reviewed_limits = None
+        marker = "复核保留帧="
+        if marker in description:
+            reviewed_limits = json.loads(description.split(marker, 1)[1].strip())
+            if (not isinstance(reviewed_limits, list) or not reviewed_limits
+                    or any(not isinstance(span, list) or len(span) != 2
+                           or any(type(n) is not int for n in span)
+                           or not 0 <= span[0] < span[1] <= len(times) for span in reviewed_limits)):
+                raise ValueError("人工复核帧区间无效")
+            # A reviewer can only narrow model-approved footage, never authorize
+            # frames that the visual model classified as side-facing or unknown.
+            for i in range(len(labels)):
+                if not any(a <= i < b for a,b in reviewed_limits):
+                    labels[i] = "S"
+        ranges, adjustments = stable_ranges(source, labels, times, duration)
+        result = {"file": source.name, "keep_frames": ranges,
+                  "keep_seconds": [[round(times[a], 6), round(times[b] if b < len(times) else duration, 6)] for a,b in ranges],
+                  "source_frames": len(times), "confirmed_cut_points": [i for i in range(1,len(labels)) if labels[i] != labels[i-1]],
+                  "deepseek_sample_indices": indices, "deepseek_labels": coarse,
+                  "qwen_windows": [[lo,len(part)] for lo,part in dense],
+                  "full_frame_review": fallback, "boundary_adjustments": adjustments,
+                  "reviewed_frame_limits": reviewed_limits}
         if not ranges:
             return dict(result, status="empty")
         if ranges == [[0, len(times)]]:

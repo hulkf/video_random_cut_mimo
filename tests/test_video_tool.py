@@ -24,7 +24,7 @@ from gui.kaipai_cloud_tab import KaipaiWorker
 
 
 class VideoToolTests(unittest.TestCase):
-    def test_scene_edit_requires_review_if_a_retained_turn_was_missed(self):
+    def test_scene_edit_reviews_all_frames_if_a_retained_turn_was_missed(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp).resolve()
             source = folder / "source.mp4"
@@ -40,14 +40,30 @@ class VideoToolTests(unittest.TestCase):
                 patch.object(video_scene_edit, "_probe", return_value=(times, 3.6, False)),
                 patch.object(video_scene_edit, "_frame_batch", side_effect=lambda _, indices, *_args: indices),
                 patch.object(video_scene_edit, "classify", side_effect=classify),
+                patch.object(video_scene_edit, "_run", return_value=b""),
                 patch.object(video_scene_edit, "export") as export,
             ):
                 result = video_scene_edit._one(entry, "remove_side", "删掉侧面", folder, {}, lambda: None)
+                limited = video_scene_edit._one(entry, "remove_side", "复核保留帧=[[9,18]]", folder, {}, lambda: None)
 
-            self.assertEqual(result["confirmed_cut_points"], [9])
-            self.assertEqual(result["review_frame_indices"], [21])
-            self.assertEqual(result["status"], "review_required")
-            export.assert_not_called()
+            self.assertTrue(result["full_frame_review"])
+            self.assertEqual(result["keep_frames"], [[11, 20], [24, 36]])
+            self.assertEqual(result["status"], "exported")
+            self.assertEqual(limited["keep_frames"], [[11, 17]])
+            self.assertEqual(limited["reviewed_frame_limits"], [[9,18]])
+            self.assertEqual(export.call_count, 2)
+
+    def test_scene_edit_preserves_hard_cut_and_contracts_continuous_turn(self):
+        times = [i / 24 for i in range(145)]
+        with patch.object(video_scene_edit, "_run", return_value=b"frame:19\nlavfi.scd.score=0.5\n"):
+            spans, _ = video_scene_edit.stable_ranges(Path("clip.mp4"), ["S"]*19+["F"]*126, times, 145/24)
+        self.assertEqual(spans, [[23, 145]])
+        for cut in (110, 109, 88):
+            times = [i/24 for i in range(169)]
+            evidence = f"frame:{cut}\nlavfi.scd.score=14.4\n".encode()
+            with patch.object(video_scene_edit, "_run", return_value=evidence):
+                spans, _ = video_scene_edit.stable_ranges(Path("clip.mp4"), ["S"]*cut+["F"]*(169-cut), times, 169/24)
+            self.assertEqual(spans, [[cut,169]])
 
     def test_capabilities_are_machine_readable(self):
         result = subprocess.run(
