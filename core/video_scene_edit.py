@@ -242,9 +242,9 @@ def _one(entry, mode, description, output, keys, check):
                 pad = max(4, hi - lo)
                 windows.append((max(0, lo-pad), min(len(times), hi+pad+1)))
 
-        def confirm(span):
+        def confirm(span, batch_name="cut"):
             lo, hi = span
-            frames = _frame_batch(source, list(range(lo, hi)), times, scratch / f"qwen{lo}")
+            frames = _frame_batch(source, list(range(lo, hi)), times, scratch / f"{batch_name}{lo}")
             return lo, classify("qwen", frames, mode, description, keys)
 
         dense = []
@@ -266,6 +266,19 @@ def _one(entry, mode, description, output, keys, check):
         labels = reconcile(indices, coarse, len(times), dense)
         confirmed = {lo+i for lo, part in dense for i, label in enumerate(part) if label in ("F", "S")}
         boundaries = [i for i in range(1, len(labels)) if labels[i] != labels[i-1]]
+        outside = [i for i in boundaries if (i in confirmed) != (i-1 in confirmed)]
+        if outside:
+            # A coarse estimate can end before the real cut. Widen that edge
+            # once, then require original frames on both sides of the new cut.
+            expansion = _merge((max(0, i-8), min(len(times), i+16)) for i in outside)
+            for lo, hi in expansion:
+                for start in range(lo, hi, 32):
+                    dense.append(confirm((start, min(start+32, hi)), "edge"))
+                    check()
+            labels = reconcile(indices, coarse, len(times), dense)
+            confirmed.update(lo+i for lo, part in dense for i, label in enumerate(part) if label in ("F", "S"))
+            confirmed.intersection_update(i for i, label in enumerate(labels) if label in ("F", "S"))
+            boundaries = [i for i in range(1, len(labels)) if labels[i] != labels[i-1]]
         ranges = _ranges(labels, "F")
         times_result = [[round(times[a], 6), round(times[b] if b < len(times) else duration, 6)] for a,b in ranges]
         result = {"file": source.name, "keep_frames": ranges, "keep_seconds": times_result,
@@ -282,7 +295,7 @@ def _one(entry, mode, description, output, keys, check):
             for start in range(0, len(unreviewed), 32):
                 batch = unreviewed[start:start+32]
                 frames = _frame_batch(source, batch, times, scratch / f"audit{start}")
-                audited = classify("qwen", frames, mode, description, keys)
+                audited = classify("qwen", frames, "keep_front", "复核拟保留的原帧，轻微偏正可保留。", keys)
                 disagreements.extend(i for i, label in zip(batch, audited) if label != "F")
                 check()
             if disagreements:
