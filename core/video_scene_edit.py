@@ -53,7 +53,12 @@ def _probe(path):
 
 
 def _read_keys(want_qwen):
-    env_file = Path(os.environ.get("VIDEO_SCENE_PROVIDER_ENV_FILE", ""))
+    # The Workbench starts its native worker with a dedicated database. Other
+    # video profiles use their own databases and may not opt into this provider.
+    database = Path(os.environ.get("VIDEO_TASK_CENTER_DB", ""))
+    if not database.is_absolute() or database.parts[-3:] != ("tools", "video-scene-edit", "tasks.db"):
+        raise PermissionError("画面识别仅可由工作台专用视频任务调用")
+    env_file = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / ".env"
     if not env_file.is_absolute() or not env_file.is_file():
         raise RuntimeError("未配置工作台视频识别凭据")
     values = {}
