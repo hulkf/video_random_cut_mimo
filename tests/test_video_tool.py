@@ -19,10 +19,36 @@ if str(ROOT) not in sys.path:
 
 import video_tool
 import headless_operations
+from core import video_scene_edit
 from gui.kaipai_cloud_tab import KaipaiWorker
 
 
 class VideoToolTests(unittest.TestCase):
+    def test_scene_edit_requires_review_if_a_retained_turn_was_missed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp).resolve()
+            source = folder / "source.mp4"
+            source.write_bytes(b"placeholder")
+            info = source.stat()
+            entry = {"path": str(source), "size": info.st_size, "mtime_ns": info.st_mtime_ns}
+            times = [i / 10 for i in range(36)]
+
+            def classify(provider, indices, *_):
+                return ["S" if i < 9 or (provider == "qwen" and i == 21) else "F" for i in indices]
+
+            with (
+                patch.object(video_scene_edit, "_probe", return_value=(times, 3.6, False)),
+                patch.object(video_scene_edit, "_frame_batch", side_effect=lambda _, indices, *_args: indices),
+                patch.object(video_scene_edit, "classify", side_effect=classify),
+                patch.object(video_scene_edit, "export") as export,
+            ):
+                result = video_scene_edit._one(entry, "remove_side", "删掉侧面", folder, {}, lambda: None)
+
+            self.assertEqual(result["confirmed_cut_points"], [9])
+            self.assertEqual(result["review_frame_indices"], [21])
+            self.assertEqual(result["status"], "review_required")
+            export.assert_not_called()
+
     def test_capabilities_are_machine_readable(self):
         result = subprocess.run(
             [sys.executable, str(ROOT / "video_tool.py"), "capabilities"],

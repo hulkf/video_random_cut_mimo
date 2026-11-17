@@ -25,6 +25,9 @@ PROMPTS = {
 }
 ORIENTATION_GUIDE = (
     "用腰胯和商品的朝向判断，不凭手、肩膀、腿的姿势，也不因裁切和颜色变化改判。"
+    "正面要能看清商品前片和两侧髋部；能看到一小块前片不算正面。"
+    "一侧髋部明显藏在另一侧之后，或主要看到侧缝、侧臀或后片，标 S。"
+    "侧坐和斜靠也按腰胯朝向判断。仅看不全而无法辨别时标 U。"
     "若叠化两层都明确为正面，仍标 F；若能看出任一层为侧面或背面，标 S；"
     "叠化使朝向看不清时标 U。"
 )
@@ -104,7 +107,12 @@ def classify(provider, frames, mode, description, keys):
         with urllib.request.urlopen(req, timeout=45) as response:
             result = json.load(response)
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"{provider} 请求失败 HTTP {error.code}") from None
+        try:
+            code = json.loads(error.read(4096)).get("error", {}).get("code")
+        except (ValueError, AttributeError):
+            code = None
+        detail = f" ({code})" if isinstance(code, str) and code.isascii() and code.isidentifier() and len(code) <= 60 else ""
+        raise RuntimeError(f"{provider} 请求失败 HTTP {error.code}{detail}") from None
     labels = json.loads(result["choices"][0]["message"]["content"])["labels"]
     if not isinstance(labels, list) or len(labels) != len(frames) or any(l not in ("F", "S", "U") for l in labels):
         raise ValueError(f"{provider} 未返回逐帧有效的分类")
@@ -266,6 +274,20 @@ def _one(entry, mode, description, output, keys, check):
                   "qwen_windows": [[lo, len(part)] for lo, part in dense]}
         if None in labels or any(i not in confirmed or i-1 not in confirmed for i in boundaries):
             return dict(result, status="review_required", reason="有未复核或方向不确定的切点")
+        if windows:
+            # DeepSeek can miss an entire side-facing turn between the cut windows.
+            # Sample the retained portions that have had no second-model check.
+            unreviewed = [i for i in indices if labels[i] == "F" and i not in confirmed]
+            disagreements = []
+            for start in range(0, len(unreviewed), 32):
+                batch = unreviewed[start:start+32]
+                frames = _frame_batch(source, batch, times, scratch / f"audit{start}")
+                audited = classify("qwen", frames, mode, description, keys)
+                disagreements.extend(i for i, label in zip(batch, audited) if label != "F")
+                check()
+            if disagreements:
+                return dict(result, status="review_required", review_frame_indices=disagreements,
+                            reason="拟保留区间发现疑似侧背面或方向不明")
         if not ranges:
             return dict(result, status="empty")
         if ranges == [[0, len(times)]]:
