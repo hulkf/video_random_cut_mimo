@@ -65,6 +65,43 @@ class VideoToolTests(unittest.TestCase):
                 spans, _ = video_scene_edit.stable_ranges(Path("clip.mp4"), ["S"]*cut+["F"]*(169-cut), times, 169/24)
             self.assertEqual(spans, [[cut,169]])
 
+    def test_scene_full_review_decodes_once_and_keeps_concurrent_results_ordered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp).resolve()
+            source = folder / "source.mp4"
+            source.write_bytes(b"placeholder")
+            info = source.stat()
+            times = [i/10 for i in range(36)]
+            entry = {"path":str(source), "size":info.st_size, "mtime_ns":info.st_mtime_ns}
+            active = 0
+            maximum = 0
+            lock = threading.Lock()
+            def classify(provider, frames, *_):
+                nonlocal active, maximum
+                if provider == "deepseek":
+                    return ["F"] * len(frames)
+                if len(frames) not in (16, 4):
+                    return ["S"] * len(frames)
+                with lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(.04 if frames[0] == 0 else .01)
+                with lock:
+                    active -= 1
+                return ["S" if i < 16 else "F" for i in frames]
+            with (
+                patch.object(video_scene_edit, "_probe", return_value=(times,3.6,False)),
+                patch.object(video_scene_edit, "_frame_batch", side_effect=lambda _, indices, *_args: indices) as extract,
+                patch.object(video_scene_edit, "classify", side_effect=classify),
+                patch.object(video_scene_edit, "_run", return_value=b""),
+                patch.object(video_scene_edit, "export"),
+            ):
+                result=video_scene_edit._one(entry,"keep_front","保留正面",folder,{},lambda:None)
+            self.assertEqual(maximum, 2)
+            self.assertEqual(result["qwen_windows"], [[0,16],[16,16],[32,4]])
+            self.assertEqual(result["keep_frames"], [[18,36]])
+            self.assertEqual(sum(call.args[1] == list(range(36)) for call in extract.call_args_list), 1)
+
     def test_capabilities_are_machine_readable(self):
         result = subprocess.run(
             [sys.executable, str(ROOT / "video_tool.py"), "capabilities"],

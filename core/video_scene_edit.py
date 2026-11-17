@@ -132,10 +132,15 @@ def classify(provider, frames, mode, description, keys, retry_format=True):
 
 def _frame_batch(source, indices, times, scratch):
     scratch.mkdir()
-    expr = "+".join(f"eq(n\\,{i})" for i in indices)
+    # Full review needs every frame. Avoid both repeated decoding and a command
+    # line containing thousands of select expressions on Windows.
+    filters = "scale=360:-2"
+    if indices != list(range(len(times))):
+        expr = "+".join(f"eq(n\\,{i})" for i in indices)
+        filters = f"select={expr}," + filters
     _run("ffmpeg", ["-nostdin", "-v", "error", "-i", str(source), "-vf",
-         f"select={expr},scale=360:-2", "-fps_mode", "passthrough", "-q:v", "3", "-an",
-         str(scratch / "f%03d.jpg")])
+         filters, "-frames:v", str(len(indices)), "-fps_mode", "passthrough", "-q:v", "3", "-an",
+         str(scratch / "f%06d.jpg")])
     images = sorted(scratch.glob("f*.jpg"))
     if len(images) != len(indices):
         raise ValueError("解码帧数与原始时间线不一致")
@@ -275,10 +280,20 @@ def _one(entry, mode, description, output, keys, check):
             return lo, classify("qwen", frames, mode, description, keys)
 
         def full_review():
+            check()
+            frames = _frame_batch(source, list(range(len(times))), times, scratch / "full")
             parts = []
-            for start in range(0, len(times), 16):
-                parts.append(confirm((start, min(start+16, len(times))), "full"))
-                check()
+            # Submit only the current pair, so cancellation or a failed response
+            # cannot leave an entire video's requests queued at the provider.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                for offset in range(0, len(frames), 32):
+                    check()
+                    pending = [(start, pool.submit(classify, "qwen", frames[start:start+16],
+                                                   mode, description, keys))
+                               for start in range(offset, min(offset+32, len(frames)), 16)]
+                    for start, future in pending:
+                        parts.append((start, future.result()))
+                        check()
             return parts
 
         dense = []
