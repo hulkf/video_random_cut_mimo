@@ -127,7 +127,11 @@ def _dispatch_validated(
     center = TaskCenter(db_path)
     response_extra: dict[str, Any] = {}
 
-    if operation == "task_center_templates":
+    if operation == "task_center_kaipai_playwright_capabilities":
+        from core.kaipai_playwright import capabilities
+
+        result = {"effects": capabilities()}
+    elif operation == "task_center_templates":
         templates = list_video_concat_templates()
         template_id = str(inputs.get("template_id") or "").strip()
         if template_id:

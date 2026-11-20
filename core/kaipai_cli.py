@@ -53,13 +53,13 @@ def cli_environment():
     return ["node", str(entry)], env
 
 
-def _run(command, env, directory, name, args, check, timeout=300):
+def _run(command, env, directory, name, args, check, timeout=300, *, cwd=None):
     check()
     out = directory / (name + ".jsonl")
     err = directory / (name + ".stderr")
     with out.open("wb") as stdout, err.open("wb") as stderr:
         with subprocess.Popen(
-            [*command, *args], stdout=stdout, stderr=stderr, env=env, cwd=directory,
+            [*command, *args], stdout=stdout, stderr=stderr, env=env, cwd=cwd or directory,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ) as process:
             deadline = time.monotonic() + timeout

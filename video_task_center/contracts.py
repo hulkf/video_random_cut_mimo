@@ -6,6 +6,11 @@ from typing import Any
 
 
 TASK_CENTER_OPERATION_SPECS: dict[str, dict[str, Any]] = {
+    "task_center_kaipai_playwright_capabilities": {
+        "description": "只读查询开拍 Playwright 当前可提交的视频效果",
+        "required": [],
+        "options": [],
+    },
     "task_center_templates": {
         "description": "读取视频工具注册的模板目录，供飞书等入口生成模板选择项",
         "required": [],

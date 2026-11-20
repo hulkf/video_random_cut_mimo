@@ -12,9 +12,13 @@ from typing import Any, Dict, Iterable, List
 
 from core.kaipai_portrait import OPERATION as KAIPAI_PORTRAIT, run as run_kaipai_portrait
 from core.kaipai_cli import OPERATION as KAIPAI_CLI, run as run_kaipai_cli
+from core.kaipai_playwright import OPERATION as KAIPAI_PLAYWRIGHT, run as run_kaipai_playwright
 
 
 OPERATIONS: Dict[str, Dict[str, Any]] = {
+    KAIPAI_PLAYWRIGHT: {
+        "tab": "开拍 Playwright", "required": ["input_sources", "effect"], "external_service": True,
+    },
     "video_slice": {"tab": "视频切片", "required": ["input_path", "output_folder"]},
     "video_screenshot": {"tab": "视频截图", "required": ["input_path", "output_folder"]},
     "text_recognition": {"tab": "文字识别", "required": ["input_path"]},
@@ -669,6 +673,7 @@ HANDLERS = {
     "kaipai_download": _kaipai_download, "kaipai_quota": _kaipai_quota,
     KAIPAI_PORTRAIT: run_kaipai_portrait,
     KAIPAI_CLI: run_kaipai_cli,
+    KAIPAI_PLAYWRIGHT: run_kaipai_playwright,
     "video_fission": _video_fission, "voice_profile_list": _voice_profile_list,
     "voice_profile_create": _voice_profile_create, "voice_profile_delete": _voice_profile_delete,
     "voice_clone_apply": _voice_clone_apply, "voice_synthesize": _voice_synthesize,
