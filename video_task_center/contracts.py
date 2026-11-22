@@ -6,6 +6,11 @@ from typing import Any
 
 
 TASK_CENTER_OPERATION_SPECS: dict[str, dict[str, Any]] = {
+    "task_center_kaipai_handoff": {
+        "description": "只读核对本杰明上一阶段的开拍视频产物",
+        "required": ["task_id", "artifact_id", "stage"],
+        "options": [],
+    },
     "task_center_kaipai_playwright_capabilities": {
         "description": "只读查询开拍 Playwright 当前可提交的视频效果",
         "required": [],

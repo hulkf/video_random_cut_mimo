@@ -127,7 +127,13 @@ def _dispatch_validated(
     center = TaskCenter(db_path)
     response_extra: dict[str, Any] = {}
 
-    if operation == "task_center_kaipai_playwright_capabilities":
+    if operation == "task_center_kaipai_handoff":
+        from core.kaipai_handoff import resolve
+
+        path = resolve(center, {"task_id": inputs["task_id"], "artifact_id": inputs["artifact_id"]}, inputs["stage"])
+        stat = path.stat()
+        result = {"path": str(path), "source_revision": f"{stat.st_size}:{stat.st_mtime_ns}"}
+    elif operation == "task_center_kaipai_playwright_capabilities":
         from core.kaipai_playwright import capabilities
 
         result = {"effects": capabilities()}

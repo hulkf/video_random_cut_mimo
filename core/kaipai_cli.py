@@ -68,6 +68,22 @@ def source_path(value, mode):
     return path
 
 
+def request_source(inputs, center):
+    if "upstream" not in inputs:
+        return source_path(inputs["input_path"], inputs["mode"])
+    if inputs["mode"] != "smartedit":
+        raise ValueError("仅网感剪辑支持沿用智能全消产物")
+    from core.kaipai_handoff import resolve
+
+    path = resolve(center, inputs["upstream"], "remove-text")
+    if Path(inputs["input_path"]) != path:
+        raise ValueError("网感剪辑输入与上一步回执不一致")
+    stat = path.stat()
+    if inputs.get("source_revision") != f"{stat.st_size}:{stat.st_mtime_ns}":
+        raise ValueError("智能全消成片在选型后发生变化")
+    return path
+
+
 def cli_environment():
     appdata = Path(os.environ["APPDATA"])
     entry = appdata / "npm/node_modules/meitu-kaipai-cli/bin/kaipai.js"
@@ -228,7 +244,7 @@ def run(request):
     inputs = request["inputs"]
     mode = inputs["mode"]
     selected = template_id(inputs)
-    source = source_path(inputs["input_path"], mode)
+    source = request_source(inputs, context.center)
     stat = source.stat()
     revision = f"{stat.st_size}:{stat.st_mtime_ns}"
     if selected and inputs.get("source_revision", revision) != revision:
@@ -294,5 +310,9 @@ def run(request):
     if selected:
         result["template_material_id"] = selected
         result["requires_name_card_review"] = True
-        result["validation"] = [{"path": path, "source_revision": revision} for path in outputs]
+        result["validation"] = [
+            {"path": path, "source_revision": revision,
+             **({"upstream": inputs["upstream"]} if "upstream" in inputs else {})}
+            for path in outputs
+        ]
     return result

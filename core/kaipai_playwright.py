@@ -55,10 +55,26 @@ def capabilities():
     ]
 
 
-def validate_inputs(inputs):
+def request_sources(inputs, center):
+    if "upstream" not in inputs:
+        return _inputs(inputs["input_sources"])
+    if inputs["effect"] != "goods":
+        raise ValueError("网页接续只可使用商品画质修复")
+    from core.kaipai_handoff import resolve
+
+    path = resolve(center, inputs["upstream"], "smartedit")
+    if [Path(value) for value in inputs["input_sources"]] != [path]:
+        raise ValueError("商品修复输入与已验收网感成片不一致")
+    stat = path.stat()
+    if inputs.get("source_revision") != f"{stat.st_size}:{stat.st_mtime_ns}":
+        raise ValueError("已验收网感成片在计划后发生变化")
+    return [path]
+
+
+def validate_inputs(inputs, center=None):
     if inputs["effect"] not in {item["effect"] for item in capabilities()}:
         raise ValueError("Playwright 未支持这个可以提交的视频效果")
-    return _inputs(inputs["input_sources"])
+    return request_sources(inputs, center)
 
 
 def run(request):
@@ -67,7 +83,7 @@ def run(request):
     if not context or grant.get("confirmed") is not True or grant.get("scope") != OPERATION:
         raise PermissionError("开拍 Playwright 须通过已确认的视频任务执行")
     inputs = request["inputs"]
-    files = _inputs(inputs["input_sources"])
+    files = request_sources(inputs, context.center)
     python, task, profile = _installation()
     identity = hashlib.sha256(f"{context.task_id}:{context.step_id}".encode()).hexdigest()[:24]
     directory = context.center.db_path.resolve().parent / "kaipai-playwright" / identity

@@ -510,12 +510,12 @@ class TaskCenter:
                 if source_step:
                     raise ValueError("开拍 Playwright 要求直接列出确认的素材文件")
                 from core.kaipai_playwright import validate_inputs
-                item_count = len(validate_inputs(request["inputs"]))
+                item_count = len(validate_inputs(request["inputs"], self))
             elif operation == "kaipai_cli_process":
                 if source_step:
                     raise ValueError("开拍 CLI 要求直接列出确认的素材文件")
-                from core.kaipai_cli import source_path
-                source_path(_request_input(request, "input_path"), _request_input(request, "mode"))
+                from core.kaipai_cli import request_source
+                request_source(request.get("inputs") or request, self)
                 item_count = 1
             elif source_step:
                 declared_count = raw.get("item_count")
@@ -1705,6 +1705,9 @@ class TaskCenter:
 
     def _step_summary(self, row: sqlite3.Row, *, item_counts: dict[str, int] | None = None) -> dict[str, Any]:
         result = _decode(row["result_json"], {})
+        kaipai = {}
+        if row["operation"] == "kaipai_cli_process":
+            kaipai["kaipai_mode"] = _request_input(_decode(row["request_json"], {}), "mode")
         counts = item_counts
         if counts is None:
             counts = {}
@@ -1717,6 +1720,7 @@ class TaskCenter:
             "error": row["error"], "started_at": row["started_at"], "finished_at": row["finished_at"], "updated_at": row["updated_at"],
             "output_count": len(result.get("outputs") or []),
             "validation": result.get("summary") or result.get("validation") or {},
+            **kaipai,
         }
 
     def _task_status(self, task_id: str) -> str:

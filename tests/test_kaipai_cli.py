@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import kaipai_cli
+from core import kaipai_cli, kaipai_playwright
 
 
 def test_resume_after_unknown_submit_does_not_submit_again(tmp_path, monkeypatch):
@@ -109,3 +109,30 @@ def test_smartedit_artifact_is_only_final_after_replacement(tmp_path):
     clean.replace(draft)
     assert kaipai_cli.reviewed_artifact(draft, "task")
     assert not kaipai_cli.reviewed_artifact(draft, "other-task")
+
+
+def test_flat_lay_handoff_only_accepts_the_expected_completed_artifact(tmp_path):
+    import hashlib
+
+    task_id = "bj-kaipai-cli-" + "a" * 24
+    artifact_id = "artifact_" + "b" * 64
+    upstream = {"task_id": task_id, "artifact_id": artifact_id}
+    key = hashlib.sha256(f"{task_id}:kaipai-cli".encode()).hexdigest()[:24]
+    product = tmp_path / "kaipai-cli" / key / "result-1" / "clip.mp4"
+    product.parent.mkdir(parents=True)
+    product.write_bytes(b"result")
+    step = {"step_id": "kaipai-cli", "operation": "kaipai_cli_process", "kaipai_mode": "video-remove-auto"}
+    artifact = {"artifact_id": artifact_id, "path": str(product), "step_id": step["step_id"],
+                "media_type": "video", "stage": "final"}
+    task = {"status": "completed", "steps": [step], "artifacts": [artifact]}
+    center = SimpleNamespace(db_path=tmp_path / "tasks.db", get=lambda _: task)
+    request = {"mode": "smartedit", "input_path": str(product), "upstream": upstream,
+               "source_revision": f"{product.stat().st_size}:{product.stat().st_mtime_ns}"}
+    assert kaipai_cli.request_source(request, center) == product
+    with pytest.raises(ValueError, match="不一致"):
+        kaipai_cli.request_source({**request, "input_path": str(tmp_path / "other.mp4")}, center)
+    with pytest.raises(ValueError, match="不是已完成"):
+        kaipai_playwright.request_sources({"effect": "goods", "input_sources": [str(product)], "upstream": upstream}, center)
+    artifact["stage"] = "intermediate"
+    with pytest.raises(ValueError, match="可接续"):
+        kaipai_cli.request_source(request, center)

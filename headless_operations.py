@@ -17,7 +17,8 @@ from core.kaipai_playwright import OPERATION as KAIPAI_PLAYWRIGHT, run as run_ka
 
 OPERATIONS: Dict[str, Dict[str, Any]] = {
     KAIPAI_PLAYWRIGHT: {
-        "tab": "开拍 Playwright", "required": ["input_sources", "effect"], "external_service": True,
+        "tab": "开拍 Playwright", "required": ["input_sources", "effect"],
+        "optional": ["source_revision", "upstream"], "external_service": True,
     },
     "video_slice": {"tab": "视频切片", "required": ["input_path", "output_folder"]},
     "video_screenshot": {"tab": "视频截图", "required": ["input_path", "output_folder"]},
@@ -34,7 +35,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "kaipai_quota": {"tab": "开拍云端", "required": []},
     KAIPAI_PORTRAIT: {"tab": "开拍云端", "required": ["input_sources"]},
     KAIPAI_CLI: {"tab": "开拍云端", "required": ["input_path", "mode"],
-                 "optional": ["template_material_id", "source_revision"]},
+                 "optional": ["template_material_id", "source_revision", "upstream"]},
     "video_fission": {"tab": "视频裂变", "required": ["input_sources", "output_folder"]},
     "voice_profile_list": {"tab": "音色复刻", "required": []},
     "voice_profile_create": {"tab": "音色复刻", "required": ["name", "reference_audio", "reference_text"]},
@@ -127,7 +128,7 @@ def operation_field_schema(name: str) -> Dict[str, Any]:
         "estimate_min_duration",
     }
     array_fields = {"keywords", "items", "input_sources", "urls"}
-    object_fields = {"params", "values"}
+    object_fields = {"params", "values", "upstream"}
     enum_values = {
         "target_ratio": ["9:16", "3:4", "1:1", "9:16->3:4->9:16"],
         "process_mode": ["all", "mismatched"],
