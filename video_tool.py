@@ -374,22 +374,17 @@ def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, A
     engine = VideoConcatenatorEngine(config)
     controller = request.get("_task_controller")
     callback = (lambda *_args: controller.check()) if controller else None
-    if request.get("template_id") == "001":
-        from core.video_concat_pipeline import run_template_001_concat
-
-        outputs = run_template_001_concat(config, callback)
-    elif controller:
-        outputs = engine.run(callback)
-    else:
-        outputs = engine.run()
+    template_001 = request.get("template_id") == "001"
+    context = request.get("_task_center_context")
+    cache_root = os.environ.get("VIDEO_NORMALIZATION_CACHE")
+    progressive = template_001 and cache_root and context and context.task_id.startswith("jr_")
     require_9x16 = options.get("require_9x16", True)
     require_cover = options.get("require_cover", True)
     if require_cover and not config["cover_enabled"]:
         raise ValueError("成品标准要求封面，不能关闭 cover_enabled")
     input_a = config.get("prepared_videos_a") or engine.get_videos(config["folder_a"])
     input_b = config.get("prepared_videos_b") or engine.get_videos(config["folder_b"])
-    validated = []
-    for output_index, output in enumerate(outputs):
+    def validate_output(output_index, output):
         info = _probe(output)
         checks = {
             "exists": info["exists"],
@@ -405,7 +400,7 @@ def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, A
         if not checks["exists"] or not checks["decodable"]:
             raise RuntimeError("输出校验失败：文件不存在或不可解码 ({})".format(output))
         if (
-            request.get("template_id") == "001"
+            template_001
             and max(info["width"], info["height"]) > 2000
         ):
             raise RuntimeError(
@@ -434,7 +429,28 @@ def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, A
             if not cover_present:
                 raise RuntimeError("输出校验失败：未确认片头封面存在或时长不正确 ({})".format(output))
         info["checks"] = {**checks, "cover_present": cover_present}
-        validated.append(info)
+        return info
+
+    ready = {}
+
+    def publish(index, output):
+        info = validate_output(index, output)
+        context.checkpoint_concat_output(info)
+        ready[output] = info
+
+    if template_001:
+        from core.video_concat_pipeline import run_template_001_concat
+
+        if progressive:
+            config["normalization_cache"] = cache_root
+            config["preserve_outputs"] = context.concat_output_paths()
+            outputs = run_template_001_concat(config, callback, on_output=publish)
+        else:
+            outputs = run_template_001_concat(config, callback)
+    else:
+        outputs = engine.run(callback) if controller else engine.run()
+    validated = [ready[output] if output in ready else validate_output(index, output)
+                 for index, output in enumerate(outputs)]
     return {
         "operation": "video_concat",
         "performance": {**performance, "total_seconds": round(time.perf_counter() - started, 3)},

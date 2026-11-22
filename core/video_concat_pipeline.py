@@ -8,6 +8,7 @@ import time
 
 from core.concat_batch import concat_workers, ordered_batch
 from core.video_concatenator import VideoConcatenatorEngine
+from core.video_normalization_cache import normalize_cached, prepare_cache
 from core.video_resizer import VideoResizer
 from utils.media_utils import collect_videos, probe_video
 
@@ -20,7 +21,7 @@ def _is_9x16(width, height):
 
 
 def normalize_folder_9x16(input_folder, output_folder, blur_strength=6, callback=None,
-                         *, workers=1, reuse_sources=False):
+                         *, workers=1, reuse_sources=False, cache_root=None):
     """保留已是9:16的素材，其余素材复用视频尺寸引擎转为1080x1920。"""
     videos = collect_videos(input_folder)
     if not videos:
@@ -28,6 +29,20 @@ def normalize_folder_9x16(input_folder, output_folder, blur_strength=6, callback
 
     os.makedirs(output_folder, exist_ok=True)
     resizer = VideoResizer("9:16", blur_strength)
+    threads = max(1, min(4, (os.cpu_count() or 1) // workers))
+    if cache_root:
+        from core.encoder import get_encoder
+        # Bump when normalization or the output format changes.
+        ffmpeg = shutil.which("ffmpeg")
+        revision = os.stat(ffmpeg).st_mtime_ns if ffmpeg else None
+        profile = ("001-portrait-v1", resizer.blur_strength, get_encoder(23), threads, revision)
+
+    def convert(source, target):
+        resizer.resize_video(source, target, threads=threads)
+
+    def valid_cache_output(filename):
+        info = probe_video(filename)
+        return (info.get("width"), info.get("height")) == (1080, 1920) and info.get("duration", 0) > 0
     used_names = set()
     jobs = []
 
@@ -56,12 +71,15 @@ def normalize_folder_9x16(input_folder, output_folder, blur_strength=6, callback
             shutil.copy2(video_path, output_path)
             kind = "copied"
         else:
-            if reuse_sources:
-                resizer.resize_video(video_path, output_path,
-                                     threads=max(1, min(4, (os.cpu_count() or 1) // workers)))
+            if cache_root:
+                hit = normalize_cached(cache_root, video_path, output_path, profile, convert, valid_cache_output)
+                kind = "cached" if hit else "converted"
+            elif reuse_sources:
+                convert(video_path, output_path)
+                kind = "converted"
             else:
                 resizer.resize_video(video_path, output_path)
-            kind = "converted"
+                kind = "converted"
         return output_path, output_path, kind
 
     results = ordered_batch(jobs, process, workers=workers, callback=callback,
@@ -71,6 +89,7 @@ def normalize_folder_9x16(input_folder, output_folder, blur_strength=6, callback
                "copied": sum(row[2] == "copied" for row in results)}
     if reuse_sources:
         summary["reused"] = sum(row[2] == "reused" for row in results)
+        summary["cached"] = sum(row[2] == "cached" for row in results)
         # Match collect_videos(staging_folder)'s ordering, including renamed collisions.
         summary["_videos"] = [row[1] for row in sorted(results)]
     return summary
@@ -109,18 +128,19 @@ def limit_output_resolution(outputs, blur_strength=6, callback=None):
     return {"downscaled": downscaled, "kept": kept}
 
 
-def run_template_001_concat(config, callback=None):
+def run_template_001_concat(config, callback=None, *, on_output=None):
     """执行模板001：A/B归一化为9:16，拼接，再限制成品最高尺寸。"""
     blur_strength = int(config.get("blur_strength", 6))
     workers = concat_workers(config.get("batch_workers"))
     started = time.perf_counter()
+    cache_root = prepare_cache(config["normalization_cache"]) if config.get("normalization_cache") else None
     with tempfile.TemporaryDirectory(prefix="video_template_001_") as work_folder:
         folder_a = os.path.join(work_folder, "a_9x16")
         folder_b = os.path.join(work_folder, "b_9x16")
         normalized_a = normalize_folder_9x16(config["folder_a"], folder_a, blur_strength, callback,
-                                             workers=workers, reuse_sources=True)
+                                             workers=workers, reuse_sources=True, cache_root=cache_root)
         normalized_b = normalize_folder_9x16(config["folder_b"], folder_b, blur_strength, callback,
-                                             workers=workers, reuse_sources=True)
+                                             workers=workers, reuse_sources=True, cache_root=cache_root)
         normalized_at = time.perf_counter()
 
         effective_config = dict(config)
@@ -129,9 +149,16 @@ def run_template_001_concat(config, callback=None):
         effective_config["prepared_videos_a"] = normalized_a.get("_videos")
         effective_config["prepared_videos_b"] = normalized_b.get("_videos")
         effective_config["limit_output_edge"] = OUTPUT_RESOLUTION_LIMIT
-        outputs = VideoConcatenatorEngine(effective_config).run(callback)
+        def publish(index, filename):
+            if filename not in config.get("preserve_outputs", ()):
+                limit_output_resolution([filename], blur_strength)
+            on_output(index, filename)
+
+        engine = VideoConcatenatorEngine(effective_config)
+        outputs = engine.run(callback, on_output=publish) if on_output else engine.run(callback)
         concatenated_at = time.perf_counter()
-        limit_output_resolution(outputs, blur_strength, callback)
+        if not on_output:
+            limit_output_resolution(outputs, blur_strength, callback)
         if "_performance" in config:
             config["_performance"].update({
                 "batch_workers": workers,
@@ -139,5 +166,6 @@ def run_template_001_concat(config, callback=None):
                 "concat_seconds": round(concatenated_at - normalized_at, 3),
                 "resolution_check_seconds": round(time.perf_counter() - concatenated_at, 3),
                 "reused_inputs": normalized_a.get("reused", 0) + normalized_b.get("reused", 0),
+                "cached_inputs": normalized_a.get("cached", 0) + normalized_b.get("cached", 0),
             })
         return outputs

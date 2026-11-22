@@ -271,6 +271,12 @@ class TaskExecutionContext:
     def resume_items(self) -> dict[str, dict[str, Any]]:
         return self.center.cloud_items(self.task_id, self.step_id)
 
+    def concat_output_paths(self) -> set[str]:
+        return set(self.center.concat_checkpoints(self.task_id, self.step_id))
+
+    def checkpoint_concat_output(self, validation: dict[str, Any]) -> None:
+        self.center.concat_checkpoints(self.task_id, self.step_id, validation)
+
     def download_item(self, source_url: str, *, state: str, output_path: str = "", error: str = "") -> None:
         self.center.checkpoint_download_item(
             self.task_id, self.step_id, source_url,
@@ -1570,6 +1576,7 @@ class TaskCenter:
 
     def get(self, task_id: str) -> dict[str, Any]:
         with closing(self._connect()) as db:
+            db.execute("BEGIN")
             task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not task:
                 raise ValueError("任务不存在: {}".format(task_id))
@@ -1603,15 +1610,19 @@ class TaskCenter:
             result_folder = result.get("output_folder")
             if isinstance(result_folder, str) and result_folder.strip():
                 output_directories.add(os.path.normpath(result_folder))
-            for output in result.get("outputs") or []:
+            checkpoints = result.get("concat_checkpoints", {})
+            outputs = list(result.get("outputs") or [])
+            outputs.extend(output for output in checkpoints if output not in outputs)
+            validations = {
+                os.path.normcase(os.path.normpath(str(item.get("path") or ""))): item
+                for item in result.get("validation") or []
+                if isinstance(item, dict) and item.get("path")
+            }
+            for output in outputs:
                 if isinstance(output, str) and output.strip() and "://" not in output:
                     normalized_output = os.path.normpath(output)
                     output_directories.add(os.path.normpath(str(Path(normalized_output).parent)))
-                    validations = {
-                        os.path.normcase(os.path.normpath(str(item.get("path") or ""))): item
-                        for item in result.get("validation") or []
-                        if isinstance(item, dict) and item.get("path")
-                    }
+                    checkpoint = checkpoints.get(output)
                     artifact_key = "\0".join((
                         str(task_id), str(row["step_id"]), os.path.normcase(normalized_output),
                     ))
@@ -1632,9 +1643,10 @@ class TaskCenter:
                             else "file"
                         ),
                         "stage": "final" if step_position == len(steps) - 1 and reviewed else "intermediate",
-                        "completed_at": str(row["finished_at"] or ""),
+                        "completed_at": checkpoint["at"] if checkpoint else str(row["finished_at"] or ""),
+                        **({"progressive": True} if checkpoint else {}),
                         "validation": validations.get(
-                            os.path.normcase(normalized_output), {}
+                            os.path.normcase(normalized_output), checkpoint["validation"] if checkpoint else {}
                         ),
                     })
         detail["input_paths"] = sorted(input_paths)
@@ -1765,8 +1777,32 @@ class TaskCenter:
     def _save_step_result(self, task_id: str, step_id: str, result: dict[str, Any], status: str, error: str = "") -> None:
         now = _now()
         with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            prior = db.execute("SELECT result_json FROM steps WHERE task_id=? AND step_id=?", (task_id, step_id)).fetchone()
+            checkpoints = _decode(prior["result_json"], {}).get("concat_checkpoints") if prior else None
+            if checkpoints:
+                result = {**result, "concat_checkpoints": checkpoints}
             db.execute("UPDATE steps SET status=?,result_json=?,error=?,finished_at=CASE WHEN ? IN ('completed','failed') THEN ? ELSE finished_at END,updated_at=? WHERE task_id=? AND step_id=?", (status, _json(result), error, status, now, now, task_id, step_id))
             db.commit()
+
+    def concat_checkpoints(self, task_id: str, step_id: str, validation=None):
+        with closing(self._connect()) as db:
+            if validation is not None:
+                db.execute("BEGIN IMMEDIATE")
+            step = db.execute("SELECT status,result_json FROM steps WHERE task_id=? AND step_id=? AND operation='video_concat'",
+                              (task_id, step_id)).fetchone()
+            if not step or (validation is not None and step["status"] != "running"):
+                raise RuntimeError("拼接执行步骤已变更")
+            result = _decode(step["result_json"], {})
+            checkpoints = result.get("concat_checkpoints", {})
+            if validation is not None:
+                now = _now()
+                checkpoints.setdefault(validation["path"], {"at": now, "validation": validation})
+                db.execute("UPDATE steps SET result_json=?,updated_at=? WHERE task_id=? AND step_id=?",
+                           (_json({**result, "concat_checkpoints": checkpoints}), now, task_id, step_id))
+                db.execute("UPDATE tasks SET updated_at=?,state_revision=state_revision+1 WHERE task_id=?", (now, task_id))
+                db.commit()
+            return checkpoints
 
     def _release_unsubmitted_quota(self, task_id: str, *, final: bool) -> None:
         with closing(self._connect()) as db:

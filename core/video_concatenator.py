@@ -406,7 +406,7 @@ class VideoConcatenatorEngine:
         run_ffmpeg(cmd, timeout=300, error_message="add audio failed",
                    output_path=output_path)
 
-    def run(self, callback=None):
+    def run(self, callback=None, *, on_output=None):
         os.makedirs(self.output_folder, exist_ok=True)
 
         videos_a = self.config.get("prepared_videos_a") or self.get_videos(self.folder_a)
@@ -440,6 +440,8 @@ class VideoConcatenatorEngine:
 
         def process(job):
             va, vb, output_path, cover_img = job
+            if output_path in self.config.get("preserve_outputs", ()):
+                return output_path
             if self.resume_existing and os.path.isfile(output_path):
                 try:
                     if self._probe_video(output_path).get("duration", 0) > 0:
@@ -449,5 +451,7 @@ class VideoConcatenatorEngine:
             self.concat_pair(va, vb, output_path, cover_img)
             return output_path
 
+        indices = {job[2]: index for index, job in enumerate(jobs)}
         return ordered_batch(jobs, process, workers=self.batch_workers,
-                             callback=callback, message="批量拼接视频")
+                             callback=callback, message="批量拼接视频",
+                             on_result=(lambda output: on_output(indices[output], output)) if on_output else None)
