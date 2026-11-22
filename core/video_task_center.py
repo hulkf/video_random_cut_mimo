@@ -1626,7 +1626,8 @@ class TaskCenter:
                             if Path(normalized_output).suffix.casefold() in VIDEO_SUFFIXES
                             else "file"
                         ),
-                        "stage": "final" if step_position == len(steps) - 1 else "intermediate",
+                        "stage": ("final" if step_position == len(steps) - 1
+                                  and not result.get("requires_name_card_review") else "intermediate"),
                         "completed_at": str(row["finished_at"] or ""),
                         "validation": validations.get(
                             os.path.normcase(normalized_output), {}

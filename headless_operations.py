@@ -33,7 +33,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "kaipai_download": {"tab": "开拍云端", "required": ["items", "output_folder"]},
     "kaipai_quota": {"tab": "开拍云端", "required": []},
     KAIPAI_PORTRAIT: {"tab": "开拍云端", "required": ["input_sources"]},
-    KAIPAI_CLI: {"tab": "开拍云端", "required": ["input_path", "mode"]},
+    KAIPAI_CLI: {"tab": "开拍云端", "required": ["input_path", "mode"],
+                 "optional": ["template_material_id", "source_revision"]},
     "video_fission": {"tab": "视频裂变", "required": ["input_sources", "output_folder"]},
     "voice_profile_list": {"tab": "音色复刻", "required": []},
     "voice_profile_create": {"tab": "音色复刻", "required": ["name", "reference_audio", "reference_text"]},
@@ -168,7 +169,7 @@ for _operation_name, _spec in OPERATIONS.items():
     _spec["input_schema"] = {
         "type": "object",
         "required": list(_spec["required"]),
-        "properties": {name: operation_field_schema(name) for name in _spec["required"]},
+        "properties": {name: operation_field_schema(name) for name in [*_spec["required"], *_spec.get("optional", [])]},
     }
     _spec["option_schema"] = {
         "type": "object",
@@ -184,6 +185,9 @@ for _operation_name, _spec in OPERATIONS.items():
     }
 
 OPERATIONS["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
+OPERATIONS[KAIPAI_CLI]["input_schema"]["properties"]["template_material_id"] = {
+    "type": "string", "pattern": "^SEC[0-9]+$", "description": "网感剪辑必填，使用原片选型返回的模板 ID。",
+}
 
 
 def _inputs(request: Dict[str, Any]) -> Dict[str, Any]:

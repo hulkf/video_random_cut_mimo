@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from urllib.parse import urlsplit
@@ -21,9 +22,21 @@ MODES = {
     "subtitle": ("subtitle",),
     "image-repair": ("tool", "image-repair"),
     "image-remove-text": ("tool", "image-remove-text"),
+    "smartedit": ("smartedit",),
 }
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REJECTED = {400000, 404000, 422000}
+
+
+def template_id(inputs):
+    value = inputs.get("template_material_id")
+    if inputs.get("mode") == "smartedit":
+        if not isinstance(value, str) or not re.fullmatch(r"SEC[0-9]+", value):
+            raise ValueError("网感剪辑必须指定选型结果中的 SEC 模板 ID")
+        return value
+    if value is not None:
+        raise ValueError("仅网感剪辑支持 SEC 模板 ID")
+    return None
 
 
 def source_path(value, mode):
@@ -114,7 +127,7 @@ def _rejection(records):
     return ""
 
 
-def _artifact(records, task_id, image):
+def _artifact(records, task_id, image, expected_template=None):
     for task in reversed(records):
         if task.get("id") != task_id or (task.get("status") or {}).get("state") != "TASK_STATE_COMPLETED":
             continue
@@ -124,8 +137,58 @@ def _artifact(records, task_id, image):
                 mime = str(part.get("mediaType", ""))
                 if (isinstance(url, str) and urlsplit(url).scheme == "https"
                         and mime.startswith("image/" if image else "video/")):
+                    if expected_template and (part.get("data") or {}).get("template_material_id") != expected_template:
+                        continue
                     return url
+    if expected_template:
+        raise RuntimeError("开拍原任务未返回与所选 SEC 模板一致的成片，需核对原任务")
     raise RuntimeError("开拍原任务未返回已完成的媒体产物，请继续查询原任务")
+
+
+def _session_id(records):
+    rooms = set()
+    for row in records:
+        data = row.get("data")
+        value = row.get("session_id") or (data.get("session_id") if isinstance(data, dict) else None)
+        if isinstance(value, str) and value:
+            rooms.add(value)
+    if len(rooms) != 1:
+        return None
+    return rooms.pop()
+
+
+def _claim(marker, room=None):
+    with marker.open("x", encoding="utf-8") as file:
+        json.dump({"room": room}, file)
+        file.flush()
+        os.fsync(file.fileno())
+
+
+def _submit(cli, marker, mode, source, image, selected):
+    if marker.is_file():
+        return json.loads(marker.read_text(encoding="utf-8"))["room"]
+    if selected:
+        args = (*MODES[mode], "--video-file", str(source), "--template-material-id", selected)
+        code, rows, _ = cli("validate", *args, "--validate-only", "--json", timeout=30)
+        if code or not rows or rows[-1].get("params", {}).get("templateMaterialId") != selected:
+            raise RuntimeError("开拍 CLI 未能验证指定的模板 ID，尚未提交")
+    code, _, _ = cli("auth", "auth", "status", "--check", timeout=30)
+    if code:
+        raise RuntimeError("开拍 CLI 未授权或连接失败，尚未提交")
+    if selected:
+        # SmartEdit creates its own room. The marker protects the paid call
+        # even if the process stops before its first session event is written.
+        _claim(marker)
+        cli("submit", *args, "--detach", timeout=420)
+        return None
+    code, _, diagnostics = cli("room", "create-room", timeout=45)
+    room = _session_id(diagnostics)
+    if code or not room:
+        raise RuntimeError("开拍 CLI 创建会话失败，尚未提交")
+    _claim(marker, room)
+    cli("submit", *MODES[mode], "-r", room, "--image-file" if image else "--video-file",
+        str(source), timeout=420)
+    return room
 
 
 def run(request):
@@ -134,7 +197,12 @@ def run(request):
         raise PermissionError("开拍 CLI 须通过已确认的视频任务执行")
     inputs = request["inputs"]
     mode = inputs["mode"]
+    selected = template_id(inputs)
     source = source_path(inputs["input_path"], mode)
+    stat = source.stat()
+    revision = f"{stat.st_size}:{stat.st_mtime_ns}"
+    if selected and inputs.get("source_revision", revision) != revision:
+        raise RuntimeError("网感剪辑原片已变化，请核对原任务和选型，尚未重新提交")
     image = mode.startswith("image-")
     command, env = cli_environment()
     key = hashlib.sha256(f"{context.task_id}:{context.step_id}".encode()).hexdigest()[:24]
@@ -144,27 +212,11 @@ def run(request):
     def cli(name, *args, timeout=300):
         return _run(command, env, directory, name, args, context.check, timeout)
 
-    marker = directory / "submit-once.json"
-    if marker.is_file():
-        room = json.loads(marker.read_text(encoding="utf-8"))["room"]
-    else:
-        code, _, _ = cli("auth", "auth", "status", "--check", timeout=30)
-        if code:
-            raise RuntimeError("开拍 CLI 未授权或连接失败，尚未提交")
-        code, _, diagnostics = cli("room", "create-room", timeout=45)
-        room = next((row.get("session_id") for row in diagnostics if row.get("type") == "session"), None)
-        if code or not room:
-            raise RuntimeError("开拍 CLI 创建会话失败，尚未提交")
-        with marker.open("x", encoding="utf-8") as file:
-            json.dump({"room": room}, file)
-            file.flush()
-            os.fsync(file.fileno())
-        cli("submit", *MODES[mode], "-r", room, "--image-file" if image else "--video-file",
-            str(source), timeout=420)
-
+    room = _submit(cli, directory / "submit-once.json", mode, source, image, selected)
     records = _events(directory / "submit.jsonl") + _events(directory / "submit.stderr")
+    room = room or _session_id(records)
     ids = _task_ids(records)
-    if not ids:
+    if not room or not ids:
         error = _rejection(records)
         if error:
             raise RuntimeError(error)
@@ -177,7 +229,7 @@ def run(request):
         raise RuntimeError("开拍原任务未完成或查询失败，请按原任务恢复")
     outputs = []
     for index, task_id in enumerate(ids, 1):
-        url = _artifact(tasks, task_id, image)
+        url = _artifact(tasks, task_id, image, selected)
         folder = directory / f"result-{index}"
         folder.mkdir(exist_ok=True)
         code, rows, _ = cli(f"download-{index}", "download", "--url", url,
@@ -196,4 +248,9 @@ def run(request):
         if result.returncode:
             raise RuntimeError("开拍成片未通过完整解码校验")
         outputs.append(str(path))
-    return {"outputs": outputs, "kaipai_session": room, "kaipai_task_ids": ids}
+    result = {"outputs": outputs, "kaipai_session": room, "kaipai_task_ids": ids}
+    if selected:
+        result["template_material_id"] = selected
+        result["requires_name_card_review"] = True
+        result["validation"] = [{"path": path, "source_revision": revision} for path in outputs]
+    return result

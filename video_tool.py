@@ -286,6 +286,10 @@ def _validate_request(request: Dict[str, Any]) -> None:
     missing = [key for key in required if not inputs.get(key)]
     if missing:
         raise ValueError("缺少必要参数: {}".format(", ".join(missing)))
+    if operation == "kaipai_cli_process":
+        from core.kaipai_cli import template_id
+
+        template_id(inputs)
     if operation == "task_control" and inputs.get("action") not in ("status", "pause", "resume", "cancel"):
         raise ValueError("task_control.action 必须是 status、pause、resume 或 cancel")
     if operation == "task_center_control" and inputs.get("action") not in ("pause", "resume", "cancel"):
