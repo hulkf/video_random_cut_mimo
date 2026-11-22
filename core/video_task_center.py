@@ -1615,6 +1615,11 @@ class TaskCenter:
                     artifact_key = "\0".join((
                         str(task_id), str(row["step_id"]), os.path.normcase(normalized_output),
                     ))
+                    reviewed = True
+                    if result.get("requires_name_card_review"):
+                        from core.kaipai_cli import reviewed_artifact
+
+                        reviewed = reviewed_artifact(normalized_output, task_id)
                     artifacts.append({
                         "artifact_id": "artifact_" + hashlib.sha256(
                             artifact_key.encode("utf-8")
@@ -1626,8 +1631,7 @@ class TaskCenter:
                             if Path(normalized_output).suffix.casefold() in VIDEO_SUFFIXES
                             else "file"
                         ),
-                        "stage": ("final" if step_position == len(steps) - 1
-                                  and not result.get("requires_name_card_review") else "intermediate"),
+                        "stage": "final" if step_position == len(steps) - 1 and reviewed else "intermediate",
                         "completed_at": str(row["finished_at"] or ""),
                         "validation": validations.get(
                             os.path.normcase(normalized_output), {}

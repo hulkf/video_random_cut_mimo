@@ -39,6 +39,23 @@ def template_id(inputs):
     return None
 
 
+def reviewed_artifact(path, task_id):
+    """A review receipt is final only once its retained video is in place."""
+    path = Path(path)
+    try:
+        with (path.parent / "name-card-review.json").open(encoding="utf-8") as stream:
+            receipt = json.load(stream)
+        result = receipt["result"]
+        retained = receipt["retained_identity"]
+        if (result["task_id"] != task_id or Path(result["final_video"]) != path
+                or Path(retained["path"]) != path or result["name_card"] not in {"removed", "none_found"}):
+            return False
+        stat = path.stat()
+        return retained["size"] == stat.st_size and retained["mtime_ns"] == stat.st_mtime_ns
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def source_path(value, mode):
     if mode not in MODES:
         raise ValueError("开拍 CLI 模式未开放")

@@ -95,3 +95,17 @@ def test_smartedit_recovers_its_own_session_without_resubmitting(tmp_path, monke
     with pytest.raises(RuntimeError, match="原任务"):
         kaipai_cli.run(request)
     assert invocations == ["validate", "auth", "submit", "history-snapshot", "progress"]
+
+
+def test_smartedit_artifact_is_only_final_after_replacement(tmp_path):
+    draft, clean, receipt = (tmp_path / name for name in ("draft.mp4", "clean.mp4", "name-card-review.json"))
+    draft.write_bytes(b"draft with a name card")
+    clean.write_bytes(b"clean result")
+    receipt.write_text(json.dumps({
+        "result": {"task_id": "task", "final_video": str(draft), "name_card": "removed"},
+        "retained_identity": {"path": str(draft), "size": clean.stat().st_size, "mtime_ns": clean.stat().st_mtime_ns},
+    }), encoding="utf-8")
+    assert not kaipai_cli.reviewed_artifact(draft, "task")
+    clean.replace(draft)
+    assert kaipai_cli.reviewed_artifact(draft, "task")
+    assert not kaipai_cli.reviewed_artifact(draft, "other-task")
