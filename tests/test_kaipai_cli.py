@@ -52,6 +52,12 @@ def test_smartedit_requires_an_explicit_template_and_checks_the_render_receipt()
     with pytest.raises(RuntimeError, match="SEC"):
         kaipai_cli._artifact([task], "original", False, "SEC0015")
     assert kaipai_cli._artifact([task], "original", False, "SEC0076") == part["url"]
+    receipt = {"data": part.pop("data")}
+    task["artifacts"] = [{"parts": [part, receipt]}]
+    assert kaipai_cli._artifact([task], "original", False, "SEC0076") == part["url"]
+    task["artifacts"] = [{"parts": [part]}, {"parts": [receipt]}]
+    with pytest.raises(RuntimeError, match="SEC"):
+        kaipai_cli._artifact([task], "original", False, "SEC0076")
 
 
 def test_smartedit_recovers_its_own_session_without_resubmitting(tmp_path, monkeypatch):

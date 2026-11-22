@@ -11,7 +11,7 @@ import hashlib
 from typing import Any, Dict, Iterable, List
 
 from core.kaipai_portrait import OPERATION as KAIPAI_PORTRAIT, run as run_kaipai_portrait
-from core.kaipai_cli import OPERATION as KAIPAI_CLI, run as run_kaipai_cli
+from core.kaipai_cli import MODES as KAIPAI_CLI_MODES, OPERATION as KAIPAI_CLI, run as run_kaipai_cli
 from core.kaipai_playwright import OPERATION as KAIPAI_PLAYWRIGHT, run as run_kaipai_playwright
 
 
@@ -185,9 +185,18 @@ for _operation_name, _spec in OPERATIONS.items():
     }
 
 OPERATIONS["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
-OPERATIONS[KAIPAI_CLI]["input_schema"]["properties"]["template_material_id"] = {
-    "type": "string", "pattern": "^SEC[0-9]+$", "description": "网感剪辑必填，使用原片选型返回的模板 ID。",
-}
+_kaipai_cli_input = OPERATIONS[KAIPAI_CLI]["input_schema"]
+_kaipai_cli_input["properties"].update({
+    "mode": {"type": "string", "enum": list(KAIPAI_CLI_MODES)},
+    "source_revision": {"type": "string", "pattern": "^[0-9]+:[0-9]+$"},
+    "template_material_id": {
+        "type": "string", "pattern": "^SEC[0-9]+$", "description": "网感剪辑必填，使用原片选型返回的模板 ID。",
+    },
+})
+_kaipai_cli_input["allOf"] = [{
+    "if": {"properties": {"mode": {"const": "smartedit"}}},
+    "then": {"required": ["template_material_id"]},
+}]
 
 
 def _inputs(request: Dict[str, Any]) -> Dict[str, Any]:

@@ -138,13 +138,20 @@ def _artifact(records, task_id, image, expected_template=None):
         if task.get("id") != task_id or (task.get("status") or {}).get("state") != "TASK_STATE_COMPLETED":
             continue
         for artifact in task.get("artifacts", []):
-            for part in artifact.get("parts", []):
+            parts = artifact.get("parts", [])
+            if expected_template:
+                templates = {
+                    data["template_material_id"] for part in parts
+                    if isinstance((data := part.get("data")), dict)
+                    and isinstance(data.get("template_material_id"), str)
+                }
+                if templates != {expected_template}:
+                    continue
+            for part in parts:
                 url = part.get("url")
                 mime = str(part.get("mediaType", ""))
                 if (isinstance(url, str) and urlsplit(url).scheme == "https"
                         and mime.startswith("image/" if image else "video/")):
-                    if expected_template and (part.get("data") or {}).get("template_material_id") != expected_template:
-                        continue
                     return url
     if expected_template:
         raise RuntimeError("开拍原任务未返回与所选 SEC 模板一致的成片，需核对原任务")
