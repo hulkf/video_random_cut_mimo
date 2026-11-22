@@ -113,6 +113,12 @@ def _task_ids(records):
     return list(dict.fromkeys(value for value in ids if isinstance(value, str) and value))
 
 
+def _history_task_ids(records):
+    active = [task_id for row in records for task_id in (row.get("active_task_ids") or [])
+              if isinstance(task_id, str) and task_id.startswith("tool_")]
+    return list(dict.fromkeys([*_task_ids(records), *active]))
+
+
 def _rejection(records):
     errors = [record.get("meta") or record.get("error") for record in records]
     for error in errors:
@@ -216,6 +222,18 @@ def run(request):
     records = _events(directory / "submit.jsonl") + _events(directory / "submit.stderr")
     room = room or _session_id(records)
     ids = _task_ids(records)
+    if selected and room and not ids and not _rejection(records):
+        for name in ("history-snapshot", "history-watch"):
+            ids = _history_task_ids(_events(directory / f"{name}.jsonl") + _events(directory / f"{name}.stderr"))
+            if ids:
+                break
+        if not ids:
+            _, snapshot, diagnostics = cli("history-snapshot", "history-detail", "-r", room, timeout=30)
+            ids = _history_task_ids(snapshot + diagnostics)
+        if not ids:
+            _, snapshot, diagnostics = cli("history-watch", "history-detail", "-r", room,
+                                           "--watch", "--yield-on-update", timeout=90)
+            ids = _history_task_ids(snapshot + diagnostics)
     if not room or not ids:
         error = _rejection(records)
         if error:

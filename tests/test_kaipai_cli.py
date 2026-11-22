@@ -70,9 +70,12 @@ def test_smartedit_recovers_its_own_session_without_resubmitting(tmp_path, monke
             return 0, [{"params": {"templateMaterialId": "SEC0076"}}], []
         if name == "submit":
             assert args == ("smartedit", "--video-file", str(source), "--template-material-id", "SEC0076", "--detach")
-            record = {"event": "execution.accepted", "data": {"session_id": "v2:real", "task_ids": ["tool_real"]}}
+            record = {"event": "execution.accepted", "data": {"session_id": "v2:real", "task_ids": []}}
             (directory / "submit.jsonl").write_text(json.dumps(record), encoding="utf-8")
             raise TimeoutError("interrupted after acceptance")
+        if name == "history-snapshot":
+            assert args == ("history-detail", "-r", "v2:real")
+            return 0, [{"session_id": "v2:real", "active_task_ids": ["tool_real"]}], []
         if name == "progress":
             assert args == ("task-progress", "-r", "v2:real", "--task-id", "tool_real", "--watch")
             return 1, [], []
@@ -85,4 +88,4 @@ def test_smartedit_recovers_its_own_session_without_resubmitting(tmp_path, monke
         kaipai_cli.run(request)
     with pytest.raises(RuntimeError, match="原任务"):
         kaipai_cli.run(request)
-    assert invocations == ["validate", "auth", "submit", "progress"]
+    assert invocations == ["validate", "auth", "submit", "history-snapshot", "progress"]
