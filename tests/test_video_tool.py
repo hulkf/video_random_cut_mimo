@@ -531,6 +531,31 @@ class VideoToolTests(unittest.TestCase):
             result = headless_operations._kaipai_download({"inputs": {"items": [{"url": "https://x/a.mp4"}], "output_folder": "out"}})
             self.assertTrue(result["results"][0]["success"])
 
+    def test_kaipai_download_accepts_and_reuses_a_decodable_image(self):
+        from io import BytesIO
+        from PIL import Image
+
+        stream = BytesIO()
+        Image.new("RGB", (2, 3)).save(stream, format="PNG")
+        response = MagicMock()
+        response.iter_content.return_value = [stream.getvalue()]
+        item = {"url": "https://example.invalid/signed", "filename": "retouched.png"}
+        context = MagicMock()
+        context.resume_items.return_value = {}
+        with tempfile.TemporaryDirectory() as temp, patch("requests.get", return_value=response) as get:
+            request = {"inputs": {"items": [item], "output_folder": temp}, "_task_center_context": context}
+            fresh = headless_operations._kaipai_download(request)
+            output = str(Path(temp) / item["filename"])
+            self.assertEqual(fresh["outputs"], [output])
+            self.assertEqual(fresh["validation"], [
+                {"path": output, "decodable": True, "width": 2, "height": 3, "format": "PNG"}
+            ])
+            context.resume_items.return_value = {item["url"]: {"state": "completed", "output_url": output}}
+            resumed = headless_operations._kaipai_download(request)
+            get.assert_called_once()
+            self.assertTrue(resumed["results"][0]["reused"])
+            self.assertEqual(resumed["validation"], fresh["validation"])
+
     def test_kaipai_download_reuses_completed_file_after_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "a.mp4"

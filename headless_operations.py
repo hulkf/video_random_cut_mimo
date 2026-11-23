@@ -415,6 +415,21 @@ def _kaipai_download(request):
     from core.task_control import TaskControlSignal
     from utils.media_utils import probe_video
 
+    image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+    def validate_media(path, is_image):
+        if is_image:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image.load()
+                return {"decodable": True, "width": image.width, "height": image.height,
+                        "format": image.format}
+        info = probe_video(path)
+        if float(info.get("duration") or 0) <= 0:
+            raise RuntimeError("开拍下载结果不是可解码的视频")
+        return {"decodable": True, "duration": info["duration"]}
+
     data = _inputs(request)
     context = request.get("_task_center_context")
     resume_items = context.resume_items() if context else {}
@@ -438,6 +453,7 @@ def _kaipai_download(request):
             filename = f"{stem}_{digest}{extension}"
         output = os.path.join(data["output_folder"], filename)
         temporary = output + ".part"
+        is_image = os.path.splitext(filename)[1].lower() in image_extensions
         try:
             resume = resume_items.get(url, {})
             resume_output = str(resume.get("output_url") or "")
@@ -449,13 +465,13 @@ def _kaipai_download(request):
                 and os.path.getsize(output) > 0
             ):
                 try:
-                    resumed_info = probe_video(output)
+                    validation = validate_media(output, is_image)
                 except Exception:
-                    resumed_info = {}
-                if float(resumed_info.get("duration") or 0) > 0:
+                    pass
+                else:
                     results.append({
                         "url": url, "output": output, "success": True, "reused": True,
-                        "validation": {"decodable": True, "duration": resumed_info.get("duration")},
+                        "validation": validation,
                     })
                     continue
             if context:
@@ -477,15 +493,13 @@ def _kaipai_download(request):
                 raise RuntimeError("开拍下载结果为空")
             if context:
                 context.download_item(url, state="validating")
-            media_info = probe_video(temporary)
-            if float(media_info.get("duration") or 0) <= 0:
-                raise RuntimeError("开拍下载结果不是可解码的视频")
+            validation = validate_media(temporary, is_image)
             os.replace(temporary, output)
             if context:
                 context.download_item(url, state="completed", output_path=output)
             results.append({
                 "url": url, "output": output, "success": True, "reused": False,
-                "validation": {"decodable": True, "duration": media_info.get("duration")},
+                "validation": validation,
             })
         except TaskControlSignal:
             try:
@@ -503,7 +517,9 @@ def _kaipai_download(request):
             if context:
                 context.download_item(url, state="failed", error=str(exc))
             results.append({"url": url, "output": "", "success": False, "error": str(exc)})
-    return {"results": results, "outputs": [item["output"] for item in results if item["success"]]}
+    completed = [item for item in results if item["success"]]
+    return {"results": results, "outputs": [item["output"] for item in completed],
+            "validation": [{"path": item["output"], **item["validation"]} for item in completed]}
 
 
 def _kaipai_quota(_request):
