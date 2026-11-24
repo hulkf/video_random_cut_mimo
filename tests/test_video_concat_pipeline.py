@@ -11,6 +11,22 @@ if str(ROOT) not in sys.path:
 
 
 class VideoConcatPipelineTests(unittest.TestCase):
+    def test_one_outputs_validation_does_not_hold_another_preview(self):
+        from tempfile import TemporaryDirectory
+        from threading import Barrier
+        from core.video_concatenator import VideoConcatenatorEngine
+
+        both_published = Barrier(2)
+        with TemporaryDirectory() as directory:
+            engine = VideoConcatenatorEngine({
+                "folder_a": directory, "folder_b": directory, "output_folder": directory,
+                "prepared_videos_a": ["a1.mp4", "a2.mp4"], "prepared_videos_b": ["b.mp4"],
+                "batch_workers": 2,
+            })
+            with patch.object(engine, "concat_pair"):
+                outputs = engine.run(on_output=lambda *_: both_published.wait(timeout=3))
+        self.assertEqual([os.path.basename(p) for p in outputs], ["a1+b.mp4", "a2+b.mp4"])
+
     @patch("core.video_concat_pipeline.shutil.copy2")
     @patch("core.video_concat_pipeline.VideoResizer")
     @patch("core.video_concat_pipeline.probe_video")

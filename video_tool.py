@@ -434,6 +434,7 @@ def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, A
     ready = {}
 
     def publish(index, output):
+        context.preview_concat_output(output)
         info = validate_output(index, output)
         context.checkpoint_concat_output(info)
         ready[output] = info

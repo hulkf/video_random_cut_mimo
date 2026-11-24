@@ -274,6 +274,15 @@ class TaskExecutionContext:
     def concat_output_paths(self) -> set[str]:
         return set(self.center.concat_checkpoints(self.task_id, self.step_id))
 
+    def preview_concat_output(self, output: str) -> None:
+        try:
+            info = Path(output).stat()
+            self.center.concat_checkpoints(self.task_id, self.step_id, preview={
+                "path": output, "size": info.st_size, "mtime_ns": str(info.st_mtime_ns),
+            })
+        except (OSError, sqlite3.OperationalError) as exc:
+            print(f"提前预览登记暂不可用 ({type(exc).__name__})", file=sys.stderr)
+
     def checkpoint_concat_output(self, validation: dict[str, Any]) -> None:
         self.center.concat_checkpoints(self.task_id, self.step_id, validation)
 
@@ -1779,22 +1788,34 @@ class TaskCenter:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             prior = db.execute("SELECT result_json FROM steps WHERE task_id=? AND step_id=?", (task_id, step_id)).fetchone()
-            checkpoints = _decode(prior["result_json"], {}).get("concat_checkpoints") if prior else None
+            prior_result = _decode(prior["result_json"], {}) if prior else {}
+            checkpoints = prior_result.get("concat_checkpoints")
             if checkpoints:
                 result = {**result, "concat_checkpoints": checkpoints}
+                if "concat_previews" in prior_result:
+                    result["concat_previews"] = {name: info for name, info in prior_result["concat_previews"].items()
+                                                 if name in checkpoints}
             db.execute("UPDATE steps SET status=?,result_json=?,error=?,finished_at=CASE WHEN ? IN ('completed','failed') THEN ? ELSE finished_at END,updated_at=? WHERE task_id=? AND step_id=?", (status, _json(result), error, status, now, now, task_id, step_id))
             db.commit()
 
-    def concat_checkpoints(self, task_id: str, step_id: str, validation=None):
+    def concat_checkpoints(self, task_id: str, step_id: str, validation=None, *, preview=None):
         with closing(self._connect()) as db:
-            if validation is not None:
+            if preview is not None:
+                db.execute("PRAGMA busy_timeout=100")
+            if validation is not None or preview is not None:
                 db.execute("BEGIN IMMEDIATE")
             step = db.execute("SELECT status,result_json FROM steps WHERE task_id=? AND step_id=? AND operation='video_concat'",
                               (task_id, step_id)).fetchone()
-            if not step or (validation is not None and step["status"] != "running"):
+            if not step or ((validation is not None or preview is not None) and step["status"] != "running"):
                 raise RuntimeError("拼接执行步骤已变更")
             result = _decode(step["result_json"], {})
             checkpoints = result.get("concat_checkpoints", {})
+            if preview is not None:
+                previews = result.setdefault("concat_previews", {})
+                previews[preview["path"]] = preview
+                db.execute("UPDATE steps SET result_json=? WHERE task_id=? AND step_id=?",
+                           (_json(result), task_id, step_id))
+                db.commit()
             if validation is not None:
                 now = _now()
                 checkpoints.setdefault(validation["path"], {"at": now, "validation": validation})

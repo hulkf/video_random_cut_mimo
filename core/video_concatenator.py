@@ -438,7 +438,7 @@ class VideoConcatenatorEngine:
                 random.choice(cover_images) if cover_images else None)
             jobs.append((va, vb, output_path, cover_img))
 
-        def process(job):
+        def render(job):
             va, vb, output_path, cover_img = job
             if output_path in self.config.get("preserve_outputs", ()):
                 return output_path
@@ -452,6 +452,11 @@ class VideoConcatenatorEngine:
             return output_path
 
         indices = {job[2]: index for index, job in enumerate(jobs)}
+        def process(job):
+            output = render(job)
+            if on_output:
+                on_output(indices[output], output)
+            return output
+
         return ordered_batch(jobs, process, workers=self.batch_workers,
-                             callback=callback, message="批量拼接视频",
-                             on_result=(lambda output: on_output(indices[output], output)) if on_output else None)
+                             callback=callback, message="批量拼接视频")
