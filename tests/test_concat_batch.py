@@ -71,6 +71,19 @@ class ConcatBatchTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 concat_workers(value)
 
+    def test_template_001_defaults_to_three_workers_on_large_hosts(self):
+        from core.video_concat_pipeline import run_template_001_concat
+
+        for cpu, requested, expected in ((22, None, 3), (22, 2, 2), (12, None, 2), (4, None, 1)):
+            with self.subTest(cpu=cpu, requested=requested), \
+                 patch("core.concat_batch.os.cpu_count", return_value=cpu), \
+                 patch("core.video_concat_pipeline.normalize_folder_9x16", return_value={}) as normalize, \
+                 patch("core.video_concat_pipeline.VideoConcatenatorEngine") as engine, \
+                 patch("core.video_concat_pipeline.limit_output_resolution"):
+                run_template_001_concat({"folder_a": "a", "folder_b": "b", "batch_workers": requested})
+                self.assertEqual([call.kwargs["workers"] for call in normalize.call_args_list], [expected, expected])
+                self.assertEqual(engine.call_args.args[0]["batch_workers"], expected)
+
     def test_pairing_and_order_are_preserved(self):
         with tempfile.TemporaryDirectory() as folder:
             engine = VideoConcatenatorEngine({"folder_a": "a", "folder_b": "b",

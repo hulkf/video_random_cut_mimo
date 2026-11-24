@@ -131,7 +131,7 @@ def limit_output_resolution(outputs, blur_strength=6, callback=None):
 def run_template_001_concat(config, callback=None, *, on_output=None):
     """执行模板001：A/B归一化为9:16，拼接，再限制成品最高尺寸。"""
     blur_strength = int(config.get("blur_strength", 6))
-    workers = concat_workers(config.get("batch_workers"))
+    workers = concat_workers(config.get("batch_workers"), prefer_three=True)
     started = time.perf_counter()
     cache_root = prepare_cache(config["normalization_cache"]) if config.get("normalization_cache") else None
     with tempfile.TemporaryDirectory(prefix="video_template_001_") as work_folder:
@@ -144,6 +144,7 @@ def run_template_001_concat(config, callback=None, *, on_output=None):
         normalized_at = time.perf_counter()
 
         effective_config = dict(config)
+        effective_config["batch_workers"] = workers
         effective_config["folder_a"] = folder_a
         effective_config["folder_b"] = folder_b
         effective_config["prepared_videos_a"] = normalized_a.get("_videos")

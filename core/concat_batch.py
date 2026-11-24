@@ -7,12 +7,15 @@ import os
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 
-def concat_workers(requested=None):
+def concat_workers(requested=None, *, prefer_three=False):
     if requested is not None:
         if isinstance(requested, bool) or requested not in (1, 2, 3):
             raise ValueError("batch_workers 必须是 1、2 或 3")
         return int(requested)
-    return 2 if (os.cpu_count() or 1) >= 8 else 1
+    logical_cpus = os.cpu_count() or 1
+    if prefer_three and logical_cpus >= 16:
+        return 3
+    return 2 if logical_cpus >= 8 else 1
 
 
 def reserve_output(path, reserved):
