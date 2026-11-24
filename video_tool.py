@@ -433,8 +433,15 @@ def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, A
 
     ready = {}
 
+    previewed = {}
+
+    def preview_encoded(output, cover):
+        previewed[output] = context.preview_concat_output(output, cover)
+
     def publish(index, output):
-        context.preview_concat_output(output)
+        identity = os.stat(output)
+        if previewed.get(output) != (identity.st_size, identity.st_mtime_ns):
+            context.preview_concat_output(output)
         info = validate_output(index, output)
         context.checkpoint_concat_output(info)
         ready[output] = info
@@ -443,6 +450,7 @@ def _run_concat(request: Dict[str, Any], *, prepared_inputs=None) -> Dict[str, A
         from core.video_concat_pipeline import run_template_001_concat
 
         if progressive:
+            config["_preview_encoded"] = preview_encoded
             config["normalization_cache"] = cache_root
             config["preserve_outputs"] = context.concat_output_paths()
             outputs = run_template_001_concat(config, callback, on_output=publish)

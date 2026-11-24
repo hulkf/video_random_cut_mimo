@@ -213,6 +213,7 @@ class VideoConcatenatorEngine:
                     "-threads", str(self.ffmpeg_threads),
                     "-c:a", "aac", "-b:a", "128k",
                     "-shortest",
+                    *(["-movflags", "+faststart"] if self.config.get("_preview_encoded") else []),
                     "-y", output_path
                 ])
                 return _cmd
@@ -222,6 +223,9 @@ class VideoConcatenatorEngine:
                 timeout=600, error_message="concat failed", output_path=output_path,
             )
 
+            preview = self.config.get("_preview_encoded")
+            if preview:
+                preview(output_path, cover_img)
             return output_path
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

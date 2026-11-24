@@ -274,14 +274,28 @@ class TaskExecutionContext:
     def concat_output_paths(self) -> set[str]:
         return set(self.center.concat_checkpoints(self.task_id, self.step_id))
 
-    def preview_concat_output(self, output: str) -> None:
+    def preview_concat_output(self, output: str, cover=None):
         try:
             info = Path(output).stat()
-            self.center.concat_checkpoints(self.task_id, self.step_id, preview={
-                "path": output, "size": info.st_size, "mtime_ns": str(info.st_mtime_ns),
-            })
+            record = {"path": output, "size": info.st_size, "mtime_ns": str(info.st_mtime_ns)}
+            if cover:
+                import base64
+                from io import BytesIO
+                try:
+                    from PIL import Image
+                    with Image.open(cover) as image:
+                        image.thumbnail((160, 220))
+                        jpeg = BytesIO()
+                        image.convert("RGB").save(jpeg, format="JPEG", quality=70)
+                        if jpeg.tell() <= 16384:
+                            record["poster"] = base64.b64encode(jpeg.getvalue()).decode("ascii")
+                except (ImportError, OSError, ValueError):
+                    pass
+            self.center.concat_checkpoints(self.task_id, self.step_id, preview=record)
+            return info.st_size, info.st_mtime_ns
         except (OSError, sqlite3.OperationalError) as exc:
             print(f"提前预览登记暂不可用 ({type(exc).__name__})", file=sys.stderr)
+            return None
 
     def checkpoint_concat_output(self, validation: dict[str, Any]) -> None:
         self.center.concat_checkpoints(self.task_id, self.step_id, validation)
