@@ -33,7 +33,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "kaipai_process": {"tab": "开拍云端", "required": ["input_path", "task_name"]},
     "kaipai_download": {"tab": "开拍云端", "required": ["items", "output_folder"]},
     "kaipai_quota": {"tab": "开拍云端", "required": []},
-    KAIPAI_PORTRAIT: {"tab": "开拍云端", "required": ["input_sources"]},
+    KAIPAI_PORTRAIT: {"tab": "开拍云端", "required": ["input_sources"],
+                      "optional": ["filter_id", "filter_strength"]},
     KAIPAI_CLI: {"tab": "开拍云端", "required": ["input_path", "mode"],
                  "optional": ["template_material_id", "source_revision", "upstream"]},
     "video_fission": {"tab": "视频裂变", "required": ["input_sources", "output_folder"]},
@@ -184,6 +185,11 @@ for _operation_name, _spec in OPERATIONS.items():
             "outputs": {"type": "array", "items": {"type": "string"}},
         },
     }
+
+OPERATIONS[KAIPAI_PORTRAIT]["input_schema"]["properties"].update({
+    "filter_id": {"type": "string", "description": "可选滤镜名称、资源 ID 或 random，默认 off"},
+    "filter_strength": {"type": "integer", "minimum": 1, "maximum": 100},
+})
 
 OPERATIONS["kaipai_process"]["option_schema"]["properties"]["max_workers"]["default"] = 9
 _kaipai_cli_input = OPERATIONS[KAIPAI_CLI]["input_schema"]

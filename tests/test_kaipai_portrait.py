@@ -36,6 +36,37 @@ class PortraitTaskTest(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertIn("输入内容已变化", result["error"])
 
+    def test_filter_options_reach_local_compositor(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "1234" / "one.mp4"
+            source.parent.mkdir()
+            source.write_bytes(b"original")
+            skill = root / "skill"
+            scripts = skill / "scripts"
+            scripts.mkdir(parents=True)
+            for name in ("process.py", "kaipai.mjs", "verify.py"):
+                (scripts / name).touch()
+            ego = root / ".local/share/ego/active_version_dir/ego-browser.exe"
+            ego.parent.mkdir(parents=True)
+            ego.touch()
+            context = SimpleNamespace(task_id="portrait", step_id="prepare",
+                                      center=SimpleNamespace(db_path=root / "tasks.db"))
+            request = {"_task_center_context": context, "inputs": {"input_sources": [str(source)],
+                       "filter_id": "random", "filter_strength": 35}}
+            with patch.object(kaipai_portrait, "MATERIAL_ROOT", root), patch.dict(
+                kaipai_portrait.os.environ,
+                {"USERPROFILE": str(root), "VIDEO_KAIPAI_PORTRAIT_SKILL_ROOT": str(skill)},
+            ), patch.object(kaipai_portrait.shutil, "which", return_value="ffmpeg"), patch.object(
+                kaipai_portrait, "_run", side_effect=RuntimeError("stop after compositor call")
+            ) as launch:
+                with self.assertRaisesRegex(RuntimeError, "stop after compositor call"):
+                    kaipai_portrait.run(request)
+            prepare = launch.call_args.args[0]
+            self.assertEqual(prepare[-2:], ["--filter-id=random", "--filter-strength=35"])
+
     def test_direct_executor_requires_task_center(self):
         with self.assertRaises(PermissionError):
             kaipai_portrait.run({"inputs": {"input_sources": []}})

@@ -66,7 +66,8 @@ def run(request):
     context = request.get("_task_center_context")
     if context is None:
         raise PermissionError("开拍人像增强须由确认后的视频任务执行")
-    files = sources(request["inputs"]["input_sources"])
+    inputs = request["inputs"]
+    files = sources(inputs["input_sources"])
     configured = os.environ.get("VIDEO_KAIPAI_PORTRAIT_SKILL_ROOT")
     if not configured:
         raise RuntimeError("当前执行入口未配置开拍人像增强工作流")
@@ -82,9 +83,13 @@ def run(request):
     directory.mkdir(parents=True, exist_ok=True)
     jobs = list(directory.glob("*/job.json"))
     if not jobs:
-        _run([sys.executable, str(scripts/"process.py"), "--input", *map(str, files),
-              "--output-root", str(directory), "--material-root", str(MATERIAL_ROOT)],
-             directory, directory/"prepare.log", context, 3600)
+        prepare = [sys.executable, str(scripts/"process.py"), "--input", *map(str, files),
+                   "--output-root", str(directory), "--material-root", str(MATERIAL_ROOT)]
+        if "filter_id" in inputs:
+            prepare.append("--filter-id=" + inputs["filter_id"])
+        if "filter_strength" in inputs:
+            prepare.append("--filter-strength=" + str(inputs["filter_strength"]))
+        _run(prepare, directory, directory/"prepare.log", context, 3600)
         jobs = list(directory.glob("*/job.json"))
     if len(jobs) != 1:
         raise RuntimeError("任务没有唯一的本地准备记录，请核查原任务")
