@@ -4,6 +4,7 @@ from bisect import bisect_left
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 
@@ -155,6 +156,10 @@ def compose(source, target, ranges, times, duration, audio, composition, check):
             raise ValueError("拼接素材在渲染期间发生变化")
         _run("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-i", str(passed),
                         "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"], timeout=180)
+        if passed == source:
+            passed = scratch / "retained.mp4"
+            shutil.copyfile(source, passed)
+            operations.append("copy")
         check()
         os.link(passed, target)
         return operations, streams
