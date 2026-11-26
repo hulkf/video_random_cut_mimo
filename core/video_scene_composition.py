@@ -131,13 +131,15 @@ def compose(source, target, ranges, times, duration, audio, composition, check):
             ), encoding="utf-8")
             captioned = scratch / "captioned.mp4"
             check()
-            skill_render("caption", [passed], captioned, ["--mode", "mux", "--srt", str(srt)])
+            skill_render("caption", [passed], captioned, [
+                "--mode", "mux", "--srt", str(srt), "--min-duration", "0",
+            ])
             passed = captioned
             operations.append("captions")
         check()
         verified = json.loads(_run("ffprobe", [
             "-v", "error", "-show_streams", "-show_entries",
-            "stream=codec_type,width,height,duration", "-of", "json", str(passed),
+            "stream=codec_type,width,height,duration:stream_disposition=:stream_tags=", "-of", "json", str(passed),
         ]))["streams"]
         streams = {stream["codec_type"]: stream for stream in verified}
         video = streams.get("video", {})
