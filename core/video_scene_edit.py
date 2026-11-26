@@ -234,7 +234,7 @@ def export(source, target, ranges, times, duration, audio):
         os.link(staged, target)
 
 
-def _one(entry, mode, description, output, keys, check):
+def _one(entry, mode, description, output, keys, check, composition=None):
     source = Path(entry["path"])
     if not source.is_absolute() or source.resolve(strict=True) != source or source.suffix.lower() != ".mp4":
         raise ValueError("请选择有效的原片 MP4")
@@ -243,6 +243,14 @@ def _one(entry, mode, description, output, keys, check):
         raise ValueError("原片在工作台授权后发生变化")
     times, duration, audio = _probe(source)
     check()
+    if mode == "timeline":
+        from core.video_scene_composition import time_ranges
+        spans = composition.get("keep_seconds")
+        ranges = time_ranges(spans, times, duration) if spans else [[0, len(times)]]
+        result = {"file": source.name, "keep_frames": ranges, "source_frames": len(times),
+                  "keep_seconds": [[times[start], times[end] if end < len(times) else duration]
+                                   for start, end in ranges]}
+        return _deliver(source, stamp, output, ranges, times, duration, audio, check, result, composition)
     with tempfile.TemporaryDirectory(prefix="video-scene-edit-") as temp:
         scratch = Path(temp)
         # At least four samples per second for the first pass. The last frame is
@@ -370,25 +378,35 @@ def _one(entry, mode, description, output, keys, check):
                   "qwen_windows": [[lo,len(part)] for lo,part in dense],
                   "full_frame_review": fallback, "boundary_adjustments": adjustments,
                   "reviewed_frame_limits": reviewed_limits}
-        if not ranges:
-            return dict(result, status="empty")
-        if ranges == [[0, len(times)]]:
-            return dict(result, status="unchanged")
-        if _snapshot(source) != stamp:
-            raise ValueError("源文件在识别过程中发生变化")
-        check()
-        target = output / (source.stem + "-正面.mp4")
+        return _deliver(source, stamp, output, ranges, times, duration, audio, check, result, composition)
+
+
+def _deliver(source, stamp, output, ranges, times, duration, audio, check, result, composition):
+    if not ranges:
+        return dict(result, status="empty")
+    if not composition and ranges == [[0, len(times)]]:
+        return dict(result, status="unchanged")
+    if _snapshot(source) != stamp:
+        raise ValueError("源文件在识别过程中发生变化")
+    check()
+    target = output / (source.stem + ("-剪辑.mp4" if composition else "-正面.mp4"))
+    details = {}
+    if composition:
+        from core.video_scene_composition import compose
+        operations, streams = compose(source, target, ranges, times, duration, audio, composition, check)
+        details = {"operations": operations, "streams": streams}
+    else:
         export(source, target, ranges, times, duration, audio)
-        if _snapshot(source) != stamp:
-            target.unlink()
-            raise ValueError("原片在导出期间发生变化")
-        return dict(result, status="exported", output=str(target))
+    if _snapshot(source) != stamp:
+        target.unlink()
+        raise ValueError("原片在导出期间发生变化")
+    return dict(result, status="exported", output=str(target), **details)
 
 
 def run_scene_edit(request):
     inputs = request["inputs"]
     mode = inputs["mode"]
-    if mode not in PROMPTS:
+    if mode not in PROMPTS and mode != "timeline":
         raise ValueError("不支持的剪辑模式")
     files = inputs["files"]
     description = inputs["description"]
@@ -397,7 +415,18 @@ def run_scene_edit(request):
             or not isinstance(description, str) or not 1 <= len(description.strip()) <= 500
             or not output.is_absolute() or output.resolve(strict=True) != output or not output.is_dir()):
         raise ValueError("视频剪辑输入不完整")
-    keys = _read_keys(mode != "visible_candidates")
+    composition = inputs.get("composition")
+    if composition is not None or mode == "timeline":
+        database = Path(os.environ.get("VIDEO_TASK_CENTER_DB", ""))
+        if not database.is_absolute() or database.parts[-3:] != ("tools", "video-scene-edit", "tasks.db"):
+            raise PermissionError("通用剪辑仅由工作台视频任务调用")
+        if (not isinstance(composition, dict) or not composition or mode == "visible_candidates"
+                or ("keep_seconds" in composition and (mode != "timeline" or len(files) != 1))
+                or set(composition) - {"append", "format", "audio", "captions", "keep_seconds"}):
+            raise ValueError("无效的剪辑组合")
+        from core.video_scene_composition import validate_composition
+        validate_composition(composition)
+    keys = {} if mode == "timeline" else _read_keys(mode != "visible_candidates")
     controller = request.get("_task_controller")
     def check():
         if controller is not None:
@@ -406,7 +435,7 @@ def run_scene_edit(request):
     for entry in files:
         check()
         try:
-            results.append(_one(entry, mode, description, output, keys, check))
+            results.append(_one(entry, mode, description, output, keys, check, composition))
         except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as error:
             from core.task_control import TaskControlSignal
             if isinstance(error, TaskControlSignal):
